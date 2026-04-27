@@ -45,6 +45,7 @@ fn json_object_roundtrip_through_yaml_files() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -88,6 +89,7 @@ fn yaml_array_roundtrip_with_unique_id() {
         unique_id: Some("name".into()),
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -136,6 +138,7 @@ fn json5_roundtrip_preserves_structure() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -178,6 +181,7 @@ connection_max = 5000
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -211,6 +215,7 @@ fn toml_to_json_disassemble_is_rejected() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap_err();
     assert!(
@@ -236,6 +241,7 @@ fn toml_disassembled_dir_cannot_reassemble_to_json() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -269,6 +275,7 @@ fn corrupted_toml_wrapper_key_returns_clear_error() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -304,6 +311,7 @@ fn json_to_toml_reassemble_is_rejected() {
         unique_id: None,
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -336,6 +344,7 @@ fn pre_purge_clears_output_dir() {
         unique_id: None,
         pre_purge: true,
         post_purge: false,
+        ignore_path: None,
     })
     .unwrap();
 
@@ -356,6 +365,7 @@ fn post_purge_removes_input_file() {
         unique_id: None,
         pre_purge: false,
         post_purge: true,
+        ignore_path: None,
     })
     .unwrap();
 

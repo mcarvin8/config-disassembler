@@ -9,7 +9,7 @@ Disassemble configuration files into smaller, version-control–friendly pieces 
 
 A JSON, JSON5, or YAML file can be split into files in any of those three formats and reassembled back into any of them. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
 
-XML support is provided by the bundled [`xml-disassembler`](https://crates.io/crates/xml-disassembler) crate; the JSON, JSON5, YAML, and TOML disassembler is implemented in this crate.
+XML, JSON, JSON5, YAML, and TOML support are all implemented directly in this crate. The XML implementation is a port of [`xml-disassembler`](https://github.com/mcarvin8/xml-disassembler-rust) and lives in the in-tree `xml` module — there is no longer an external `xml-disassembler` dependency.
 
 ## Installation
 
@@ -25,7 +25,7 @@ XML support is provided by the bundled [`xml-disassembler`](https://crates.io/cr
 config-disassembler <subcommand> [args...]
 
 Subcommands:
-  xml      Forward to the bundled xml-disassembler CLI.
+  xml      Disassemble or reassemble an XML file (in-tree port of xml-disassembler).
   json     Disassemble or reassemble a JSON file.
   json5    Disassemble or reassemble a JSON5 file.
   yaml     Disassemble or reassemble a YAML file.
@@ -33,15 +33,124 @@ Subcommands:
   help     Show top-level help.
 ```
 
+### Ignore file
+
+Every `disassemble` action accepts an `--ignore-path` flag pointing at a `.gitignore`-style file used to exclude paths when the input is a directory. The default filename is `.cdignore`, located in the input directory. For backward compatibility the `xml` subcommand also falls back to `.xmldisassemblerignore` (with a deprecation warning) if `.cdignore` is missing — rename or pass `--ignore-path` to silence the warning.
+
+```text
+# .cdignore
+**/secret.json
+**/generated/
+```
+
 ### XML
 
-Arguments after `xml` are forwarded directly to `xml-disassembler`. See its
-[README](https://github.com/mcarvin8/xml-disassembler-rust) for the full list of
-options.
+```bash
+config-disassembler xml disassemble <path> [options]
+config-disassembler xml reassemble  <path> [extension] [--postpurge]
+config-disassembler xml parse       <path>
+```
+
+`<path>` may be a single XML file or a directory of XML files. The command set, flags, and on-disk layout match the standalone [`xml-disassembler`](https://github.com/mcarvin8/xml-disassembler-rust) CLI; this section is the inline reference.
+
+#### Disassemble options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--unique-id-elements <list>` | Comma-separated element names used to derive filenames for nested elements | (none) |
+| `--prepurge` | Remove existing disassembly output before running | false |
+| `--postpurge` | Delete original file/directory after disassembling | false |
+| `--ignore-path <path>` | Path to the ignore file | `.cdignore` (falls back to `.xmldisassemblerignore`) |
+| `--format <fmt>` | Output format: `xml`, `json`, `json5`, `yaml` | `xml` |
+| `--strategy <name>` | `unique-id` or `grouped-by-tag` | `unique-id` |
+| `-p`, `--split-tags <spec>` | With `grouped-by-tag`: split or group nested tags into subdirs (e.g. `objectPermissions:split:object,fieldPermissions:group:field`) | (none) |
+| `--multi-level <spec>` | Further disassemble matching files: `file_pattern:root_to_strip:unique_id_elements` | (none) |
+
+#### Reassemble options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `<extension>` | File extension/suffix for the rebuilt XML (e.g. `permissionset-meta.xml`) | `xml` |
+| `--postpurge` | Delete disassembled directory after successful reassembly | false |
+
+#### Disassembly strategies
+
+##### `unique-id` (default)
+
+Each nested element is written to its own file, named by a unique identifier (or an 8-character SHA-256 hash if no UID is available). Leaf content stays in a file named after the original XML.
+
+Best for fine-grained diffs and version control.
+
+* **UID-based layout** – When you provide `--unique-id-elements` (e.g. `name,id,apexClass`), nested elements are named by the first matching field value. For Salesforce flows, a typical list might be: `apexClass,name,object,field,layout,actionName,targetReference,assignToReference,choiceText,promptText`. Using unique-id elements also ensures predictable sorting in the reassembled output.
+* **Hash-based layout** – When no unique ID is found, elements are named with an 8-character hash of their content (e.g. `419e0199.botMlDomain-meta.xml`).
+
+##### `grouped-by-tag`
+
+All nested elements with the same tag go into one file per tag. Leaf content stays in the base file named after the original XML.
+
+Best for fewer files and quick inspection.
 
 ```bash
-config-disassembler xml disassemble path/to/file.xml --format json
-config-disassembler xml reassemble  path/to/file    --postpurge
+config-disassembler xml disassemble ./my.xml --strategy grouped-by-tag --format yaml
+```
+
+Reassembly preserves element content and structure.
+
+###### Split tags (`-p` / `--split-tags`)
+
+With `--strategy grouped-by-tag`, you can optionally **split** or **group** specific nested tags into subdirectories instead of a single file per tag. Useful for permission sets and similar metadata: e.g. one file per `objectPermissions` under `objectPermissions/`, and `fieldPermissions` grouped by object under `fieldPermissions/`.
+
+The spec is a comma-separated list of rules. Each rule is `tag:mode:field` or `tag:path:mode:field` (path defaults to tag). **mode** is `split` (one file per array item, filename from `field`) or `group` (group array items by `field`, one file per group).
+
+```bash
+# Permission set: objectPermissions -> one file per object;
+# fieldPermissions -> one file per field value
+config-disassembler xml disassemble fixtures/split-tags/HR_Admin.permissionset-meta.xml \
+  --strategy grouped-by-tag \
+  -p "objectPermissions:split:object,fieldPermissions:group:field"
+```
+
+This creates `HR_Admin/` with files like `objectPermissions/Job_Request__c.objectPermissions-meta.xml`, `objectPermissions/Account.objectPermissions-meta.xml`, `fieldPermissions/<fieldValue>.fieldPermissions-meta.xml`, plus the main `HR_Admin.permissionset-meta.xml` with the rest. Reassembly requires no extra flags: `xml reassemble` merges subdirs and files back into one XML.
+
+##### Multi-level disassembly
+
+For advanced use cases (e.g. Salesforce Loyalty Program Setup metadata), you can further disassemble specific output files by stripping a root element and re-running disassembly with different unique-id elements.
+
+Use `--multi-level <spec>` where the spec is:
+
+`file_pattern:root_to_strip:unique_id_elements`
+
+* **file_pattern** – Match XML files whose name or path contains this (e.g. `programProcesses` or `programProcesses-meta`).
+* **root_to_strip** – Element to strip/unwrap: if it is the root, its inner content becomes the new document; if it is a child (e.g. `programProcesses` under `LoyaltyProgramSetup`), it is unwrapped so its inner content becomes the root's direct children.
+* **unique_id_elements** – Comma-separated element names for the second-level disassembly (e.g. `parameterName,ruleName`).
+
+Example (loyalty program): strip the child `programProcesses` in each process file so parameters/rules can be disassembled:
+
+```bash
+config-disassembler xml disassemble ./Cloud_Kicks_Inner_Circle.loyaltyProgramSetup-meta.xml \
+  --unique-id-elements "fullName,name,processName" \
+  --multi-level "programProcesses:programProcesses:parameterName,ruleName"
+```
+
+A `.multi_level.json` config is written in the disassembly root so **reassemble** automatically does inner-level reassembly first, wraps files with the original root, then reassembles the top level. No extra flags are needed for reassembly.
+
+> **Caveat:** Multi-level reassembly removes disassembled directories after reassembling each level, even when you do not pass `--postpurge`. This is required so the next level can merge the reassembled XML files. Use version control (e.g. Git) to recover the tree if needed, or run reassembly only in a pipeline where these changes can be discarded.
+
+#### XML parser notes
+
+Parsing is done with [quick-xml](https://github.com/tafia/quick-xml), with support for:
+
+* **CDATA** – Preserved and output as `#cdata` in the parsed structure.
+* **Comments** – Preserved in the XML output.
+* **Attributes** – Stored with `@` prefix (e.g. `@version`, `@encoding`).
+
+#### Logging
+
+Logging uses the [log](https://crates.io/crates/log) crate with [env_logger](https://crates.io/crates/env_logger). Control verbosity via the `RUST_LOG` environment variable.
+
+```bash
+# Verbose logging (debug level)
+RUST_LOG=debug config-disassembler xml disassemble ./my.xml
 ```
 
 ### JSON / JSON5 / YAML
@@ -51,14 +160,17 @@ config-disassembler <fmt> disassemble <input> [options]
 config-disassembler <fmt> reassemble  <dir>   [options]
 ```
 
+`<input>` may be a single file or a directory. When it points at a directory, every file under the directory whose extension matches the input format is disassembled in place; each file's split output is written into a sibling directory named after that file's stem.
+
 Common options:
 
 | Option | Applies to | Description |
 | ------ | ---------- | ----------- |
-| `-o, --output-dir <dir>` | disassemble | Directory for split files. Defaults to `<input-stem>` next to the input. |
+| `-o, --output-dir <dir>` | disassemble (file input only) | Directory for split files. Defaults to `<input-stem>` next to the input. Rejected when `<input>` is a directory. |
 | `--input-format <fmt>`   | disassemble | Override input format. Defaults to the file extension or the subcommand. |
 | `--output-format <fmt>`  | both        | Format used for the split files (disassemble) or rebuilt file (reassemble). |
 | `--unique-id <field>`    | disassemble | For array roots, name files by this field on each element. |
+| `--ignore-path <path>`   | disassemble (directory input) | Path to a `.gitignore`-style file used to filter the directory walk. Defaults to `.cdignore` in the input directory. |
 | `--pre-purge`            | disassemble | Remove the output directory before writing. |
 | `--post-purge`           | both        | Delete the input file/directory after the operation succeeds. |
 | `-o, --output <file>`    | reassemble  | Output file path. Defaults to the original file name from the metadata. |
@@ -75,14 +187,24 @@ config-disassembler json disassemble config.json --output-format yaml
 config-disassembler json reassemble config --output-format json
 ```
 
+### Example: disassemble a directory of YAML files, skipping some
+
+```bash
+# .cdignore in ./envs/
+echo 'secrets.yaml' > envs/.cdignore
+
+# walks envs/, splits every *.yaml file in place, except secrets.yaml
+config-disassembler yaml disassemble envs/
+```
+
 ### TOML
 
 ```bash
-config-disassembler toml disassemble <input.toml> [options]
-config-disassembler toml reassemble  <dir>        [options]
+config-disassembler toml disassemble <input> [options]
+config-disassembler toml reassemble  <dir>   [options]
 ```
 
-The `toml` subcommand is identical to the JSON/JSON5/YAML subcommands except `--input-format` and `--output-format` are not accepted: TOML files can only be split into TOML files and reassembled into TOML.
+The `toml` subcommand is identical to the JSON/JSON5/YAML subcommands (single-file or directory input, `--ignore-path`, etc.) except `--input-format` and `--output-format` are not accepted: TOML files can only be split into TOML files and reassembled into TOML.
 
 ```bash
 # split Cargo.toml into per-table files under ./Cargo/

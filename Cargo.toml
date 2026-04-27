@@ -17,14 +17,19 @@ name = "config-disassembler"
 path = "src/main.rs"
 
 [dependencies]
-xml-disassembler = "0.4.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 json5 = "1"
 toml = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "io-util", "sync"] }
 sha2 = "0.11"
+quick-xml = { version = "0.39", features = ["serialize"] }
+ignore = "0.4"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

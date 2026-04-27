@@ -26,7 +26,7 @@ pub enum Error {
     Usage(String),
     /// Logical error during disassembly or reassembly.
     Invalid(String),
-    /// Error returned by the embedded xml-disassembler.
+    /// Error returned by the in-tree XML disassembler.
     Xml(String),
 }
 
