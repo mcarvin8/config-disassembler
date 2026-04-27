@@ -1,0 +1,29 @@
+src/format.rs
+  7945e52d898724e4 126-131,250-257
+tests/roundtrip.rs
+  7945e52d898724e4 223-293
+src/reassemble.rs
+  7945e52d898724e4 122-125,136-148,177-224
+tests/cli.rs
+  7945e52d898724e4 262-268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "3adfcdb1922ae28ed69a6c98ab44b5f132cb65b1",
+  "prompts": {
+    "7945e52d898724e4": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "b26a97c7-4a15-4733-80b4-cbe8b79aca9c",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin",
+      "messages": [],
+      "total_additions": 156,
+      "total_deletions": 21,
+      "accepted_lines": 159,
+      "overriden_lines": 0
+    }
+  }
+}
