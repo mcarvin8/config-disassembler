@@ -1,0 +1,22 @@
+{
+  // Renovate bot configuration.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":semanticCommits",
+    ":disableDependencyDashboard",
+  ],
+  schedule: ["before 4am on Monday"],
+  timezone: "America/New_York",
+  packageRules: [
+    {
+      matchUpdateTypes: ["minor", "patch"],
+      automerge: true,
+    },
+    {
+      matchPackagePatterns: ["^@types/"],
+      groupName: "type definitions",
+    },
+  ],
+  rangeStrategy: "bump",
+}

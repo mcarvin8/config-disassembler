@@ -1,0 +1,15 @@
+enabled: true
+disabled: false
+explicit_null: null
+tilde_null: ~
+empty_string: ""
+zero: 0
+zero_float: 0.0
+negative: -1
+list_with_mixed:
+  - true
+  - false
+  - null
+  - "true"
+  - "false"
+  - "null"

@@ -1,0 +1,10 @@
+{
+  "small_int": 0,
+  "negative_int": -42,
+  "positive_int": 100000,
+  "float": 3.14159,
+  "negative_float": -2.71828,
+  "tiny_float": 0.0001,
+  "zero_float": 0.0,
+  "array_of_numbers": [1, 2, 3, 4, 5, -1, -2, -3]
+}

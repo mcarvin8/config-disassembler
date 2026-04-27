@@ -1,0 +1,16 @@
+{
+  // Application metadata.
+  name: "demo",
+  /* multi-line
+     block comment */
+  version: "1.0.0",
+  features: [
+    "fast",
+    "small",
+    "safe", // trailing comma in array
+  ],
+  config: {
+    retries: 3,
+    timeout: 5000, // trailing comma in object
+  },
+}

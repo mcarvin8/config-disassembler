@@ -1,0 +1,11 @@
+{
+  "ascii": "plain",
+  "café": "accented key",
+  "中文": "中文 value",
+  "emoji_🚀": ["a", "b"],
+  "with spaces": {"nested": "ok"},
+  "with/slash": ["x", "y"],
+  "with:colon": 1,
+  "ümlaut": true,
+  "русский": [1, 2, 3]
+}

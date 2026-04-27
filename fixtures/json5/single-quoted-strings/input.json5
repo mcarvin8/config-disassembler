@@ -1,0 +1,9 @@
+{
+  greeting: 'hello',
+  servers: [
+    { host: 'a.example.com', port: 8080 },
+    { host: 'b.example.com', port: 8081 },
+    { host: 'c.example.com', port: 8082 },
+  ],
+  notes: 'a string with "double" quotes inside',
+}

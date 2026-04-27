@@ -1,0 +1,13 @@
+description: |
+  This is a multi-line
+  block scalar with
+  preserved newlines.
+folded: >
+  This is a folded
+  block scalar that
+  becomes one line.
+short: short value
+items:
+  - one
+  - two
+  - three

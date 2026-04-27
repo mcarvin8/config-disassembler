@@ -1,0 +1,4 @@
+{
+  "description": "Array root where each element has a unique `name` field used to derive filenames.",
+  "unique_id": "name"
+}

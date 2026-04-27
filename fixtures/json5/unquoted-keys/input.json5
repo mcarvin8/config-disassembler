@@ -1,0 +1,12 @@
+{
+  unquoted: "value",
+  alsoUnquoted: 42,
+  nested: {
+    inner: true,
+    list: [1, 2, 3],
+  },
+  mixed: [
+    { name: "a", value: 1 },
+    { name: "b", value: 2 },
+  ],
+}

@@ -1,0 +1,3 @@
+{
+  "description": "Object root mixing scalars (which go into _main) and nested objects/arrays (which split into per-key files)."
+}

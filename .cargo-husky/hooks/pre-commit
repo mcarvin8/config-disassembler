@@ -1,0 +1,23 @@
+#!/bin/sh
+#
+# cargo-husky pre-commit hook
+#   1. Auto-format staged Rust sources with `cargo fmt --all`
+#      and re-stage any files it rewrites so the commit includes the fix.
+#   2. Enforce `cargo clippy --all-targets --all-features --workspace -- -D warnings`
+#      to match CI and block the commit on any clippy error.
+
+set -eu
+
+echo '+ cargo fmt --all'
+cargo fmt --all
+
+# Re-stage any Rust files that fmt rewrote. Only files already staged in this
+# commit are touched so we don't sweep in unrelated working-tree changes.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' || true)
+if [ -n "$staged_rs" ]; then
+    # shellcheck disable=SC2086
+    git add -- $staged_rs
+fi
+
+echo '+ cargo clippy --all-targets --all-features --workspace -- -D warnings'
+cargo clippy --all-targets --all-features --workspace -- -D warnings

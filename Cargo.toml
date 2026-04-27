@@ -1,0 +1,31 @@
+[package]
+name = "config-disassembler"
+version = "0.1.0"
+edition = "2021"
+description = "Disassemble config files into smaller files and reassemble on demand."
+repository = "https://github.com/mcarvin8/config-disassembler"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "config_disassembler"
+path = "src/lib.rs"
+
+[[bin]]
+name = "config-disassembler"
+path = "src/main.rs"
+
+[dependencies]
+xml-disassembler = "0.4.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+json5 = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+walkdir = "2"
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }

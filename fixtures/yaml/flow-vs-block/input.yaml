@@ -1,0 +1,13 @@
+flow_array: [1, 2, 3]
+block_array:
+  - 1
+  - 2
+  - 3
+flow_map: {a: 1, b: 2}
+block_map:
+  a: 1
+  b: 2
+mixed:
+  - {name: alpha, value: 1}
+  - {name: beta, value: 2}
+  - {name: gamma, value: 3}

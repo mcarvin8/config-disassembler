@@ -1,0 +1,17 @@
+[
+  {
+    "name": "alpha",
+    "weight": 1,
+    "tags": ["x"]
+  },
+  {
+    "name": "beta",
+    "weight": 2,
+    "tags": ["y", "z"]
+  },
+  {
+    "name": "gamma",
+    "weight": 3,
+    "tags": []
+  }
+]

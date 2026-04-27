@@ -1,0 +1,17 @@
+{
+  "name": "demo",
+  "version": "1.0.0",
+  "enabled": true,
+  "count": 42,
+  "ratio": 0.5,
+  "tags": ["alpha", "beta", "gamma"],
+  "settings": {
+    "retries": 3,
+    "timeout_ms": 5000,
+    "endpoints": ["https://example.com/a", "https://example.com/b"]
+  },
+  "owner": {
+    "name": "Alice",
+    "email": "alice@example.com"
+  }
+}

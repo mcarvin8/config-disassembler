@@ -1,0 +1,12 @@
+{
+  "null_value": null,
+  "empty_string": "",
+  "empty_array": [],
+  "empty_object": {},
+  "nested_with_nulls": {
+    "a": null,
+    "b": [null, null, null],
+    "c": {"x": null}
+  },
+  "real_data": {"x": 1}
+}

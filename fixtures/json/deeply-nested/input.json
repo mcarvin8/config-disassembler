@@ -1,0 +1,20 @@
+{
+  "level1": {
+    "level2": {
+      "level3": {
+        "level4": {
+          "value": 42,
+          "items": [1, 2, 3, 4, 5],
+          "flags": {
+            "a": true,
+            "b": false,
+            "c": null
+          }
+        }
+      }
+    }
+  },
+  "siblings": [
+    {"id": 1, "children": [{"id": 2, "children": [{"id": 3, "children": []}]}]}
+  ]
+}

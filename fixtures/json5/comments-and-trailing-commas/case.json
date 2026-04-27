@@ -1,0 +1,3 @@
+{
+  "description": "Round-trips the structure but does NOT preserve comments — comments are stripped at parse time, which is the documented behaviour of going through serde_json::Value."
+}
