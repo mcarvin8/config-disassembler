@@ -220,6 +220,78 @@ fn toml_to_json_disassemble_is_rejected() {
 }
 
 #[test]
+fn toml_disassembled_dir_cannot_reassemble_to_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = write_input(
+        tmp.path(),
+        "c.toml",
+        "name = \"demo\"\n\n[settings]\nx = 1\n",
+    );
+
+    let dir = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Toml),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Toml),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+    })
+    .unwrap();
+
+    let err = reassemble::reassemble(ReassembleOptions {
+        input_dir: dir,
+        output: Some(tmp.path().join("rebuilt.json")),
+        output_format: Some(Format::Json),
+        post_purge: false,
+    })
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("TOML can only be reassembled"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn corrupted_toml_wrapper_key_returns_clear_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = write_input(
+        tmp.path(),
+        "c.toml",
+        "name = \"demo\"\n\n[settings]\nx = 1\n",
+    );
+
+    let dir = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Toml),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Toml),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+    })
+    .unwrap();
+
+    // Replace settings.toml's wrapper key with an unexpected one so
+    // reassembly's unwrap step has to report a clear error.
+    fs::write(dir.join("settings.toml"), "[wrong]\nx = 1\n").unwrap();
+
+    let err = reassemble::reassemble(ReassembleOptions {
+        input_dir: dir,
+        output: Some(tmp.path().join("rebuilt.toml")),
+        output_format: Some(Format::Toml),
+        post_purge: false,
+    })
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("does not contain expected wrapper key"),
+        "got: {msg}"
+    );
+    assert!(msg.contains("settings"), "got: {msg}");
+}
+
+#[test]
 fn json_to_toml_reassemble_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let input = write_input(tmp.path(), "c.json", r#"{"a":{"b":1}}"#);

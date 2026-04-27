@@ -20,8 +20,6 @@ pub enum Error {
     Yaml(serde_yaml::Error),
     /// Failed to parse TOML.
     TomlDe(toml::de::Error),
-    /// Failed to serialize TOML.
-    TomlSer(toml::ser::Error),
     /// Could not determine the file format from a path.
     UnknownFormat(PathBuf),
     /// CLI usage error.
@@ -40,7 +38,6 @@ impl fmt::Display for Error {
             Error::Json5(e) => write!(f, "json5 error: {e}"),
             Error::Yaml(e) => write!(f, "yaml error: {e}"),
             Error::TomlDe(e) => write!(f, "toml parse error: {e}"),
-            Error::TomlSer(e) => write!(f, "toml serialize error: {e}"),
             Error::UnknownFormat(p) => {
                 write!(
                     f,
@@ -63,7 +60,6 @@ impl std::error::Error for Error {
             Error::Json5(e) => Some(e),
             Error::Yaml(e) => Some(e),
             Error::TomlDe(e) => Some(e),
-            Error::TomlSer(e) => Some(e),
             _ => None,
         }
     }
@@ -96,12 +92,6 @@ impl From<serde_yaml::Error> for Error {
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self {
         Error::TomlDe(e)
-    }
-}
-
-impl From<toml::ser::Error> for Error {
-    fn from(e: toml::ser::Error) -> Self {
-        Error::TomlSer(e)
     }
 }
 

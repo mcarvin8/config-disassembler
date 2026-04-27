@@ -123,7 +123,12 @@ fn serialize_toml(value: &Value) -> Result<String> {
             if path.is_empty() { "<root>" } else { &path }
         )));
     }
-    Ok(toml::to_string_pretty(value)?)
+    // Pre-validation above (root must be a table, no null values) covers
+    // every case the `toml` crate would reject for a `serde_json::Value`
+    // constructed through the normal serde API, so a serialization error
+    // here would indicate an unexpected toml-crate behavior; surface it
+    // with a clear `Invalid` error rather than a dedicated variant.
+    toml::to_string_pretty(value).map_err(|e| Error::Invalid(format!("toml serialize error: {e}")))
 }
 
 /// Walks a `Value` and returns the first dotted path to a `Null`, if any.
@@ -240,6 +245,14 @@ mod tests {
         let err = Format::Toml.serialize(&v).unwrap_err();
         assert!(err.to_string().contains("null"), "got: {err}");
         assert!(err.to_string().contains("outer.inner"), "got: {err}");
+    }
+
+    #[test]
+    fn toml_rejects_null_inside_array() {
+        let v: Value = serde_json::json!({ "items": [1, null, 3] });
+        let err = Format::Toml.serialize(&v).unwrap_err();
+        assert!(err.to_string().contains("null"), "got: {err}");
+        assert!(err.to_string().contains("items[1]"), "got: {err}");
     }
 
     #[test]

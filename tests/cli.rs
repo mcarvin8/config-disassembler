@@ -259,6 +259,14 @@ async fn pre_purge_and_post_purge_via_cli() {
 }
 
 #[tokio::test]
+async fn toml_subcommand_help() {
+    run_ok(&["config-disassembler", "toml", "--help"]).await;
+    run_ok(&["config-disassembler", "toml", "help"]).await;
+    run_ok(&["config-disassembler", "toml", "disassemble", "--help"]).await;
+    run_ok(&["config-disassembler", "toml", "reassemble", "--help"]).await;
+}
+
+#[tokio::test]
 async fn toml_subcommand_round_trip_via_cli() {
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("config.toml");
