@@ -1,0 +1,16 @@
+name = "fleet"
+
+[[servers]]
+host = "alpha.example.com"
+port = 8080
+role = "web"
+
+[[servers]]
+host = "beta.example.com"
+port = 8081
+role = "worker"
+
+[[servers]]
+host = "gamma.example.com"
+port = 8082
+role = "db"

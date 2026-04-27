@@ -18,6 +18,10 @@ pub enum Error {
     Json5(json5::Error),
     /// Failed to parse YAML.
     Yaml(serde_yaml::Error),
+    /// Failed to parse TOML.
+    TomlDe(toml::de::Error),
+    /// Failed to serialize TOML.
+    TomlSer(toml::ser::Error),
     /// Could not determine the file format from a path.
     UnknownFormat(PathBuf),
     /// CLI usage error.
@@ -35,6 +39,8 @@ impl fmt::Display for Error {
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Json5(e) => write!(f, "json5 error: {e}"),
             Error::Yaml(e) => write!(f, "yaml error: {e}"),
+            Error::TomlDe(e) => write!(f, "toml parse error: {e}"),
+            Error::TomlSer(e) => write!(f, "toml serialize error: {e}"),
             Error::UnknownFormat(p) => {
                 write!(
                     f,
@@ -56,6 +62,8 @@ impl std::error::Error for Error {
             Error::Json(e) => Some(e),
             Error::Json5(e) => Some(e),
             Error::Yaml(e) => Some(e),
+            Error::TomlDe(e) => Some(e),
+            Error::TomlSer(e) => Some(e),
             _ => None,
         }
     }
@@ -82,6 +90,18 @@ impl From<json5::Error> for Error {
 impl From<serde_yaml::Error> for Error {
     fn from(e: serde_yaml::Error) -> Self {
         Error::Yaml(e)
+    }
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Error::TomlDe(e)
+    }
+}
+
+impl From<toml::ser::Error> for Error {
+    fn from(e: toml::ser::Error) -> Self {
+        Error::TomlSer(e)
     }
 }
 
@@ -119,6 +139,12 @@ mod tests {
             .into();
         assert!(json5_err.to_string().contains("json5"));
         assert!(json5_err.source().is_some());
+
+        let toml_de_err: Error = toml::from_str::<serde_json::Value>("not = = toml")
+            .unwrap_err()
+            .into();
+        assert!(toml_de_err.to_string().contains("toml"));
+        assert!(toml_de_err.source().is_some());
 
         // Variants without a wrapped source.
         assert!(Error::Usage("u".into()).source().is_none());

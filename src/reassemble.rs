@@ -45,6 +45,14 @@ pub fn reassemble(opts: ReassembleOptions) -> Result<PathBuf> {
         .output_format
         .unwrap_or_else(|| meta.source_format.into());
 
+    if (file_format == Format::Toml) != (output_format == Format::Toml) {
+        return Err(Error::Invalid(format!(
+            "TOML can only be reassembled to and from TOML; the disassembled \
+             directory was written in {file_format} but reassembly target is \
+             {output_format}"
+        )));
+    }
+
     let value = match &meta.root {
         Root::Object {
             key_order,
@@ -93,7 +101,8 @@ fn assemble_object(
     let mut out = Map::new();
     for key in key_order {
         if let Some(filename) = key_files.get(key) {
-            let value = file_format.load(&dir.join(filename))?;
+            let loaded = file_format.load(&dir.join(filename))?;
+            let value = unwrap_per_key_payload(file_format, key, filename, loaded)?;
             out.insert(key.clone(), value);
         } else if let Some(value) = main_object.get(key) {
             out.insert(key.clone(), value.clone());
@@ -104,6 +113,32 @@ fn assemble_object(
         }
     }
     Ok(Value::Object(out))
+}
+
+/// Reverse of [`disassemble::wrap_per_key_payload`]: TOML per-key files
+/// wrap their payload under the parent key (since TOML cannot have a
+/// non-table root), so unwrap to recover the original value here.
+///
+/// [`disassemble::wrap_per_key_payload`]: crate::disassemble
+fn unwrap_per_key_payload(
+    file_format: Format,
+    key: &str,
+    filename: &str,
+    loaded: Value,
+) -> Result<Value> {
+    if file_format != Format::Toml {
+        return Ok(loaded);
+    }
+    match loaded {
+        Value::Object(mut map) => map.remove(key).ok_or_else(|| {
+            Error::Invalid(format!(
+                "TOML file `{filename}` does not contain expected wrapper key `{key}`"
+            ))
+        }),
+        other => Err(Error::Invalid(format!(
+            "TOML file `{filename}` did not deserialize to a table; got {other:?}"
+        ))),
+    }
 }
 
 fn assemble_array(dir: &Path, files: &[String], file_format: Format) -> Result<Value> {

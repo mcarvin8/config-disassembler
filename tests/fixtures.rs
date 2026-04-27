@@ -31,7 +31,11 @@ use config_disassembler::disassemble::{disassemble, DisassembleOptions};
 use config_disassembler::format::Format;
 use config_disassembler::reassemble::{reassemble, ReassembleOptions};
 
-const FORMATS: &[Format] = &[Format::Json, Format::Json5, Format::Yaml];
+/// Formats that participate in cross-format round-trips. TOML is
+/// intentionally excluded because TOML can only be converted to and
+/// from TOML; TOML fixtures are matrixed only against `[Format::Toml]`.
+const CROSS_FORMATS: &[Format] = &[Format::Json, Format::Json5, Format::Yaml];
+const TOML_ONLY: &[Format] = &[Format::Toml];
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
@@ -71,8 +75,13 @@ fn fixtures_roundtrip_matrix() {
             skipped.push(format!("{}: {reason}", fixture.label()));
             continue;
         }
-        for &mid in FORMATS {
-            for &out in FORMATS {
+        let formats: &[Format] = if fixture.input_format == Format::Toml {
+            TOML_ONLY
+        } else {
+            CROSS_FORMATS
+        };
+        for &mid in formats {
+            for &out in formats {
                 ran += 1;
                 if let Err(e) = run_one(fixture, mid, out) {
                     failures.push(format!(
@@ -155,6 +164,7 @@ fn find_input(dir: &Path) -> Option<(PathBuf, Format)> {
         ("json5", Format::Json5),
         ("yaml", Format::Yaml),
         ("yml", Format::Yaml),
+        ("toml", Format::Toml),
     ];
     for (ext, format) in EXTS {
         let candidate = dir.join(format!("input.{ext}"));
