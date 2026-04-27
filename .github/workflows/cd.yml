@@ -37,9 +37,9 @@ jobs:
       - name: Upload Rust binary
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: xml-disassembler
+          bin: config-disassembler
           target: ${{ matrix.target }}
-          archive: xml-disassembler-$tag-$target
+          archive: config-disassembler-$tag-$target
           tar: all
           zip: windows
           checksum: sha256
