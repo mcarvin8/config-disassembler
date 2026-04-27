@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 json5 = "1"
+toml = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 sha2 = "0.11"
 

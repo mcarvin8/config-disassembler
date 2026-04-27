@@ -1,10 +1,14 @@
 //! config-disassembler
 //!
-//! Disassemble configuration files (XML, JSON, JSON5, YAML) into smaller
-//! files and reassemble the original on demand. The XML implementation is
-//! delegated to the [`xml_disassembler`] crate; JSON, JSON5, and YAML share
-//! a common value model so a file in one format can be split into files of
-//! another format and reassembled back into any supported format.
+//! Disassemble configuration files (XML, JSON, JSON5, YAML, TOML) into
+//! smaller files and reassemble the original on demand. The XML
+//! implementation is delegated to the [`xml_disassembler`] crate; JSON,
+//! JSON5, and YAML share a common value model so a file in one format
+//! can be split into files of another format and reassembled back into
+//! any of those three. TOML is intentionally isolated and can only be
+//! converted to and from TOML, because TOML cannot represent `null`,
+//! forbids array roots, and forces bare keys to precede tables (which
+//! would reorder values on round-trip through other formats).
 
 pub mod cli;
 pub mod disassemble;

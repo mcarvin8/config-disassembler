@@ -1,0 +1,3 @@
+{
+  "description": "A Cargo.toml-style real-world config exercising tables, arrays of tables ([[bin]]), inline tables (dependency specs with feature lists), and nested feature groups."
+}

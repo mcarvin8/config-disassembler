@@ -17,6 +17,13 @@ pub enum Format {
     Json,
     Json5,
     Yaml,
+    /// TOML is intentionally isolated from the other formats: TOML's
+    /// syntactic constraints (no nulls, no array root, bare keys must
+    /// precede tables) mean conversions through TOML can reorder or
+    /// fail to represent values produced by JSON/JSON5/YAML. TOML files
+    /// can therefore only be split into TOML files and reassembled into
+    /// TOML.
+    Toml,
 }
 
 impl Format {
@@ -26,7 +33,14 @@ impl Format {
             Format::Json => "json",
             Format::Json5 => "json5",
             Format::Yaml => "yaml",
+            Format::Toml => "toml",
         }
+    }
+
+    /// Whether this format participates in cross-format conversions.
+    /// TOML is the only format that does not.
+    pub fn is_cross_format_compatible(self) -> bool {
+        !matches!(self, Format::Toml)
     }
 
     /// Best-effort detection of a format from a file path's extension.
@@ -39,6 +53,7 @@ impl Format {
             Some("json") => Ok(Format::Json),
             Some("json5") => Ok(Format::Json5),
             Some("yaml" | "yml") => Ok(Format::Yaml),
+            Some("toml") => Ok(Format::Toml),
             _ => Err(Error::UnknownFormat(path.to_path_buf())),
         }
     }
@@ -49,6 +64,7 @@ impl Format {
             Format::Json => Ok(serde_json::from_str(input)?),
             Format::Json5 => Ok(json5::from_str(input)?),
             Format::Yaml => Ok(serde_yaml::from_str(input)?),
+            Format::Toml => Ok(toml::from_str(input)?),
         }
     }
 
@@ -59,6 +75,7 @@ impl Format {
             Format::Json => serde_json::to_string_pretty(value)?,
             Format::Json5 => json5::to_string(value)?,
             Format::Yaml => serde_yaml::to_string(value)?,
+            Format::Toml => serialize_toml(value)?,
         };
         if !out.ends_with('\n') {
             out.push('\n');
@@ -81,10 +98,66 @@ impl FromStr for Format {
             "json" => Ok(Format::Json),
             "json5" => Ok(Format::Json5),
             "yaml" | "yml" => Ok(Format::Yaml),
+            "toml" => Ok(Format::Toml),
             other => Err(Error::Usage(format!(
-                "unknown format `{other}`; expected json, json5, or yaml"
+                "unknown format `{other}`; expected json, json5, yaml, or toml"
             ))),
         }
+    }
+}
+
+/// Serialize a `Value` as TOML.
+///
+/// TOML cannot represent `null` and the document root must be a table,
+/// so this function pre-validates and returns a clear error before
+/// invoking the underlying TOML serializer.
+fn serialize_toml(value: &Value) -> Result<String> {
+    if !matches!(value, Value::Object(_)) {
+        return Err(Error::Invalid(
+            "TOML documents must have a table (object) root; got an array or scalar".into(),
+        ));
+    }
+    if let Some(path) = find_null_path(value, "") {
+        return Err(Error::Invalid(format!(
+            "TOML cannot represent null values (found at `{}`)",
+            if path.is_empty() { "<root>" } else { &path }
+        )));
+    }
+    // Pre-validation above (root must be a table, no null values) covers
+    // every case the `toml` crate would reject for a `serde_json::Value`
+    // constructed through the normal serde API, so a serialization error
+    // here would indicate an unexpected toml-crate behavior; surface it
+    // with a clear `Invalid` error rather than a dedicated variant.
+    toml::to_string_pretty(value).map_err(|e| Error::Invalid(format!("toml serialize error: {e}")))
+}
+
+/// Walks a `Value` and returns the first dotted path to a `Null`, if any.
+fn find_null_path(value: &Value, prefix: &str) -> Option<String> {
+    match value {
+        Value::Null => Some(prefix.to_string()),
+        Value::Object(map) => {
+            for (k, v) in map {
+                let next = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                if let Some(p) = find_null_path(v, &next) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        Value::Array(items) => {
+            for (i, v) in items.iter().enumerate() {
+                let next = format!("{prefix}[{i}]");
+                if let Some(p) = find_null_path(v, &next) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -104,6 +177,7 @@ mod tests {
         assert_eq!("JSON5".parse::<Format>().unwrap(), Format::Json5);
         assert_eq!("yaml".parse::<Format>().unwrap(), Format::Yaml);
         assert_eq!("yml".parse::<Format>().unwrap(), Format::Yaml);
+        assert_eq!("toml".parse::<Format>().unwrap(), Format::Toml);
     }
 
     #[test]
@@ -123,12 +197,16 @@ mod tests {
             Format::Json5
         );
         assert_eq!(Format::from_path(Path::new("a.yml")).unwrap(), Format::Yaml);
+        assert_eq!(
+            Format::from_path(Path::new("a.toml")).unwrap(),
+            Format::Toml
+        );
     }
 
     #[test]
     fn from_path_rejects_missing_or_unknown_extension() {
         assert!(Format::from_path(Path::new("a")).is_err());
-        assert!(Format::from_path(Path::new("a.toml")).is_err());
+        assert!(Format::from_path(Path::new("a.ini")).is_err());
     }
 
     #[test]
@@ -136,6 +214,7 @@ mod tests {
         assert_eq!(Format::Json.to_string(), "json");
         assert_eq!(Format::Json5.to_string(), "json5");
         assert_eq!(Format::Yaml.to_string(), "yaml");
+        assert_eq!(Format::Toml.to_string(), "toml");
     }
 
     #[test]
@@ -144,11 +223,43 @@ mod tests {
             (Format::Json, r#"{"a":1}"#),
             (Format::Json5, "{ a: 1 }"),
             (Format::Yaml, "a: 1\n"),
+            (Format::Toml, "a = 1\n"),
         ] {
             let v = fmt.parse(text).unwrap();
             let out = fmt.serialize(&v).unwrap();
             assert!(out.ends_with('\n'));
             assert_eq!(fmt.parse(&out).unwrap(), v);
         }
+    }
+
+    #[test]
+    fn toml_rejects_array_root() {
+        let v: Value = serde_json::json!([1, 2, 3]);
+        let err = Format::Toml.serialize(&v).unwrap_err();
+        assert!(err.to_string().contains("table"), "got: {err}");
+    }
+
+    #[test]
+    fn toml_rejects_null_values() {
+        let v: Value = serde_json::json!({ "outer": { "inner": null } });
+        let err = Format::Toml.serialize(&v).unwrap_err();
+        assert!(err.to_string().contains("null"), "got: {err}");
+        assert!(err.to_string().contains("outer.inner"), "got: {err}");
+    }
+
+    #[test]
+    fn toml_rejects_null_inside_array() {
+        let v: Value = serde_json::json!({ "items": [1, null, 3] });
+        let err = Format::Toml.serialize(&v).unwrap_err();
+        assert!(err.to_string().contains("null"), "got: {err}");
+        assert!(err.to_string().contains("items[1]"), "got: {err}");
+    }
+
+    #[test]
+    fn cross_format_compatibility_excludes_toml() {
+        assert!(Format::Json.is_cross_format_compatible());
+        assert!(Format::Json5.is_cross_format_compatible());
+        assert!(Format::Yaml.is_cross_format_compatible());
+        assert!(!Format::Toml.is_cross_format_compatible());
     }
 }

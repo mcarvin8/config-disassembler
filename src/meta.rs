@@ -62,6 +62,7 @@ pub enum SerdeFormat {
     Json,
     Json5,
     Yaml,
+    Toml,
 }
 
 impl From<Format> for SerdeFormat {
@@ -70,6 +71,7 @@ impl From<Format> for SerdeFormat {
             Format::Json => SerdeFormat::Json,
             Format::Json5 => SerdeFormat::Json5,
             Format::Yaml => SerdeFormat::Yaml,
+            Format::Toml => SerdeFormat::Toml,
         }
     }
 }
@@ -80,6 +82,7 @@ impl From<SerdeFormat> for Format {
             SerdeFormat::Json => Format::Json,
             SerdeFormat::Json5 => Format::Json5,
             SerdeFormat::Yaml => Format::Yaml,
+            SerdeFormat::Toml => Format::Toml,
         }
     }
 }
@@ -112,7 +115,7 @@ mod tests {
 
     #[test]
     fn serde_format_round_trip() {
-        for fmt in [Format::Json, Format::Json5, Format::Yaml] {
+        for fmt in [Format::Json, Format::Json5, Format::Yaml, Format::Toml] {
             let s: SerdeFormat = fmt.into();
             let back: Format = s.into();
             assert_eq!(fmt, back);

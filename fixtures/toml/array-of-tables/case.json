@@ -1,0 +1,3 @@
+{
+  "description": "TOML array-of-tables under a top-level key, with a sibling scalar. The whole [[servers]] array is written to one file (servers.toml) and `name` is bundled into _main.toml."
+}

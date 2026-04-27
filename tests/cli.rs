@@ -259,6 +259,125 @@ async fn pre_purge_and_post_purge_via_cli() {
 }
 
 #[tokio::test]
+async fn toml_subcommand_help() {
+    run_ok(&["config-disassembler", "toml", "--help"]).await;
+    run_ok(&["config-disassembler", "toml", "help"]).await;
+    run_ok(&["config-disassembler", "toml", "disassemble", "--help"]).await;
+    run_ok(&["config-disassembler", "toml", "reassemble", "--help"]).await;
+}
+
+#[tokio::test]
+async fn toml_subcommand_round_trip_via_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("config.toml");
+    fs::write(
+        &input,
+        "name = \"demo\"\nversion = 1\nenabled = true\n\n[settings]\nx = 1\ny = 2\n",
+    )
+    .unwrap();
+    let split_dir = tmp.path().join("split");
+    let rebuilt = tmp.path().join("rebuilt.toml");
+
+    run_ok(&[
+        "config-disassembler",
+        "toml",
+        "disassemble",
+        input.to_str().unwrap(),
+        "--output-dir",
+        split_dir.to_str().unwrap(),
+    ])
+    .await;
+    assert!(split_dir.join("settings.toml").exists());
+    assert!(split_dir.join("_main.toml").exists());
+
+    run_ok(&[
+        "config-disassembler",
+        "toml",
+        "reassemble",
+        split_dir.to_str().unwrap(),
+        "-o",
+        rebuilt.to_str().unwrap(),
+    ])
+    .await;
+    let rebuilt_value: serde_json::Value =
+        toml::from_str(&fs::read_to_string(&rebuilt).unwrap()).unwrap();
+    let original_value: serde_json::Value =
+        toml::from_str(&fs::read_to_string(&input).unwrap()).unwrap();
+    assert_eq!(rebuilt_value, original_value);
+}
+
+#[tokio::test]
+async fn toml_rejects_input_format_flag() {
+    let msg = run_err(&[
+        "config-disassembler",
+        "toml",
+        "disassemble",
+        "--input-format",
+        "json",
+        "x.toml",
+    ])
+    .await;
+    assert!(
+        msg.contains("--input-format is not supported"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn toml_rejects_output_format_flag_on_disassemble() {
+    let msg = run_err(&[
+        "config-disassembler",
+        "toml",
+        "disassemble",
+        "--output-format",
+        "json",
+        "x.toml",
+    ])
+    .await;
+    assert!(
+        msg.contains("--output-format is not supported"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn toml_rejects_output_format_flag_on_reassemble() {
+    let msg = run_err(&[
+        "config-disassembler",
+        "toml",
+        "reassemble",
+        "--output-format",
+        "yaml",
+        "dir",
+    ])
+    .await;
+    assert!(
+        msg.contains("--output-format is not supported"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn json_to_toml_cross_format_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("c.json");
+    fs::write(&input, r#"{"a":{"b":1}}"#).unwrap();
+
+    let msg = run_err(&[
+        "config-disassembler",
+        "json",
+        "disassemble",
+        input.to_str().unwrap(),
+        "--output-dir",
+        tmp.path().join("out").to_str().unwrap(),
+        "--output-format",
+        "toml",
+    ])
+    .await;
+    assert!(msg.contains("TOML can only be converted"), "got: {msg}");
+}
+
+#[tokio::test]
 async fn xml_subcommand_passes_through_to_inner_cli() {
     // No args after `xml` makes xml-disassembler print usage and return Ok.
     run_ok(&["config-disassembler", "xml"]).await;

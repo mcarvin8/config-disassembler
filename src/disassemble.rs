@@ -45,6 +45,7 @@ pub fn disassemble(opts: DisassembleOptions) -> Result<PathBuf> {
         None => Format::from_path(&opts.input)?,
     };
     let output_format = opts.output_format.unwrap_or(input_format);
+    enforce_toml_isolation(input_format, output_format)?;
 
     let output_dir = match opts.output_dir.clone() {
         Some(d) => d,
@@ -90,6 +91,20 @@ pub fn disassemble(opts: DisassembleOptions) -> Result<PathBuf> {
     Ok(output_dir)
 }
 
+/// Enforce TOML's isolation rule: TOML can only be converted to and
+/// from TOML. Mixing TOML with another format would lose information
+/// (TOML cannot represent `null` or array roots) or reorder values
+/// (TOML's bare-keys-before-tables rule), so refuse the operation up
+/// front with a clear error.
+fn enforce_toml_isolation(input: Format, output: Format) -> Result<()> {
+    if (input == Format::Toml) != (output == Format::Toml) {
+        return Err(Error::Invalid(format!(
+            "TOML can only be converted to and from TOML; got input={input}, output={output}"
+        )));
+    }
+    Ok(())
+}
+
 fn default_output_dir(input: &Path) -> Result<PathBuf> {
     let stem = input.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
         Error::Invalid(format!(
@@ -118,7 +133,8 @@ fn write_object_root(dir: &Path, map: &Map<String, Value>, fmt: Format) -> Resul
         let filename = unique_filename_for_key(key, fmt, &used_names);
         used_names.insert(filename.clone());
         let path = dir.join(&filename);
-        fs::write(&path, fmt.serialize(value)?)?;
+        let payload = wrap_per_key_payload(fmt, key, value);
+        fs::write(&path, fmt.serialize(&payload)?)?;
         key_files.insert(key.clone(), filename);
     }
 
@@ -175,6 +191,25 @@ fn write_array_root(
     }
 
     Ok(Root::Array { files })
+}
+
+/// For TOML output, wrap each per-key payload under its parent key
+/// before serialization. TOML documents must have a table (object)
+/// root, so writing a bare array (e.g. an array-of-tables under a
+/// key like `servers`) would fail. Wrapping produces an idiomatic
+/// TOML file (e.g. `[[servers]]` headers in `servers.toml`) that
+/// reassembly can unwrap deterministically using the metadata.
+///
+/// For the other formats the payload is the value itself; cross-format
+/// round-tripping continues to work unchanged.
+fn wrap_per_key_payload(fmt: Format, key: &str, value: &Value) -> Value {
+    if fmt == Format::Toml {
+        let mut wrapper = Map::new();
+        wrapper.insert(key.to_string(), value.clone());
+        Value::Object(wrapper)
+    } else {
+        value.clone()
+    }
 }
 
 fn is_scalar(value: &Value) -> bool {

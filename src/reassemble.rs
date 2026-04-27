@@ -45,6 +45,14 @@ pub fn reassemble(opts: ReassembleOptions) -> Result<PathBuf> {
         .output_format
         .unwrap_or_else(|| meta.source_format.into());
 
+    if (file_format == Format::Toml) != (output_format == Format::Toml) {
+        return Err(Error::Invalid(format!(
+            "TOML can only be reassembled to and from TOML; the disassembled \
+             directory was written in {file_format} but reassembly target is \
+             {output_format}"
+        )));
+    }
+
     let value = match &meta.root {
         Root::Object {
             key_order,
@@ -93,7 +101,8 @@ fn assemble_object(
     let mut out = Map::new();
     for key in key_order {
         if let Some(filename) = key_files.get(key) {
-            let value = file_format.load(&dir.join(filename))?;
+            let loaded = file_format.load(&dir.join(filename))?;
+            let value = unwrap_per_key_payload(file_format, key, filename, loaded)?;
             out.insert(key.clone(), value);
         } else if let Some(value) = main_object.get(key) {
             out.insert(key.clone(), value.clone());
@@ -104,6 +113,39 @@ fn assemble_object(
         }
     }
     Ok(Value::Object(out))
+}
+
+/// Reverse of [`disassemble::wrap_per_key_payload`]: TOML per-key files
+/// wrap their payload under the parent key (since TOML cannot have a
+/// non-table root), so unwrap to recover the original value here.
+///
+/// TOML always deserializes to a table at the root, so the only failure
+/// mode is a missing wrapper key (e.g., the on-disk file was edited so
+/// its top-level key no longer matches the metadata).
+///
+/// [`disassemble::wrap_per_key_payload`]: crate::disassemble
+fn unwrap_per_key_payload(
+    file_format: Format,
+    key: &str,
+    filename: &str,
+    loaded: Value,
+) -> Result<Value> {
+    if file_format != Format::Toml {
+        return Ok(loaded);
+    }
+    let Value::Object(mut map) = loaded else {
+        // TOML's grammar guarantees a table root; this branch is
+        // defensive and should never be reached for a file that was
+        // successfully parsed via `Format::Toml`.
+        return Err(Error::Invalid(format!(
+            "TOML file `{filename}` did not deserialize to a table"
+        )));
+    };
+    map.remove(key).ok_or_else(|| {
+        Error::Invalid(format!(
+            "TOML file `{filename}` does not contain expected wrapper key `{key}`"
+        ))
+    })
 }
 
 fn assemble_array(dir: &Path, files: &[String], file_format: Format) -> Result<Value> {
@@ -131,4 +173,52 @@ fn default_output_path(dir: &Path, meta: &Meta, output_format: Format) -> Result
     };
     name = format!("{stem}.{}", output_format.extension());
     Ok(parent.join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unwrap_per_key_payload_passes_through_non_toml() {
+        let v = json!({"unrelated": 1});
+        let out = unwrap_per_key_payload(Format::Json, "key", "k.json", v.clone()).unwrap();
+        assert_eq!(out, v);
+    }
+
+    #[test]
+    fn unwrap_per_key_payload_extracts_wrapper_key_for_toml() {
+        let v = json!({"servers": [{"host": "a"}]});
+        let out = unwrap_per_key_payload(Format::Toml, "servers", "servers.toml", v).unwrap();
+        assert_eq!(out, json!([{"host": "a"}]));
+    }
+
+    #[test]
+    fn unwrap_per_key_payload_errors_when_wrapper_key_missing() {
+        let v = json!({"wrong": 1});
+        let err =
+            unwrap_per_key_payload(Format::Toml, "right", "x.toml", v).expect_err("should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not contain expected wrapper key"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("right"), "got: {msg}");
+        assert!(msg.contains("x.toml"), "got: {msg}");
+    }
+
+    #[test]
+    fn unwrap_per_key_payload_errors_on_non_object_for_toml() {
+        // TOML's grammar guarantees this never occurs through Format::load,
+        // but the defensive arm is still exercised here so any future
+        // refactor that reaches it returns a clear error rather than
+        // panicking.
+        let err = unwrap_per_key_payload(Format::Toml, "k", "k.toml", json!([1, 2, 3]))
+            .expect_err("should error");
+        assert!(
+            err.to_string().contains("did not deserialize to a table"),
+            "got: {err}"
+        );
+    }
 }

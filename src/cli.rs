@@ -8,6 +8,7 @@
 //!   json     Disassemble or reassemble a JSON file.
 //!   json5    Disassemble or reassemble a JSON5 file.
 //!   yaml     Disassemble or reassemble a YAML file.
+//!   toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).
 //!   help     Show this help text.
 //! ```
 
@@ -41,6 +42,7 @@ pub async fn dispatch(args: Vec<String>) -> Result<()> {
         "json" => run_format(Format::Json, rest),
         "json5" => run_format(Format::Json5, rest),
         "yaml" | "yml" => run_format(Format::Yaml, rest),
+        "toml" => run_format(Format::Toml, rest),
         other => Err(Error::Usage(format!(
             "unknown subcommand `{other}`. run `config-disassembler help` for usage."
         ))),
@@ -70,6 +72,7 @@ fn run_format(default_format: Format, args: Vec<String>) -> Result<()> {
 }
 
 fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
+    let toml_only = default_format == Format::Toml;
     let mut input: Option<PathBuf> = None;
     let mut output_dir: Option<PathBuf> = None;
     let mut output_format: Option<Format> = None;
@@ -84,8 +87,20 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
             "--output-dir" | "-o" => {
                 output_dir = Some(PathBuf::from(expect_value(&mut iter, "--output-dir")?));
             }
+            "--output-format" if toml_only => {
+                return Err(Error::Usage(
+                    "--output-format is not supported for `toml`; TOML can only be converted to TOML"
+                        .into(),
+                ));
+            }
             "--output-format" => {
                 output_format = Some(expect_value(&mut iter, "--output-format")?.parse()?);
+            }
+            "--input-format" if toml_only => {
+                return Err(Error::Usage(
+                    "--input-format is not supported for `toml`; TOML can only be converted from TOML"
+                        .into(),
+                ));
             }
             "--input-format" => {
                 input_format = Some(expect_value(&mut iter, "--input-format")?.parse()?);
@@ -125,6 +140,7 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
 }
 
 fn run_reassemble(default_format: Format, args: Vec<String>) -> Result<()> {
+    let toml_only = default_format == Format::Toml;
     let mut input_dir: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut output_format: Option<Format> = None;
@@ -135,6 +151,12 @@ fn run_reassemble(default_format: Format, args: Vec<String>) -> Result<()> {
         match arg.as_str() {
             "--output" | "-o" => {
                 output = Some(PathBuf::from(expect_value(&mut iter, "--output")?));
+            }
+            "--output-format" if toml_only => {
+                return Err(Error::Usage(
+                    "--output-format is not supported for `toml`; TOML can only be reassembled to TOML"
+                        .into(),
+                ));
             }
             "--output-format" => {
                 output_format = Some(expect_value(&mut iter, "--output-format")?.parse()?);
@@ -175,8 +197,8 @@ fn print_help() {
     eprintln!(
         "config-disassembler {ver}\n\
 \n\
-Disassemble configuration files (XML, JSON, JSON5, YAML) into smaller files\n\
-and reassemble the original on demand.\n\
+Disassemble configuration files (XML, JSON, JSON5, YAML, TOML) into smaller\n\
+files and reassemble the original on demand.\n\
 \n\
 USAGE:\n\
     config-disassembler <subcommand> [args...]\n\
@@ -186,6 +208,7 @@ SUBCOMMANDS:\n\
     json     Disassemble or reassemble a JSON file.\n\
     json5    Disassemble or reassemble a JSON5 file.\n\
     yaml     Disassemble or reassemble a YAML file.\n\
+    toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).\n\
     help     Show this help text.\n\
 \n\
 Run `config-disassembler <subcommand> --help` for subcommand details.\n",
@@ -194,6 +217,32 @@ Run `config-disassembler <subcommand> --help` for subcommand details.\n",
 }
 
 fn print_format_help(format: Format) {
+    if format == Format::Toml {
+        eprintln!(
+            "config-disassembler toml <action> [options]\n\
+\n\
+TOML can only be converted to and from TOML. Cross-format conversion with\n\
+JSON, JSON5, or YAML is rejected because TOML cannot represent `null`,\n\
+forbids array roots, and forces bare keys to precede tables (which would\n\
+reorder values on round-trip).\n\
+\n\
+ACTIONS:\n\
+    disassemble <input>   Split <input>.toml into a directory of TOML files.\n\
+    reassemble  <dir>     Rebuild the original TOML file from <dir>.\n\
+\n\
+DISASSEMBLE OPTIONS:\n\
+    -o, --output-dir <dir>      Output directory (default: <input-stem> next to input).\n\
+    --unique-id <field>         For array roots, name files by this field on each element.\n\
+                                (TOML disallows array roots, so this only applies to nested arrays.)\n\
+    --pre-purge                 Remove the output directory before writing.\n\
+    --post-purge                Delete the input file after disassembly.\n\
+\n\
+REASSEMBLE OPTIONS:\n\
+    -o, --output <file>         Output file (default: derived from metadata next to input dir).\n\
+    --post-purge                Remove the input directory after reassembly.\n"
+        );
+        return;
+    }
     eprintln!(
         "config-disassembler {format} <action> [options]\n\
 \n\
@@ -214,6 +263,6 @@ REASSEMBLE OPTIONS:\n\
     --output-format <fmt>       Format to write the reassembled file in (default: original source format).\n\
     --post-purge                Remove the input directory after reassembly.\n\
 \n\
-<fmt> is one of: json, json5, yaml.\n"
+<fmt> is one of: json, json5, yaml. (TOML is excluded -- use the `toml` subcommand.)\n"
     );
 }
