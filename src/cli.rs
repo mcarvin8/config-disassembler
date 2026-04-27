@@ -4,7 +4,7 @@
 //! config-disassembler <subcommand> [args...]
 //!
 //! Subcommands:
-//!   xml      Forward to the bundled xml-disassembler CLI.
+//!   xml      Disassemble or reassemble an XML file (in-tree port of xml-disassembler).
 //!   json     Disassemble or reassemble a JSON file.
 //!   json5    Disassemble or reassemble a JSON5 file.
 //!   yaml     Disassemble or reassemble a YAML file.
@@ -80,6 +80,7 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
     let mut unique_id: Option<String> = None;
     let mut pre_purge = false;
     let mut post_purge = false;
+    let mut ignore_path: Option<PathBuf> = None;
 
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
@@ -108,6 +109,9 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
             "--unique-id" => {
                 unique_id = Some(expect_value(&mut iter, "--unique-id")?);
             }
+            "--ignore-path" => {
+                ignore_path = Some(PathBuf::from(expect_value(&mut iter, "--ignore-path")?));
+            }
             "--pre-purge" => pre_purge = true,
             "--post-purge" => post_purge = true,
             "-h" | "--help" => {
@@ -133,6 +137,7 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
         unique_id,
         pre_purge,
         post_purge,
+        ignore_path,
     };
     let dir = disassemble::disassemble(opts)?;
     println!("disassembled into {}", dir.display());
@@ -204,7 +209,7 @@ USAGE:\n\
     config-disassembler <subcommand> [args...]\n\
 \n\
 SUBCOMMANDS:\n\
-    xml      Forward to the bundled xml-disassembler CLI.\n\
+    xml      Disassemble or reassemble an XML file.\n\
     json     Disassemble or reassemble a JSON file.\n\
     json5    Disassemble or reassemble a JSON5 file.\n\
     yaml     Disassemble or reassemble a YAML file.\n\
@@ -228,12 +233,17 @@ reorder values on round-trip).\n\
 \n\
 ACTIONS:\n\
     disassemble <input>   Split <input>.toml into a directory of TOML files.\n\
+                          <input> may also be a directory; every .toml file\n\
+                          beneath it is disassembled in place.\n\
     reassemble  <dir>     Rebuild the original TOML file from <dir>.\n\
 \n\
 DISASSEMBLE OPTIONS:\n\
     -o, --output-dir <dir>      Output directory (default: <input-stem> next to input).\n\
+                                Not allowed when <input> is a directory.\n\
     --unique-id <field>         For array roots, name files by this field on each element.\n\
                                 (TOML disallows array roots, so this only applies to nested arrays.)\n\
+    --ignore-path <path>        Path to a .gitignore-style file used when <input> is a\n\
+                                directory (default: .cdignore in the input directory).\n\
     --pre-purge                 Remove the output directory before writing.\n\
     --post-purge                Delete the input file after disassembly.\n\
 \n\
@@ -248,13 +258,18 @@ REASSEMBLE OPTIONS:\n\
 \n\
 ACTIONS:\n\
     disassemble <input>   Split <input> into a directory of smaller files.\n\
+                          <input> may also be a directory; every matching\n\
+                          file beneath it is disassembled in place.\n\
     reassemble  <dir>     Rebuild the original file from <dir>.\n\
 \n\
 DISASSEMBLE OPTIONS:\n\
     -o, --output-dir <dir>      Output directory (default: <input-stem> next to input).\n\
+                                Not allowed when <input> is a directory.\n\
     --input-format <fmt>        Override the input format (default: inferred from extension or `{format}`).\n\
     --output-format <fmt>       Format used for the split files (default: same as input).\n\
     --unique-id <field>         For array roots, name files by this field on each element.\n\
+    --ignore-path <path>        Path to a .gitignore-style file used when <input> is a\n\
+                                directory (default: .cdignore in the input directory).\n\
     --pre-purge                 Remove the output directory before writing.\n\
     --post-purge                Delete the input file after disassembly.\n\
 \n\

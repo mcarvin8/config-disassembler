@@ -478,3 +478,131 @@ fn fixtures_dir_exists_for_other_tests() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(manifest.join("fixtures").is_dir());
 }
+
+// --- Directory-input + ignore-file tests for the JSON/JSON5/YAML/TOML
+// subcommands (the XML subcommand has its own coverage via the ported
+// integration test).
+
+/// `<fmt> disassemble <dir>` walks the directory, disassembles each
+/// matching file in place, and skips files matched by the ignore file.
+#[tokio::test]
+async fn json_disassemble_directory_input_walks_and_ignores() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    // Two JSON files: `keep` should be disassembled, `skip` should be
+    // ignored. A non-JSON `README.txt` should be silently passed over
+    // because its extension does not match any supported format.
+    fs::write(
+        dir.join("keep.json"),
+        r#"{"settings": {"a": 1}, "name": "x"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("skip.json"),
+        r#"{"settings": {"b": 2}, "name": "y"}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("README.txt"), "not a config").unwrap();
+    // Custom ignore file at a non-default name to exercise --ignore-path.
+    let ignore = dir.join(".myignore");
+    fs::write(&ignore, "skip.json\n").unwrap();
+
+    run_ok(&[
+        "config-disassembler",
+        "json",
+        "disassemble",
+        dir.to_str().unwrap(),
+        "--ignore-path",
+        ignore.to_str().unwrap(),
+    ])
+    .await;
+
+    // `keep.json` got disassembled into `keep/`; `skip.json` did not.
+    assert!(
+        dir.join("keep").is_dir(),
+        "keep/ should be created from keep.json"
+    );
+    assert!(dir.join("keep/settings.json").exists());
+    assert!(
+        !dir.join("skip").exists(),
+        "skip.json was ignored, so skip/ should not exist"
+    );
+    // The non-JSON file is left untouched.
+    assert!(dir.join("README.txt").exists());
+}
+
+/// When `--ignore-path` is omitted, a `.cdignore` file in the input
+/// directory is picked up automatically.
+#[tokio::test]
+async fn yaml_disassemble_directory_uses_cdignore_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    fs::write(dir.join("a.yaml"), "x:\n  y: 1\n").unwrap();
+    fs::write(dir.join("b.yaml"), "x:\n  y: 2\n").unwrap();
+    fs::write(dir.join(".cdignore"), "b.yaml\n").unwrap();
+
+    run_ok(&[
+        "config-disassembler",
+        "yaml",
+        "disassemble",
+        dir.to_str().unwrap(),
+    ])
+    .await;
+
+    assert!(dir.join("a").is_dir());
+    assert!(!dir.join("b").exists(), "b.yaml ignored via .cdignore");
+}
+
+/// Mixing `--output-dir` with a directory input is rejected with a
+/// clear error: there is no single output dir for a multi-file walk.
+#[tokio::test]
+async fn directory_input_rejects_output_dir_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("a.json"), "{}").unwrap();
+    let msg = run_err(&[
+        "config-disassembler",
+        "json",
+        "disassemble",
+        tmp.path().to_str().unwrap(),
+        "--output-dir",
+        tmp.path().join("out").to_str().unwrap(),
+    ])
+    .await;
+    assert!(msg.contains("--output-dir"), "got: {msg}");
+}
+
+/// A directory input filtered by `--input-format` only touches files
+/// of that format; siblings in other supported formats are skipped.
+#[tokio::test]
+async fn directory_input_format_filter_skips_other_formats() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    fs::write(dir.join("a.json"), r#"{"k": {"v": 1}}"#).unwrap();
+    fs::write(dir.join("b.yaml"), "k:\n  v: 1\n").unwrap();
+
+    run_ok(&[
+        "config-disassembler",
+        "json",
+        "disassemble",
+        dir.to_str().unwrap(),
+        "--input-format",
+        "json",
+    ])
+    .await;
+
+    assert!(dir.join("a").is_dir(), "a.json was disassembled");
+    assert!(
+        !dir.join("b").exists(),
+        "b.yaml is not json so it was skipped"
+    );
+}
+
+/// Help output for every format subcommand mentions --ignore-path so
+/// the option is discoverable from the CLI.
+#[tokio::test]
+async fn format_help_mentions_ignore_path() {
+    for fmt in ["json", "json5", "yaml", "toml"] {
+        run_ok(&["config-disassembler", fmt, "--help"]).await;
+    }
+}

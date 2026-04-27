@@ -1,15 +1,23 @@
-//! Disassemble a JSON, JSON5, or YAML document into a directory of smaller
-//! files, optionally written in a different format than the input.
+//! Disassemble a JSON, JSON5, YAML, or TOML document into a directory of
+//! smaller files, optionally written in a different format than the input.
+//!
+//! The `input` may be either a single file or a directory. When it points
+//! at a directory, every file under the directory whose extension matches
+//! the input format (or, when `input_format` is `None`, any of the four
+//! supported formats) is disassembled in place. An optional `ignore_path`
+//! can point at a `.gitignore`-style ignore file used to skip paths.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::format::Format;
+use crate::ignore_file::DEFAULT_IGNORE_FILENAME;
 use crate::meta::{Meta, Root};
 
 /// File written for object roots that contains the scalar top-level keys.
@@ -18,12 +26,17 @@ const MAIN_BASENAME: &str = "_main";
 /// Options controlling disassembly.
 #[derive(Debug, Clone)]
 pub struct DisassembleOptions {
-    /// Path to the input config file.
+    /// Path to the input. May be either a single config file or a
+    /// directory; when it is a directory, every matching file under it
+    /// is disassembled in place (see also `ignore_path`).
     pub input: PathBuf,
-    /// Format to read the input as. If `None`, inferred from the extension.
+    /// Format to read the input as. If `None`, the format is inferred
+    /// from each file's extension.
     pub input_format: Option<Format>,
-    /// Directory to write split files into. If `None`, defaults to a
-    /// directory next to the input file named after the input's file stem.
+    /// Directory to write split files into. Only meaningful when
+    /// `input` is a single file; for directory inputs each file's
+    /// output goes into a sibling directory named after that file's
+    /// stem (mirroring the XML disassembler's behavior).
     pub output_dir: Option<PathBuf>,
     /// Format to write split files in. Defaults to `input_format`.
     pub output_format: Option<Format>,
@@ -32,14 +45,54 @@ pub struct DisassembleOptions {
     pub unique_id: Option<String>,
     /// If true, remove the contents of the output directory before writing.
     pub pre_purge: bool,
-    /// If true, delete the input file after disassembling.
+    /// If true, delete the input file (or input directory) after
+    /// disassembling. For directory inputs the entire directory is
+    /// removed only if every file in it was successfully disassembled.
     pub post_purge: bool,
+    /// Optional path to a `.gitignore`-style ignore file that filters
+    /// which files are processed when `input` is a directory. Pass
+    /// `None` to use [`DEFAULT_IGNORE_FILENAME`] in the input directory
+    /// (silently absent if the file does not exist). Ignored entirely
+    /// for single-file inputs.
+    pub ignore_path: Option<PathBuf>,
 }
 
-/// Disassemble a configuration file into a directory of split files.
+impl DisassembleOptions {
+    /// Build options for a single-file disassembly with sensible
+    /// defaults. Directory walks should construct `DisassembleOptions`
+    /// directly so they can opt into `ignore_path`.
+    pub fn for_file(input: PathBuf) -> Self {
+        Self {
+            input,
+            input_format: None,
+            output_dir: None,
+            output_format: None,
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        }
+    }
+}
+
+/// Disassemble a configuration file (or directory of files) into split
+/// files.
 ///
-/// Returns the directory the files were written to.
+/// * When `opts.input` is a regular file, returns the directory the files
+///   were written to (i.e. the single output directory for that file).
+/// * When `opts.input` is a directory, every matching file under it is
+///   disassembled in place and the input directory itself is returned.
 pub fn disassemble(opts: DisassembleOptions) -> Result<PathBuf> {
+    let metadata = fs::metadata(&opts.input)?;
+    if metadata.is_dir() {
+        return disassemble_directory(opts);
+    }
+    disassemble_file(opts)
+}
+
+/// Disassemble a single file. Equivalent to the previous behavior of
+/// [`disassemble`].
+fn disassemble_file(opts: DisassembleOptions) -> Result<PathBuf> {
     let input_format = match opts.input_format {
         Some(f) => f,
         None => Format::from_path(&opts.input)?,
@@ -89,6 +142,125 @@ pub fn disassemble(opts: DisassembleOptions) -> Result<PathBuf> {
     }
 
     Ok(output_dir)
+}
+
+/// Disassemble every matching file under a directory. Each file's split
+/// output is placed in a sibling directory named after the file's stem,
+/// matching how the XML disassembler treats directory inputs.
+fn disassemble_directory(opts: DisassembleOptions) -> Result<PathBuf> {
+    if opts.output_dir.is_some() {
+        return Err(Error::Usage(
+            "--output-dir is not supported with a directory input; each file's split output is written next to it".into(),
+        ));
+    }
+
+    let root = opts.input.clone();
+    let ignore = load_ignore_rules(opts.ignore_path.as_deref(), &root)?;
+
+    let mut targets = collect_disassemble_targets(&root, &ignore, opts.input_format)?;
+    targets.sort();
+
+    for file in &targets {
+        let mut child_opts = opts.clone();
+        child_opts.input = file.clone();
+        // Each file's output goes into <stem>/ next to the file itself,
+        // never into a shared --output-dir (we rejected that above).
+        child_opts.output_dir = None;
+        // Per-file post_purge would only delete the file; we honor the
+        // user's intent by keeping post_purge here so each input file is
+        // removed if requested, then we remove the (now empty) input
+        // directory at the very end below.
+        disassemble_file(child_opts)?;
+    }
+
+    if opts.post_purge {
+        // Only remove the input directory if it is now empty (every
+        // file we looked at was post-purged and no other content
+        // remains). Otherwise leave it alone so we don't clobber files
+        // the user kept around (output dirs, the ignore file, etc.).
+        if directory_is_empty(&root)? {
+            fs::remove_dir_all(&root)?;
+        }
+    }
+
+    Ok(root)
+}
+
+/// Walk `root` and collect every file whose extension matches one of the
+/// supported formats (or, if `expected_format` is `Some`, only that
+/// format), excluding paths matched by `ignore`.
+fn collect_disassemble_targets(
+    root: &Path,
+    ignore: &Option<Gitignore>,
+    expected_format: Option<Format>,
+) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if is_ignored(ignore, root, &path, ft.is_dir()) {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            // Only look at files whose extension parses as a known
+            // format, and (when input_format was set) only the matching
+            // format. Anything else is silently skipped — a directory of
+            // mixed config files commonly contains README/.git/etc.
+            let detected = match Format::from_path(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if let Some(expected) = expected_format {
+                if expected != detected {
+                    continue;
+                }
+            }
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+fn load_ignore_rules(explicit: Option<&Path>, fallback_dir: &Path) -> Result<Option<Gitignore>> {
+    let path = match explicit {
+        Some(p) => p.to_path_buf(),
+        None => fallback_dir.join(DEFAULT_IGNORE_FILENAME),
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)?;
+    let anchor = path.parent().unwrap_or(Path::new("."));
+    let mut builder = GitignoreBuilder::new(anchor);
+    for line in content.lines() {
+        // `add_line` returns a pattern-error on malformed globs; mirror
+        // the XML disassembler's tolerant parsing and skip bad lines
+        // rather than failing the whole run.
+        let _ = builder.add_line(None, line);
+    }
+    Ok(builder.build().ok())
+}
+
+fn is_ignored(ignore: &Option<Gitignore>, root: &Path, path: &Path, is_dir: bool) -> bool {
+    let Some(ign) = ignore.as_ref() else {
+        return false;
+    };
+    let candidate = path.strip_prefix(root).unwrap_or(path);
+    ign.matched(candidate, is_dir).is_ignore()
+}
+
+fn directory_is_empty(dir: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(dir)?;
+    Ok(entries.next().is_none())
 }
 
 /// Enforce TOML's isolation rule: TOML can only be converted to and

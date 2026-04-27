@@ -198,6 +198,7 @@ fn run_one(fixture: &Fixture, mid: Format, out: Format) -> Result<(), String> {
         unique_id: fixture.case.unique_id.clone(),
         pre_purge: false,
         post_purge: false,
+        ignore_path: None,
     })
     .map_err(|e| format!("disassemble failed: {e}"))?;
 
