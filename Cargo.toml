@@ -1,6 +1,6 @@
 [package]
 name = "config-disassembler"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Disassemble config files into smaller files and reassemble on demand."
 repository = "https://github.com/mcarvin8/config-disassembler"
