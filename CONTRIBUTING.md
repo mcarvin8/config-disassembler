@@ -74,6 +74,20 @@ cargo test --all-features --workspace
   round trips, cross-format conversions, TOML restrictions, and XML
   disassemble/reassemble workflows.
 
+## Git hooks
+
+This repository uses cargo-husky to install a pre-commit hook from
+`.cargo-husky/hooks/pre-commit`.
+
+Before a commit is created, the hook:
+
+- Runs `cargo fmt --all`.
+- Re-stages any already-staged Rust files that were rewritten by rustfmt.
+- Runs `cargo clippy --all-targets --all-features --workspace -- -D warnings`.
+
+If formatting or Clippy fails, the commit is blocked. These checks intentionally
+match the CI formatting and lint expectations.
+
 ### Useful Commands
 
 - Build and run release version:
