@@ -22,10 +22,11 @@ pub enum Format {
     Json,
     Json5,
     Yaml,
+    Toon,
     /// TOML is intentionally isolated from the other formats: TOML's
     /// syntactic constraints (no nulls, no array root, bare keys must
     /// precede tables) mean conversions through TOML can reorder or
-    /// fail to represent values produced by JSON/JSON5/YAML. TOML files
+    /// fail to represent values produced by JSON/JSON5/YAML/TOON. TOML files
     /// can therefore only be split into TOML files and reassembled into
     /// TOML.
     Toml,
@@ -62,9 +63,16 @@ struct FormatSpec {
 
 impl Format {
     /// All formats handled by the value-model disassembler.
-    pub const ALL: &'static [Format] = &[Format::Json, Format::Json5, Format::Yaml, Format::Toml];
+    pub const ALL: &'static [Format] = &[
+        Format::Json,
+        Format::Json5,
+        Format::Yaml,
+        Format::Toon,
+        Format::Toml,
+    ];
 
-    const JSON_VALUE_FAMILY: &'static [Format] = &[Format::Json, Format::Json5, Format::Yaml];
+    const JSON_VALUE_FAMILY: &'static [Format] =
+        &[Format::Json, Format::Json5, Format::Yaml, Format::Toon];
     const TOML_FAMILY: &'static [Format] = &[Format::Toml];
 
     fn spec(self) -> &'static FormatSpec {
@@ -90,6 +98,14 @@ impl Format {
                 display_name: "YAML",
                 aliases: &["yaml", "yml"],
                 extensions: &["yaml", "yml"],
+                family: FormatFamily::JsonValue,
+                split_payload_layout: SplitPayloadLayout::Direct,
+            },
+            Format::Toon => &FormatSpec {
+                canonical_name: "toon",
+                display_name: "TOON",
+                aliases: &["toon"],
+                extensions: &["toon"],
                 family: FormatFamily::JsonValue,
                 split_payload_layout: SplitPayloadLayout::Direct,
             },
@@ -211,6 +227,8 @@ impl Format {
             Format::Json => Ok(serde_json::from_str(input)?),
             Format::Json5 => Ok(json5::from_str(input)?),
             Format::Yaml => Ok(serde_yaml::from_str(input)?),
+            Format::Toon => toon_format::decode_default(input)
+                .map_err(|e| Error::Invalid(format!("toon parse error: {e}"))),
             Format::Toml => Ok(toml::from_str(input)?),
         }
     }
@@ -222,6 +240,8 @@ impl Format {
             Format::Json => serde_json::to_string_pretty(value)?,
             Format::Json5 => json5::to_string(value)?,
             Format::Yaml => serde_yaml::to_string(value)?,
+            Format::Toon => toon_format::encode_default(value)
+                .map_err(|e| Error::Invalid(format!("toon serialize error: {e}")))?,
             Format::Toml => serialize_toml(value)?,
         };
         if !out.ends_with('\n') {
@@ -380,6 +400,7 @@ mod tests {
         assert_eq!("JSON5".parse::<Format>().unwrap(), Format::Json5);
         assert_eq!("yaml".parse::<Format>().unwrap(), Format::Yaml);
         assert_eq!("yml".parse::<Format>().unwrap(), Format::Yaml);
+        assert_eq!("toon".parse::<Format>().unwrap(), Format::Toon);
         assert_eq!("toml".parse::<Format>().unwrap(), Format::Toml);
     }
 
@@ -401,6 +422,10 @@ mod tests {
         );
         assert_eq!(Format::from_path(Path::new("a.yml")).unwrap(), Format::Yaml);
         assert_eq!(
+            Format::from_path(Path::new("a.toon")).unwrap(),
+            Format::Toon
+        );
+        assert_eq!(
             Format::from_path(Path::new("a.toml")).unwrap(),
             Format::Toml
         );
@@ -417,6 +442,7 @@ mod tests {
         assert_eq!(Format::Json.to_string(), "json");
         assert_eq!(Format::Json5.to_string(), "json5");
         assert_eq!(Format::Yaml.to_string(), "yaml");
+        assert_eq!(Format::Toon.to_string(), "toon");
         assert_eq!(Format::Toml.to_string(), "toml");
     }
 
@@ -426,6 +452,7 @@ mod tests {
             (Format::Json, r#"{"a":1}"#),
             (Format::Json5, "{ a: 1 }"),
             (Format::Yaml, "a: 1\n"),
+            (Format::Toon, "a: 1\n"),
             (Format::Toml, "a = 1\n"),
         ] {
             let v = fmt.parse(text).unwrap();
@@ -463,6 +490,7 @@ mod tests {
         assert!(Format::Json.is_cross_format_compatible());
         assert!(Format::Json5.is_cross_format_compatible());
         assert!(Format::Yaml.is_cross_format_compatible());
+        assert!(Format::Toon.is_cross_format_compatible());
         assert!(!Format::Toml.is_cross_format_compatible());
     }
 
@@ -470,7 +498,7 @@ mod tests {
     fn compatible_formats_are_grouped_by_conversion_family() {
         assert_eq!(
             Format::Json.compatible_formats(),
-            &[Format::Json, Format::Json5, Format::Yaml]
+            &[Format::Json, Format::Json5, Format::Yaml, Format::Toon]
         );
         assert_eq!(Format::Toml.compatible_formats(), &[Format::Toml]);
     }

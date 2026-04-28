@@ -1,4 +1,4 @@
-//! End-to-end round-trip tests for the JSON/JSON5/YAML disassembler.
+//! End-to-end round-trip tests for the value-model disassembler.
 
 use std::fs;
 use std::path::PathBuf;
@@ -152,6 +152,55 @@ fn json5_roundtrip_preserves_structure() {
 
     let rebuilt = parse_value(Format::Json5, &output);
     let original = parse_value(Format::Json5, &input);
+    assert_eq!(rebuilt, original);
+}
+
+#[test]
+fn json_object_roundtrip_through_toon_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original = json!({
+        "name": "toon-demo",
+        "enabled": true,
+        "settings": {
+            "retry": 3,
+            "tags": ["fast", "compact"]
+        },
+        "servers": [
+            { "host": "a.example.com", "port": 8080 },
+            { "host": "b.example.com", "port": 8081 }
+        ]
+    });
+    let input = write_input(
+        tmp.path(),
+        "config.json",
+        &serde_json::to_string_pretty(&original).unwrap(),
+    );
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Json),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Toon),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(disassembled.join("settings.toon").exists());
+    assert!(disassembled.join("servers.toon").exists());
+    assert!(disassembled.join("_main.toon").exists());
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.yaml")),
+        output_format: Some(Format::Yaml),
+        post_purge: false,
+    })
+    .unwrap();
+
+    let rebuilt = parse_value(Format::Yaml, &output);
     assert_eq!(rebuilt, original);
 }
 

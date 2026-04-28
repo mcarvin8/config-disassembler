@@ -1,4 +1,4 @@
-//! Disassemble a JSON, JSON5, YAML, or TOML document into a directory of
+//! Disassemble a JSON, JSON5, YAML, TOON, or TOML document into a directory of
 //! smaller files, optionally written in a different format than the input.
 //!
 //! The `input` may be either a single file or a directory. When it points
