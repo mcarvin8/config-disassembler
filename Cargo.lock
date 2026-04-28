@@ -122,6 +122,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "cargo-husky",
+ "configparser",
  "env_logger",
  "ignore",
  "json5",
@@ -138,6 +139,15 @@ dependencies = [
  "toml",
  "toon-format",
  "walkdir",
+]
+
+[[package]]
+name = "configparser"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e57e3272f0190c3f1584272d613719ba5fc7df7f4942fe542e63d949cf3a649b"
+dependencies = [
+ "indexmap",
 ]
 
 [[package]]

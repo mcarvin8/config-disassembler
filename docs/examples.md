@@ -195,7 +195,7 @@ Cross-format JSONC conversions preserve parsed values, but JSONC-specific syntax
 such as comments and trailing commas cannot be carried through formats like YAML
 or JSON.
 
-## TOML Is Same-Format Only
+## TOML And INI Are Same-Format Only
 
 TOML can only be disassembled to TOML and reassembled to TOML.
 
@@ -233,6 +233,51 @@ config-disassembler toml reassemble config
 
 Cross-format TOML conversion is rejected because TOML cannot represent all
 values from the JSON-style family, such as `null` values or array document roots.
+
+INI is grouped with the same table-document behavior, but remains INI-only
+because section values are strings or valueless keys and INI cannot represent
+arrays or deeper nesting.
+
+Input `config.ini`:
+
+```ini
+name = demo
+enabled
+
+[database]
+server = localhost
+port = 5432
+```
+
+Disassemble:
+
+```bash
+config-disassembler ini disassemble config.ini
+```
+
+Output:
+
+```text
+config/
+├── .config-disassembler.json
+├── _main.ini
+└── database.ini
+```
+
+`database.ini` keeps the section wrapper so the split file is a valid INI
+document:
+
+```ini
+[database]
+server=localhost
+port=5432
+```
+
+Reassemble:
+
+```bash
+config-disassembler ini reassemble config
+```
 
 ## Directory Input With `.cdignore`
 

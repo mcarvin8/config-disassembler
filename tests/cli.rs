@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-use config_disassembler::run;
+use config_disassembler::{format::Format, run};
 
 fn argv(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
@@ -319,6 +319,70 @@ async fn toml_subcommand_round_trip_via_cli() {
 }
 
 #[tokio::test]
+async fn ini_subcommand_help() {
+    run_ok(&["config-disassembler", "ini", "--help"]).await;
+    run_ok(&["config-disassembler", "ini", "help"]).await;
+    run_ok(&["config-disassembler", "ini", "disassemble", "--help"]).await;
+    run_ok(&["config-disassembler", "ini", "reassemble", "--help"]).await;
+}
+
+#[tokio::test]
+async fn ini_subcommand_round_trip_via_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("config.ini");
+    fs::write(
+        &input,
+        "name = demo\nenabled\n\n[settings]\nhost = db.example.com\nport = 5432\n",
+    )
+    .unwrap();
+    let split_dir = tmp.path().join("split");
+    let rebuilt = tmp.path().join("rebuilt.ini");
+
+    run_ok(&[
+        "config-disassembler",
+        "ini",
+        "disassemble",
+        input.to_str().unwrap(),
+        "--output-dir",
+        split_dir.to_str().unwrap(),
+    ])
+    .await;
+    assert!(split_dir.join("settings.ini").exists());
+    assert!(split_dir.join("_main.ini").exists());
+
+    run_ok(&[
+        "config-disassembler",
+        "ini",
+        "reassemble",
+        split_dir.to_str().unwrap(),
+        "-o",
+        rebuilt.to_str().unwrap(),
+    ])
+    .await;
+    assert_eq!(
+        Format::Ini.load(&rebuilt).unwrap(),
+        Format::Ini.load(&input).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn ini_rejects_output_format_flag_on_disassemble() {
+    let msg = run_err(&[
+        "config-disassembler",
+        "ini",
+        "disassemble",
+        "--output-format",
+        "json",
+        "x.ini",
+    ])
+    .await;
+    assert!(
+        msg.contains("--output-format is not supported"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn toml_rejects_input_format_flag() {
     let msg = run_err(&[
         "config-disassembler",
@@ -387,6 +451,26 @@ async fn json_to_toml_cross_format_is_rejected() {
     ])
     .await;
     assert!(msg.contains("TOML can only be converted"), "got: {msg}");
+}
+
+#[tokio::test]
+async fn json_to_ini_cross_format_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("c.json");
+    fs::write(&input, r#"{"a":{"b":1}}"#).unwrap();
+
+    let msg = run_err(&[
+        "config-disassembler",
+        "json",
+        "disassemble",
+        input.to_str().unwrap(),
+        "--output-dir",
+        tmp.path().join("out").to_str().unwrap(),
+        "--output-format",
+        "ini",
+    ])
+    .await;
+    assert!(msg.contains("INI can only be converted"), "got: {msg}");
 }
 
 #[tokio::test]
@@ -491,7 +575,7 @@ fn fixtures_dir_exists_for_other_tests() {
     assert!(manifest.join("fixtures").is_dir());
 }
 
-// --- Directory-input + ignore-file tests for the JSON/JSON5/JSONC/YAML/TOON/TOML
+// --- Directory-input + ignore-file tests for the JSON/JSON5/JSONC/YAML/TOON/TOML/INI
 // subcommands (the XML subcommand has its own coverage via the ported
 // integration test).
 
@@ -614,7 +698,7 @@ async fn directory_input_format_filter_skips_other_formats() {
 /// the option is discoverable from the CLI.
 #[tokio::test]
 async fn format_help_mentions_ignore_path() {
-    for fmt in ["json", "json5", "jsonc", "yaml", "toon", "toml"] {
+    for fmt in ["json", "json5", "jsonc", "yaml", "toon", "toml", "ini"] {
         run_ok(&["config-disassembler", fmt, "--help"]).await;
     }
 }

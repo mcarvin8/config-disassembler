@@ -9,6 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
+use configparser::ini::Ini;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use serde_json::Value;
@@ -24,13 +25,17 @@ pub enum Format {
     Jsonc,
     Yaml,
     Toon,
-    /// TOML is intentionally isolated from the other formats: TOML's
+    /// TOML is intentionally isolated from the JSON-value formats: TOML's
     /// syntactic constraints (no nulls, no array root, bare keys must
     /// precede tables) mean conversions through TOML can reorder or
     /// fail to represent values produced by JSON/JSON5/JSONC/YAML/TOON.
     /// TOML files can therefore only be split into TOML files and
     /// reassembled into TOML.
     Toml,
+    /// INI uses the same table-document split layout as TOML, but is even
+    /// narrower: section values are strings (or valueless keys) and deeper
+    /// nesting/arrays cannot be represented without inventing an encoding.
+    Ini,
 }
 
 /// A family of formats that can safely convert among themselves.
@@ -38,6 +43,7 @@ pub enum Format {
 pub enum FormatFamily {
     JsonValue,
     Toml,
+    Ini,
 }
 
 /// Which operation is checking a conversion edge.
@@ -71,6 +77,7 @@ impl Format {
         Format::Yaml,
         Format::Toon,
         Format::Toml,
+        Format::Ini,
     ];
 
     const JSON_VALUE_FAMILY: &'static [Format] = &[
@@ -81,6 +88,7 @@ impl Format {
         Format::Toon,
     ];
     const TOML_FAMILY: &'static [Format] = &[Format::Toml];
+    const INI_FAMILY: &'static [Format] = &[Format::Ini];
 
     fn spec(self) -> &'static FormatSpec {
         match self {
@@ -132,6 +140,14 @@ impl Format {
                 family: FormatFamily::Toml,
                 split_payload_layout: SplitPayloadLayout::WrappedByParentKey,
             },
+            Format::Ini => &FormatSpec {
+                canonical_name: "ini",
+                display_name: "INI",
+                aliases: &["ini"],
+                extensions: &["ini"],
+                family: FormatFamily::Ini,
+                split_payload_layout: SplitPayloadLayout::WrappedByParentKey,
+            },
         }
     }
 
@@ -170,6 +186,7 @@ impl Format {
         match self.family() {
             FormatFamily::JsonValue => Self::JSON_VALUE_FAMILY,
             FormatFamily::Toml => Self::TOML_FAMILY,
+            FormatFamily::Ini => Self::INI_FAMILY,
         }
     }
 
@@ -246,6 +263,7 @@ impl Format {
             Format::Toon => toon_format::decode_default(input)
                 .map_err(|e| Error::Invalid(format!("toon parse error: {e}"))),
             Format::Toml => Ok(toml::from_str(input)?),
+            Format::Ini => parse_ini(input),
         }
     }
 
@@ -262,6 +280,7 @@ impl Format {
             Format::Toon => toon_format::encode_default(value)
                 .map_err(|e| Error::Invalid(format!("toon serialize error: {e}")))?,
             Format::Toml => serialize_toml(value)?,
+            Format::Ini => serialize_ini(value)?,
         };
         if !out.ends_with('\n') {
             out.push('\n');
@@ -344,9 +363,12 @@ impl FormatFamily {
         match self {
             FormatFamily::JsonValue => None,
             FormatFamily::Toml => Some("TOML"),
+            FormatFamily::Ini => Some("INI"),
         }
     }
 }
+
+const INI_DEFAULT_SECTION: &str = "__config_disassembler_root__";
 
 /// Serialize a `Value` as TOML.
 ///
@@ -371,6 +393,98 @@ fn serialize_toml(value: &Value) -> Result<String> {
     // here would indicate an unexpected toml-crate behavior; surface it
     // with a clear `Invalid` error rather than a dedicated variant.
     toml::to_string_pretty(value).map_err(|e| Error::Invalid(format!("toml serialize error: {e}")))
+}
+
+/// Parse an INI document into the common value model.
+///
+/// Keys outside any section become top-level scalar keys. Section entries
+/// become one-level nested objects. INI values are strings; valueless keys are
+/// represented as `null` so they can round-trip through the same format.
+fn parse_ini(input: &str) -> Result<Value> {
+    let mut ini = new_ini();
+    let parsed = ini
+        .read(input.to_string())
+        .map_err(|e| Error::Invalid(format!("ini parse error: {e}")))?;
+    let mut root = Map::new();
+
+    for (section, values) in parsed {
+        if section == INI_DEFAULT_SECTION {
+            for (key, value) in values {
+                root.insert(key, ini_value_to_json(value));
+            }
+            continue;
+        }
+
+        let mut section_object = Map::new();
+        for (key, value) in values {
+            section_object.insert(key, ini_value_to_json(value));
+        }
+        root.insert(section, Value::Object(section_object));
+    }
+
+    Ok(Value::Object(root))
+}
+
+fn serialize_ini(value: &Value) -> Result<String> {
+    let Value::Object(map) = value else {
+        return Err(Error::Invalid(
+            "INI documents must have an object root; got an array or scalar".into(),
+        ));
+    };
+
+    let mut ini = new_ini();
+    for (key, value) in map {
+        match value {
+            Value::Object(section) => {
+                // Preserve empty sections. Without this, a `[section]` with
+                // no keys would serialize as an empty file and fail unwrap.
+                ini.get_mut_map().entry(key.clone()).or_default();
+                for (section_key, section_value) in section {
+                    ini.set(
+                        key,
+                        section_key,
+                        ini_scalar_value(section_value, &format!("{key}.{section_key}"))?,
+                    );
+                }
+            }
+            _ => {
+                ini.set(
+                    INI_DEFAULT_SECTION,
+                    key,
+                    ini_scalar_value(value, key.as_str())?,
+                );
+            }
+        }
+    }
+
+    Ok(ini.writes())
+}
+
+fn new_ini() -> Ini {
+    let mut ini = Ini::new_cs();
+    ini.set_default_section(INI_DEFAULT_SECTION);
+    ini.set_multiline(true);
+    ini
+}
+
+fn ini_value_to_json(value: Option<String>) -> Value {
+    match value {
+        Some(value) => Value::String(value),
+        None => Value::Null,
+    }
+}
+
+fn ini_scalar_value(value: &Value, path: &str) -> Result<Option<String>> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(value) => Ok(Some(value.to_string())),
+        Value::Number(value) => Ok(Some(value.to_string())),
+        Value::String(value) => Ok(Some(value.clone())),
+        Value::Array(_) | Value::Object(_) => Err(Error::Invalid(format!(
+            "INI can only represent scalar values at the document root or one level of sections \
+             (found unsupported value at `{path}`)"
+        ))),
+    }
 }
 
 /// Parse JSONC as JSON plus comments and trailing commas.
@@ -443,6 +557,7 @@ mod tests {
         assert_eq!("yml".parse::<Format>().unwrap(), Format::Yaml);
         assert_eq!("toon".parse::<Format>().unwrap(), Format::Toon);
         assert_eq!("toml".parse::<Format>().unwrap(), Format::Toml);
+        assert_eq!("ini".parse::<Format>().unwrap(), Format::Ini);
     }
 
     #[test]
@@ -474,12 +589,13 @@ mod tests {
             Format::from_path(Path::new("a.toml")).unwrap(),
             Format::Toml
         );
+        assert_eq!(Format::from_path(Path::new("a.ini")).unwrap(), Format::Ini);
     }
 
     #[test]
     fn from_path_rejects_missing_or_unknown_extension() {
         assert!(Format::from_path(Path::new("a")).is_err());
-        assert!(Format::from_path(Path::new("a.ini")).is_err());
+        assert!(Format::from_path(Path::new("a.txt")).is_err());
     }
 
     #[test]
@@ -490,6 +606,7 @@ mod tests {
         assert_eq!(Format::Yaml.to_string(), "yaml");
         assert_eq!(Format::Toon.to_string(), "toon");
         assert_eq!(Format::Toml.to_string(), "toml");
+        assert_eq!(Format::Ini.to_string(), "ini");
     }
 
     #[test]
@@ -501,6 +618,7 @@ mod tests {
             (Format::Yaml, "a: 1\n"),
             (Format::Toon, "a: 1\n"),
             (Format::Toml, "a = 1\n"),
+            (Format::Ini, "a=1\n"),
         ] {
             let v = fmt.parse(text).unwrap();
             let out = fmt.serialize(&v).unwrap();
@@ -540,6 +658,7 @@ mod tests {
         assert!(Format::Yaml.is_cross_format_compatible());
         assert!(Format::Toon.is_cross_format_compatible());
         assert!(!Format::Toml.is_cross_format_compatible());
+        assert!(!Format::Ini.is_cross_format_compatible());
     }
 
     #[test]
@@ -555,6 +674,7 @@ mod tests {
             ]
         );
         assert_eq!(Format::Toml.compatible_formats(), &[Format::Toml]);
+        assert_eq!(Format::Ini.compatible_formats(), &[Format::Ini]);
     }
 
     #[test]
@@ -586,6 +706,11 @@ mod tests {
             .ensure_can_convert_to(Format::Toml, ConversionOperation::Convert)
             .unwrap_err();
         assert!(err.to_string().contains("TOML can only be converted"));
+
+        let err = Format::Json
+            .ensure_can_convert_to(Format::Ini, ConversionOperation::Convert)
+            .unwrap_err();
+        assert!(err.to_string().contains("INI can only be converted"));
     }
 
     #[test]
@@ -601,5 +726,61 @@ mod tests {
                 .unwrap(),
             serde_json::json!([{ "host": "a" }])
         );
+
+        let wrapped = Format::Ini.wrap_split_payload("servers", &value);
+        assert_eq!(wrapped, serde_json::json!({ "servers": value }));
+        assert_eq!(
+            Format::Ini
+                .unwrap_split_payload("servers", "servers.ini", wrapped)
+                .unwrap(),
+            serde_json::json!([{ "host": "a" }])
+        );
+    }
+
+    #[test]
+    fn ini_parse_maps_top_level_keys_and_sections() {
+        let parsed = Format::Ini
+            .parse(
+                r#"
+name = demo
+enabled
+
+[Database]
+host = db.example.com
+port = 5432
+"#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "name": "demo",
+                "enabled": null,
+                "Database": {
+                    "host": "db.example.com",
+                    "port": "5432"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn ini_serialize_rejects_arrays_and_deeply_nested_objects() {
+        let array = serde_json::json!({ "items": ["a", "b"] });
+        let err = Format::Ini.serialize(&array).unwrap_err();
+        assert!(err.to_string().contains("items"), "got: {err}");
+
+        let nested = serde_json::json!({ "section": { "child": { "x": "y" } } });
+        let err = Format::Ini.serialize(&nested).unwrap_err();
+        assert!(err.to_string().contains("section.child"), "got: {err}");
+    }
+
+    #[test]
+    fn ini_preserves_empty_sections() {
+        let value = serde_json::json!({ "empty": {} });
+        let out = Format::Ini.serialize(&value).unwrap();
+        assert!(out.contains("[empty]"), "got: {out}");
+        assert_eq!(Format::Ini.parse(&out).unwrap(), value);
     }
 }

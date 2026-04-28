@@ -14,8 +14,9 @@ Disassemble configuration files into smaller, version-control–friendly pieces 
 1. **YAML**
 1. **TOON**
 1. **TOML**
+1. **INI**
 
-JSON, JSON5, JSONC, YAML, and TOON files can be split and reassembled among those five formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
+JSON, JSON5, JSONC, YAML, and TOON files can be split and reassembled among those five formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML and INI are intentionally isolated** — each can only be split and reassembled within the same format. See [TOML and INI isolation](#toml-and-ini-isolation) below for the rationale.
 
 For file-tree diagrams and before/after layouts, see [Examples](docs/examples.md).
 
@@ -40,6 +41,7 @@ Subcommands:
   yaml     Disassemble or reassemble a YAML file.
   toon     Disassemble or reassemble a TOON file.
   toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).
+  ini      Disassemble or reassemble an INI file (INI <-> INI only).
   help     Show top-level help.
 ```
 
@@ -185,7 +187,7 @@ Common options:
 | `--post-purge`           | both        | Delete the input file/directory after the operation succeeds. |
 | `-o, --output <file>`    | reassemble  | Output file path. Defaults to the original file name from the metadata. |
 
-`<fmt>` is one of `json`, `json5`, `jsonc`, `yaml`, `toon`. (TOML is excluded from these flags — use the dedicated `toml` subcommand.)
+`<fmt>` is one of `json`, `json5`, `jsonc`, `yaml`, `toon`. (TOML and INI are excluded from these flags — use their dedicated subcommands.)
 
 JSONC input accepts comments and trailing commas. When JSONC is disassembled to JSONC and reassembled as JSONC, comments and trailing commas are preserved. Cross-format conversions preserve the parsed values, not JSONC-specific syntax.
 
@@ -219,14 +221,16 @@ echo 'secrets.yaml' > envs/.cdignore
 config-disassembler yaml disassemble envs/
 ```
 
-### TOML
+### TOML / INI
 
 ```bash
 config-disassembler toml disassemble <input> [options]
 config-disassembler toml reassemble  <dir>   [options]
+config-disassembler ini  disassemble <input> [options]
+config-disassembler ini  reassemble  <dir>   [options]
 ```
 
-The `toml` subcommand is identical to the JSON/JSON5/JSONC/YAML/TOON subcommands (single-file or directory input, `--ignore-path`, etc.) except `--input-format` and `--output-format` are not accepted: TOML files can only be split into TOML files and reassembled into TOML.
+The `toml` and `ini` subcommands are identical to the JSON/JSON5/JSONC/YAML/TOON subcommands (single-file or directory input, `--ignore-path`, etc.) except `--input-format` and `--output-format` are not accepted: each format can only be split and reassembled within itself.
 
 ```bash
 # split Cargo.toml into per-table files under ./Cargo/
@@ -236,7 +240,15 @@ config-disassembler toml disassemble Cargo.toml
 config-disassembler toml reassemble Cargo
 ```
 
-#### TOML isolation
+```bash
+# split app.ini into per-section files under ./app/
+config-disassembler ini disassemble app.ini
+
+# rebuild app.ini from the split directory
+config-disassembler ini reassemble app
+```
+
+#### TOML and INI isolation
 
 TOML cannot participate in cross-format conversions because:
 
@@ -244,15 +256,18 @@ TOML cannot participate in cross-format conversions because:
 * TOML's document root must be a table; array roots are forbidden.
 * TOML requires bare keys to come *before* any tables in a given mapping, so round-tripping a JSON object like `{"section": {...}, "name": "x"}` through TOML and back would reorder the keys to `{"name": "x", "section": {...}}`.
 
-Trying to mix formats with TOML returns a clear error:
+INI is also same-format-only because section values are strings or valueless keys, and INI cannot represent arrays or deeper nesting without inventing a custom encoding.
+
+Trying to mix formats with TOML or INI returns a clear error:
 
 ```text
 TOML can only be converted to and from TOML; got input=json, output=toml
+INI can only be converted to and from INI; got input=json, output=ini
 ```
 
-To preserve TOML's table-vs-bare-key ordering rule, the TOML disassembler wraps each per-key split file under its parent key. For example, disassembling a Cargo.toml produces files like `dependencies.toml` containing `[dependencies]` headers (not a bare value list), which is the idiomatic TOML representation. Reassembly unwraps them automatically using the metadata sidecar.
+To keep every split file valid for table-style formats, TOML and INI wrap each per-key split file under its parent key. For example, disassembling a Cargo.toml produces files like `dependencies.toml` containing `[dependencies]` headers, and disassembling an app.ini produces `settings.ini` containing `[settings]`. Reassembly unwraps them automatically using the metadata sidecar.
 
-## How disassembly works (JSON / JSON5 / JSONC / YAML / TOON / TOML)
+## How disassembly works (JSON / JSON5 / JSONC / YAML / TOON / TOML / INI)
 
 * **Object roots** – Every top-level key whose value is an object or array
   is written to its own file (`<key>.<ext>`). Top-level keys with scalar
@@ -261,11 +276,11 @@ To preserve TOML's table-vs-bare-key ordering rule, the TOML disassembler wraps 
 * **Array roots** – Each array element is written to its own file. With
   `--unique-id <field>` the file is named by that field's value on each
   element; otherwise files are named by zero-padded index. (Not applicable
-  to TOML — TOML forbids array roots.)
-* **TOML wrapping** – For TOML output only, each per-key split file is
+  to TOML or INI.)
+* **TOML/INI wrapping** – For TOML and INI output, each per-key split file is
   written as a single-table document keyed by its parent (e.g.
-  `servers.toml` contains `[[servers]]` headers, not a bare array). This
-  keeps every split file a valid TOML document and is unwrapped during
+  `servers.toml` contains `[[servers]]` headers, not a bare array, and
+  `settings.ini` contains `[settings]`). This keeps every split file a valid document and is unwrapped during
   reassembly.
 * **Metadata** – A `.config-disassembler.json` sidecar is written into the
   output directory recording the original key order, root type, source

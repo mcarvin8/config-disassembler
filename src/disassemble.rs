@@ -1,10 +1,10 @@
-//! Disassemble a JSON, JSON5, YAML, TOON, or TOML document into a directory of
+//! Disassemble a JSON, JSON5, YAML, TOON, TOML, or INI document into a directory of
 //! smaller files, optionally written in a different format than the input.
 //!
 //! The `input` may be either a single file or a directory. When it points
 //! at a directory, every file under the directory whose extension matches
-//! the input format (or, when `input_format` is `None`, any of the four
-//! supported formats) is disassembled in place. An optional `ignore_path`
+//! the input format (or, when `input_format` is `None`, any supported
+//! value-model format) is disassembled in place. An optional `ignore_path`
 //! can point at a `.gitignore`-style ignore file used to skip paths.
 
 use std::collections::{BTreeMap, BTreeSet};
