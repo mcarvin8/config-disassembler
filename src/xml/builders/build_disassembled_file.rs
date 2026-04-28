@@ -161,8 +161,11 @@ mod tests {
         let out = fs::read_to_string(temp.path().join("single.xml"))
             .await
             .unwrap();
-        assert!(out.contains("<Root>"));
-        // content 42 is not spread (only objects are); root is empty
-        assert!(out.contains("</Root>"));
+        // content 42 is not spread (only objects are); root is empty.
+        assert!(
+            out.contains("<Root></Root>") || out.contains("<Root/>"),
+            "expected empty Root element, got: {out}"
+        );
+        assert!(!out.contains("42"));
     }
 }
