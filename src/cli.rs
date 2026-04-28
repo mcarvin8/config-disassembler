@@ -8,6 +8,7 @@
 //!   json     Disassemble or reassemble a JSON file.
 //!   json5    Disassemble or reassemble a JSON5 file.
 //!   yaml     Disassemble or reassemble a YAML file.
+//!   toon     Disassemble or reassemble a TOON file.
 //!   toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).
 //!   help     Show this help text.
 //! ```
@@ -42,6 +43,7 @@ pub async fn dispatch(args: Vec<String>) -> Result<()> {
         "json" => run_format(Format::Json, rest),
         "json5" => run_format(Format::Json5, rest),
         "yaml" | "yml" => run_format(Format::Yaml, rest),
+        "toon" => run_format(Format::Toon, rest),
         "toml" => run_format(Format::Toml, rest),
         other => Err(Error::Usage(format!(
             "unknown subcommand `{other}`. run `config-disassembler help` for usage."
@@ -205,7 +207,7 @@ fn print_help() {
     eprintln!(
         "config-disassembler {ver}\n\
 \n\
-Disassemble configuration files (XML, JSON, JSON5, YAML, TOML) into smaller\n\
+Disassemble configuration files (XML, JSON, JSON5, YAML, TOON, TOML) into smaller\n\
 files and reassemble the original on demand.\n\
 \n\
 USAGE:\n\
@@ -216,6 +218,7 @@ SUBCOMMANDS:\n\
     json     Disassemble or reassemble a JSON file.\n\
     json5    Disassemble or reassemble a JSON5 file.\n\
     yaml     Disassemble or reassemble a YAML file.\n\
+    toon     Disassemble or reassemble a TOON file.\n\
     toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).\n\
     help     Show this help text.\n\
 \n\
@@ -230,7 +233,7 @@ fn print_format_help(format: Format) {
             "config-disassembler toml <action> [options]\n\
 \n\
 TOML can only be converted to and from TOML. Cross-format conversion with\n\
-JSON, JSON5, or YAML is rejected because TOML cannot represent `null`,\n\
+JSON, JSON5, YAML, or TOON is rejected because TOML cannot represent `null`,\n\
 forbids array roots, and forces bare keys to precede tables (which would\n\
 reorder values on round-trip).\n\
 \n\

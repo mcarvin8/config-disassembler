@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn serde_format_round_trip() {
-        for fmt in [Format::Json, Format::Json5, Format::Yaml, Format::Toml] {
+        for &fmt in Format::ALL {
             let text = serde_json::to_string(&fmt).unwrap();
             let back: SerdeFormat = serde_json::from_str(&text).unwrap();
             assert_eq!(fmt, back);

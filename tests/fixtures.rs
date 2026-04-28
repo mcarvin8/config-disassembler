@@ -1,8 +1,9 @@
 //! Data-driven fixture harness.
 //!
-//! Walks the `fixtures/` directory and runs a 3×3 cross-format round-trip
+//! Walks the `fixtures/` directory and runs a cross-format round-trip
 //! matrix on every scenario. Each scenario directory must contain exactly
-//! one `input.<ext>` file (`json`, `json5`, `yaml`, or `yml`) and may
+//! one `input.<ext>` file (`json`, `json5`, `yaml`, `yml`, `toon`, or
+//! `toml`) and may
 //! optionally contain a `case.json` file describing options:
 //!
 //! ```json
@@ -13,8 +14,8 @@
 //! }
 //! ```
 //!
-//! For every fixture we run, for each `(mid, out)` pair drawn from
-//! `{JSON, JSON5, YAML} × {JSON, JSON5, YAML}`:
+//! For every fixture we run, for each `(mid, out)` pair drawn from the
+//! fixture's format compatibility family:
 //!
 //! 1. Disassemble the input file, writing split files in `mid` format.
 //! 2. Reassemble back into a file using `out` format.
@@ -154,6 +155,7 @@ fn find_input(dir: &Path) -> Option<(PathBuf, Format)> {
         ("json5", Format::Json5),
         ("yaml", Format::Yaml),
         ("yml", Format::Yaml),
+        ("toon", Format::Toon),
         ("toml", Format::Toml),
     ];
     for (ext, format) in EXTS {

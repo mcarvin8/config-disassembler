@@ -30,6 +30,7 @@ log = "0.4"
 env_logger = "0.11"
 anyhow = "1"
 regex = "1"
+toon-format = { version = "0.4.5", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

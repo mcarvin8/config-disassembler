@@ -149,6 +149,12 @@ async fn json5_subcommand_action_help() {
 }
 
 #[tokio::test]
+async fn toon_subcommand_action_help() {
+    run_ok(&["config-disassembler", "toon", "disassemble", "--help"]).await;
+    run_ok(&["config-disassembler", "toon", "reassemble", "--help"]).await;
+}
+
+#[tokio::test]
 async fn full_disassemble_reassemble_via_cli() {
     let tmp = tempfile::tempdir().unwrap();
     let input = tmp.path().join("config.json");
@@ -479,7 +485,7 @@ fn fixtures_dir_exists_for_other_tests() {
     assert!(manifest.join("fixtures").is_dir());
 }
 
-// --- Directory-input + ignore-file tests for the JSON/JSON5/YAML/TOML
+// --- Directory-input + ignore-file tests for the JSON/JSON5/YAML/TOON/TOML
 // subcommands (the XML subcommand has its own coverage via the ported
 // integration test).
 
@@ -602,7 +608,7 @@ async fn directory_input_format_filter_skips_other_formats() {
 /// the option is discoverable from the CLI.
 #[tokio::test]
 async fn format_help_mentions_ignore_path() {
-    for fmt in ["json", "json5", "yaml", "toml"] {
+    for fmt in ["json", "json5", "yaml", "toon", "toml"] {
         run_ok(&["config-disassembler", fmt, "--help"]).await;
     }
 }

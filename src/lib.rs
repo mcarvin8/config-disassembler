@@ -1,11 +1,11 @@
 //! config-disassembler
 //!
-//! Disassemble configuration files (XML, JSON, JSON5, YAML, TOML) into
+//! Disassemble configuration files (XML, JSON, JSON5, YAML, TOON, TOML) into
 //! smaller files and reassemble the original on demand. The XML
 //! implementation lives in the in-tree [`xml`] module (ported from the
-//! upstream `xml-disassembler` crate); JSON, JSON5, and YAML share a
+//! upstream `xml-disassembler` crate); JSON, JSON5, YAML, and TOON share a
 //! common value model so a file in one format can be split into files
-//! of another format and reassembled back into any of those three.
+//! of another format and reassembled back into any of those formats.
 //! TOML is intentionally isolated and can only be converted to and
 //! from TOML, because TOML cannot represent `null`, forbids array
 //! roots, and forces bare keys to precede tables (which would reorder
