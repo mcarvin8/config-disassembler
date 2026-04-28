@@ -1,0 +1,12 @@
+{
+  // JSONC supports line comments.
+  "name": "jsonc-fixture",
+  "enabled": true,
+  "settings": {
+    "retry": 3,
+    "features": [
+      "comments",
+      "trailing-commas",
+    ],
+  },
+}

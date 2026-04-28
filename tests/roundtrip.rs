@@ -156,6 +156,57 @@ fn json5_roundtrip_preserves_structure() {
 }
 
 #[test]
+fn jsonc_roundtrip_accepts_comments_and_trailing_commas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jsonc_text = r#"{
+  // JSONC keeps JSON's data model but permits comments.
+  "name": "jsonc-demo",
+  "enabled": true,
+  "settings": {
+    "retry": 3,
+    "tags": ["commented", "trailing",],
+  },
+}"#;
+    let input = write_input(tmp.path(), "config.jsonc", jsonc_text);
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input: input.clone(),
+        input_format: Some(Format::Jsonc),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Jsonc),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(disassembled.join("settings.jsonc").exists());
+    assert!(disassembled.join("_main.jsonc").exists());
+    let split_main = fs::read_to_string(disassembled.join("_main.jsonc")).unwrap();
+    let split_settings = fs::read_to_string(disassembled.join("settings.jsonc")).unwrap();
+    assert!(split_main.contains("// JSONC keeps JSON's data model"));
+    assert!(split_settings.contains(r#""trailing","#));
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.jsonc")),
+        output_format: Some(Format::Jsonc),
+        post_purge: false,
+    })
+    .unwrap();
+
+    let rebuilt = parse_value(Format::Jsonc, &output);
+    let original = parse_value(Format::Jsonc, &input);
+    assert_eq!(rebuilt, original);
+
+    let rebuilt_text = fs::read_to_string(output).unwrap();
+    assert!(rebuilt_text.contains("// JSONC keeps JSON's data model"));
+    assert!(rebuilt_text.contains(r#""trailing","#));
+    assert!(rebuilt_text.contains("},"));
+}
+
+#[test]
 fn json_object_roundtrip_through_toon_files() {
     let tmp = tempfile::tempdir().unwrap();
     let original = json!({

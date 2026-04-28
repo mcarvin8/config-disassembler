@@ -5,9 +5,17 @@
 [![CI](https://github.com/mcarvin8/config-disassembler/workflows/CI/badge.svg)](https://github.com/mcarvin8/config-disassembler/actions)
 [![codecov](https://codecov.io/gh/mcarvin8/config-disassembler/graph/badge.svg?token=XZYXBXGENK)](https://codecov.io/gh/mcarvin8/config-disassembler)
 
-Disassemble configuration files into smaller, version-control–friendly pieces and reassemble the original on demand. Supported formats: **XML**, **JSON**, **JSON5**, **YAML**, **TOON**, and **TOML**.
+Disassemble configuration files into smaller, version-control–friendly pieces and reassemble the original on demand. Supported formats:
 
-JSON, JSON5, YAML, and TOON files can be split and reassembled among those four formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
+1. **XML**
+1. **JSON**
+1. **JSON5**
+1. **JSONC**
+1. **YAML**
+1. **TOON**
+1. **TOML**
+
+JSON, JSON5, JSONC, YAML, and TOON files can be split and reassembled among those five formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
 
 ## Installation
 
@@ -26,6 +34,7 @@ Subcommands:
   xml      Disassemble or reassemble an XML file.
   json     Disassemble or reassemble a JSON file.
   json5    Disassemble or reassemble a JSON5 file.
+  jsonc    Disassemble or reassemble a JSONC file.
   yaml     Disassemble or reassemble a YAML file.
   toon     Disassemble or reassemble a TOON file.
   toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).
@@ -152,7 +161,7 @@ Parsing is done with [quick-xml](https://github.com/tafia/quick-xml), with suppo
 * **Comments** – Preserved in the XML output.
 * **Attributes** – Stored with `@` prefix (e.g. `@version`, `@encoding`).
 
-### JSON / JSON5 / YAML / TOON
+### JSON / JSON5 / JSONC / YAML / TOON
 
 ```bash
 config-disassembler <fmt> disassemble <input> [options]
@@ -174,7 +183,9 @@ Common options:
 | `--post-purge`           | both        | Delete the input file/directory after the operation succeeds. |
 | `-o, --output <file>`    | reassemble  | Output file path. Defaults to the original file name from the metadata. |
 
-`<fmt>` is one of `json`, `json5`, `yaml`, `toon`. (TOML is excluded from these flags — use the dedicated `toml` subcommand.)
+`<fmt>` is one of `json`, `json5`, `jsonc`, `yaml`, `toon`. (TOML is excluded from these flags — use the dedicated `toml` subcommand.)
+
+JSONC input accepts comments and trailing commas. Reassembled `.jsonc` files are emitted as pretty JSON, which is valid JSONC; comments are treated as syntax and are not preserved.
 
 ### Example: disassemble a JSON file into YAML, then rebuild as JSON
 
@@ -213,7 +224,7 @@ config-disassembler toml disassemble <input> [options]
 config-disassembler toml reassemble  <dir>   [options]
 ```
 
-The `toml` subcommand is identical to the JSON/JSON5/YAML/TOON subcommands (single-file or directory input, `--ignore-path`, etc.) except `--input-format` and `--output-format` are not accepted: TOML files can only be split into TOML files and reassembled into TOML.
+The `toml` subcommand is identical to the JSON/JSON5/JSONC/YAML/TOON subcommands (single-file or directory input, `--ignore-path`, etc.) except `--input-format` and `--output-format` are not accepted: TOML files can only be split into TOML files and reassembled into TOML.
 
 ```bash
 # split Cargo.toml into per-table files under ./Cargo/
@@ -227,7 +238,7 @@ config-disassembler toml reassemble Cargo
 
 TOML cannot participate in cross-format conversions because:
 
-* TOML has no `null` value (JSON/JSON5/YAML/TOON do).
+* TOML has no `null` value (JSON/JSON5/JSONC/YAML/TOON do).
 * TOML's document root must be a table; array roots are forbidden.
 * TOML requires bare keys to come *before* any tables in a given mapping, so round-tripping a JSON object like `{"section": {...}, "name": "x"}` through TOML and back would reorder the keys to `{"name": "x", "section": {...}}`.
 
@@ -239,7 +250,7 @@ TOML can only be converted to and from TOML; got input=json, output=toml
 
 To preserve TOML's table-vs-bare-key ordering rule, the TOML disassembler wraps each per-key split file under its parent key. For example, disassembling a Cargo.toml produces files like `dependencies.toml` containing `[dependencies]` headers (not a bare value list), which is the idiomatic TOML representation. Reassembly unwraps them automatically using the metadata sidecar.
 
-## How disassembly works (JSON / JSON5 / YAML / TOON / TOML)
+## How disassembly works (JSON / JSON5 / JSONC / YAML / TOON / TOML)
 
 * **Object roots** – Every top-level key whose value is an object or array
   is written to its own file (`<key>.<ext>`). Top-level keys with scalar

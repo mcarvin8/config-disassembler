@@ -6,10 +6,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use jsonc_parser::ast;
+use jsonc_parser::common::Ranged;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::format::{ConversionOperation, Format};
+use crate::format::{jsonc_parse_options, ConversionOperation, Format};
 use crate::meta::{Meta, Root};
 
 /// Options controlling reassembly.
@@ -45,15 +47,6 @@ pub fn reassemble(opts: ReassembleOptions) -> Result<PathBuf> {
 
     file_format.ensure_can_convert_to(output_format, ConversionOperation::Reassemble)?;
 
-    let value = match &meta.root {
-        Root::Object {
-            key_order,
-            key_files,
-            main_file,
-        } => assemble_object(dir, key_order, key_files, main_file.as_deref(), file_format)?,
-        Root::Array { files } => assemble_array(dir, files, file_format)?,
-    };
-
     let output_path = match opts.output.clone() {
         Some(p) => p,
         None => default_output_path(dir, &meta, output_format)?,
@@ -63,7 +56,20 @@ pub fn reassemble(opts: ReassembleOptions) -> Result<PathBuf> {
             fs::create_dir_all(parent)?;
         }
     }
-    fs::write(&output_path, output_format.serialize(&value)?)?;
+
+    if file_format == Format::Jsonc && output_format == Format::Jsonc {
+        fs::write(&output_path, assemble_jsonc_preserving(dir, &meta)?)?;
+    } else {
+        let value = match &meta.root {
+            Root::Object {
+                key_order,
+                key_files,
+                main_file,
+            } => assemble_object(dir, key_order, key_files, main_file.as_deref(), file_format)?,
+            Root::Array { files } => assemble_array(dir, files, file_format)?,
+        };
+        fs::write(&output_path, output_format.serialize(&value)?)?;
+    }
 
     if opts.post_purge {
         fs::remove_dir_all(dir)?;
@@ -122,6 +128,224 @@ fn assemble_array(dir: &Path, files: &[String], file_format: Format) -> Result<V
         items.push(file_format.load(&dir.join(name))?);
     }
     Ok(Value::Array(items))
+}
+
+fn assemble_jsonc_preserving(dir: &Path, meta: &Meta) -> Result<String> {
+    match &meta.root {
+        Root::Object {
+            key_order,
+            key_files,
+            main_file,
+        } => assemble_jsonc_object(dir, key_order, key_files, main_file.as_deref()),
+        Root::Array { files } => assemble_jsonc_array(dir, files),
+    }
+}
+
+fn assemble_jsonc_object(
+    dir: &Path,
+    key_order: &[String],
+    key_files: &std::collections::BTreeMap<String, String>,
+    main_file: Option<&str>,
+) -> Result<String> {
+    let main_properties = match main_file {
+        Some(name) => {
+            let text = fs::read_to_string(dir.join(name))?;
+            let ast = parse_jsonc_ast(&text)?;
+            let ast::Value::Object(object) = ast else {
+                return Err(Error::Invalid(format!(
+                    "main scalar file {name} did not contain an object"
+                )));
+            };
+            jsonc_object_properties(&text, object)
+        }
+        None => Vec::new(),
+    };
+
+    let mut segments = Vec::with_capacity(key_order.len());
+    for key in key_order {
+        if let Some(filename) = key_files.get(key) {
+            let path = dir.join(filename);
+            let text = fs::read_to_string(&path)?;
+            Format::Jsonc.load(&path)?;
+            segments.push(render_jsonc_property(key, &text)?);
+        } else if let Some(property) = main_properties.iter().find(|property| &property.key == key)
+        {
+            segments.push(property.segment.clone());
+        } else {
+            return Err(Error::Invalid(format!(
+                "metadata references key `{key}` but no file or scalar found"
+            )));
+        }
+    }
+
+    Ok(render_jsonc_object(segments.iter()))
+}
+
+fn assemble_jsonc_array(dir: &Path, files: &[String]) -> Result<String> {
+    let mut segments = Vec::with_capacity(files.len());
+    for name in files {
+        let path = dir.join(name);
+        let text = fs::read_to_string(&path)?;
+        Format::Jsonc.load(&path)?;
+        segments.push(render_jsonc_array_element(&text));
+    }
+    Ok(render_jsonc_array(segments.iter()))
+}
+
+struct JsoncPropertySyntax {
+    key: String,
+    segment: String,
+}
+
+fn jsonc_object_properties(text: &str, object: ast::Object<'_>) -> Vec<JsoncPropertySyntax> {
+    object
+        .properties
+        .into_iter()
+        .map(|property| {
+            let key = property.name.clone().into_string();
+            let property_range = property.range();
+            let value_range = property.value.range();
+            JsoncPropertySyntax {
+                key,
+                segment: jsonc_property_segment(text, property_range.start, value_range.end)
+                    .to_string(),
+            }
+        })
+        .collect()
+}
+
+fn parse_jsonc_ast(text: &str) -> Result<ast::Value<'_>> {
+    jsonc_parser::parse_to_ast(text, &Default::default(), &jsonc_parse_options())
+        .map_err(|e| Error::Invalid(format!("jsonc parse error: {e}")))?
+        .value
+        .ok_or_else(|| Error::Invalid("JSONC document did not contain a value".into()))
+}
+
+fn jsonc_property_segment(text: &str, property_start: usize, value_end: usize) -> &str {
+    let start = leading_comment_start(text, line_start(text, property_start));
+    let end = line_end(text, value_end);
+    &text[start..end]
+}
+
+fn leading_comment_start(text: &str, mut start: usize) -> usize {
+    while start > 0 {
+        let previous_line_end = start.saturating_sub(1);
+        let previous_line_start = line_start(text, previous_line_end);
+        let line = &text[previous_line_start..previous_line_end];
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.ends_with("*/")
+        {
+            start = previous_line_start;
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+fn line_start(text: &str, pos: usize) -> usize {
+    text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+}
+
+fn line_end(text: &str, pos: usize) -> usize {
+    text[pos..]
+        .find('\n')
+        .map(|idx| pos + idx)
+        .unwrap_or(text.len())
+}
+
+fn render_jsonc_property(key: &str, value_text: &str) -> Result<String> {
+    let key = serde_json::to_string(key)?;
+    let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
+    let mut lines = value_text.lines();
+    let first = lines.next().unwrap_or("");
+    let mut out = format!("  {key}: {first}");
+    for line in lines {
+        out.push('\n');
+        out.push_str(line);
+    }
+    Ok(jsonc_segment_with_comma(&out))
+}
+
+fn render_jsonc_array_element(value_text: &str) -> String {
+    let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
+    let mut out = String::new();
+    for (idx, line) in value_text.lines().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str("  ");
+        out.push_str(line);
+    }
+    jsonc_segment_with_comma(&out)
+}
+
+fn render_jsonc_object<'a>(segments: impl IntoIterator<Item = &'a String>) -> String {
+    let mut out = String::from("{\n");
+    for segment in segments {
+        out.push_str(&jsonc_segment_with_comma(segment));
+        out.push('\n');
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_jsonc_array<'a>(segments: impl IntoIterator<Item = &'a String>) -> String {
+    let mut out = String::from("[\n");
+    for segment in segments {
+        out.push_str(&jsonc_segment_with_comma(segment));
+        out.push('\n');
+    }
+    out.push_str("]\n");
+    out
+}
+
+fn jsonc_segment_with_comma(segment: &str) -> String {
+    let segment = segment.trim_matches(|c| c == '\r' || c == '\n');
+    if segment.trim_end().ends_with(',') {
+        return segment.to_string();
+    }
+
+    let last_line_start = segment.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let last_line = &segment[last_line_start..];
+    if let Some(comment_start) = line_comment_start(last_line) {
+        let comment_start = last_line_start + comment_start;
+        let (before_comment, comment) = segment.split_at(comment_start);
+        return format!("{},{}", before_comment.trim_end(), comment);
+    }
+
+    format!("{segment},")
+}
+
+fn line_comment_start(line: &str) -> Option<usize> {
+    let mut chars = line.char_indices().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+        } else if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+            return Some(idx);
+        }
+    }
+
+    None
 }
 
 fn default_output_path(dir: &Path, meta: &Meta, output_format: Format) -> Result<PathBuf> {
