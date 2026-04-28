@@ -688,6 +688,7 @@ fn hash_value(value: &Value, len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn jsonc_segment_with_comma_inserts_before_trailing_line_comment() {
@@ -726,5 +727,123 @@ mod tests {
     fn ensure_trailing_newline_does_not_duplicate_newline() {
         assert_eq!(ensure_trailing_newline("value\n"), "value\n");
         assert_eq!(ensure_trailing_newline("value"), "value\n");
+    }
+
+    #[test]
+    fn jsonc_same_format_post_purge_removes_input_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("config.jsonc");
+        fs::write(
+            &input,
+            r#"{
+  "name": "demo",
+  "settings": {
+    "retry": 3,
+  },
+}"#,
+        )
+        .unwrap();
+
+        let output_dir = tmp.path().join("split");
+        let dir = disassemble(DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Jsonc),
+            output_dir: Some(output_dir),
+            output_format: Some(Format::Jsonc),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: true,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        assert!(!input.exists());
+        assert!(dir.join("settings.jsonc").exists());
+        assert!(dir.join(MAIN_BASENAME).with_extension("jsonc").exists());
+    }
+
+    #[test]
+    fn write_jsonc_object_root_writes_nested_and_main_files() {
+        let text = r#"{
+  "name": "demo",
+  "settings": {
+    "retry": 3,
+  },
+}"#;
+        let ast::Value::Object(object) = parse_jsonc_ast(text).unwrap() else {
+            panic!("expected object AST");
+        };
+        let tmp = tempfile::tempdir().unwrap();
+
+        let root = write_jsonc_object_root(tmp.path(), text, object).unwrap();
+
+        let Root::Object {
+            key_order,
+            key_files,
+            main_file,
+        } = root
+        else {
+            panic!("expected object root");
+        };
+        assert_eq!(key_order, vec!["name", "settings"]);
+        assert_eq!(key_files.get("settings").unwrap(), "settings.jsonc");
+        assert_eq!(main_file.as_deref(), Some("_main.jsonc"));
+        assert!(fs::read_to_string(tmp.path().join("settings.jsonc"))
+            .unwrap()
+            .contains(r#""retry": 3"#));
+        assert!(fs::read_to_string(tmp.path().join("_main.jsonc"))
+            .unwrap()
+            .contains(r#""name": "demo","#));
+    }
+
+    #[test]
+    fn write_jsonc_array_root_rejects_ast_value_length_mismatch() {
+        let text = "[1, 2]";
+        let ast::Value::Array(array) = parse_jsonc_ast(text).unwrap() else {
+            panic!("expected array AST");
+        };
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = write_jsonc_array_root(tmp.path(), text, array, &[json!(1)], None)
+            .expect_err("should reject mismatched inputs");
+
+        assert!(
+            err.to_string()
+                .contains("JSONC AST and value model disagree on array length"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn write_jsonc_array_root_hashes_when_unique_id_collides_with_index_name() {
+        let text = r#"[
+  {
+    "name": "0002",
+    "value": 1,
+  },
+  {
+    "value": 2,
+  },
+]"#;
+        let ast::Value::Array(array) = parse_jsonc_ast(text).unwrap() else {
+            panic!("expected array AST");
+        };
+        let items = Format::Jsonc
+            .parse(text)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let root = write_jsonc_array_root(tmp.path(), text, array, &items, Some("name")).unwrap();
+
+        let Root::Array { files } = root else {
+            panic!("expected array root");
+        };
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], "0002.jsonc");
+        assert!(files[1].starts_with("0002-"), "files: {files:?}");
+        assert!(tmp.path().join(&files[1]).exists());
     }
 }
