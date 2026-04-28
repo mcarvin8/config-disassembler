@@ -21,14 +21,15 @@ use crate::error::{Error, Result};
 pub enum Format {
     Json,
     Json5,
+    Jsonc,
     Yaml,
     Toon,
     /// TOML is intentionally isolated from the other formats: TOML's
     /// syntactic constraints (no nulls, no array root, bare keys must
     /// precede tables) mean conversions through TOML can reorder or
-    /// fail to represent values produced by JSON/JSON5/YAML/TOON. TOML files
-    /// can therefore only be split into TOML files and reassembled into
-    /// TOML.
+    /// fail to represent values produced by JSON/JSON5/JSONC/YAML/TOON.
+    /// TOML files can therefore only be split into TOML files and
+    /// reassembled into TOML.
     Toml,
 }
 
@@ -66,13 +67,19 @@ impl Format {
     pub const ALL: &'static [Format] = &[
         Format::Json,
         Format::Json5,
+        Format::Jsonc,
         Format::Yaml,
         Format::Toon,
         Format::Toml,
     ];
 
-    const JSON_VALUE_FAMILY: &'static [Format] =
-        &[Format::Json, Format::Json5, Format::Yaml, Format::Toon];
+    const JSON_VALUE_FAMILY: &'static [Format] = &[
+        Format::Json,
+        Format::Json5,
+        Format::Jsonc,
+        Format::Yaml,
+        Format::Toon,
+    ];
     const TOML_FAMILY: &'static [Format] = &[Format::Toml];
 
     fn spec(self) -> &'static FormatSpec {
@@ -90,6 +97,14 @@ impl Format {
                 display_name: "JSON5",
                 aliases: &["json5"],
                 extensions: &["json5"],
+                family: FormatFamily::JsonValue,
+                split_payload_layout: SplitPayloadLayout::Direct,
+            },
+            Format::Jsonc => &FormatSpec {
+                canonical_name: "jsonc",
+                display_name: "JSONC",
+                aliases: &["jsonc"],
+                extensions: &["jsonc"],
                 family: FormatFamily::JsonValue,
                 split_payload_layout: SplitPayloadLayout::Direct,
             },
@@ -226,6 +241,7 @@ impl Format {
         match self {
             Format::Json => Ok(serde_json::from_str(input)?),
             Format::Json5 => Ok(json5::from_str(input)?),
+            Format::Jsonc => parse_jsonc(input),
             Format::Yaml => Ok(serde_yaml::from_str(input)?),
             Format::Toon => toon_format::decode_default(input)
                 .map_err(|e| Error::Invalid(format!("toon parse error: {e}"))),
@@ -239,6 +255,9 @@ impl Format {
         let mut out = match self {
             Format::Json => serde_json::to_string_pretty(value)?,
             Format::Json5 => json5::to_string(value)?,
+            // JSON is a valid JSONC document. Comments from input files are
+            // treated as syntax and are not preserved in the value model.
+            Format::Jsonc => serde_json::to_string_pretty(value)?,
             Format::Yaml => serde_yaml::to_string(value)?,
             Format::Toon => toon_format::encode_default(value)
                 .map_err(|e| Error::Invalid(format!("toon serialize error: {e}")))?,
@@ -354,6 +373,27 @@ fn serialize_toml(value: &Value) -> Result<String> {
     toml::to_string_pretty(value).map_err(|e| Error::Invalid(format!("toml serialize error: {e}")))
 }
 
+/// Parse JSONC as JSON plus comments and trailing commas.
+///
+/// The upstream parser defaults are intentionally loose, so keep the accepted
+/// syntax close to JSONC rather than expanding this into JSON5.
+fn parse_jsonc(input: &str) -> Result<Value> {
+    jsonc_parser::parse_to_serde_value(input, &jsonc_parse_options())
+        .map_err(|e| Error::Invalid(format!("jsonc parse error: {e}")))
+}
+
+pub(crate) fn jsonc_parse_options() -> jsonc_parser::ParseOptions {
+    jsonc_parser::ParseOptions {
+        allow_comments: true,
+        allow_trailing_commas: true,
+        allow_loose_object_property_names: false,
+        allow_missing_commas: false,
+        allow_single_quoted_strings: false,
+        allow_hexadecimal_numbers: false,
+        allow_unary_plus_numbers: false,
+    }
+}
+
 /// Walks a `Value` and returns the first dotted path to a `Null`, if any.
 fn find_null_path(value: &Value, prefix: &str) -> Option<String> {
     match value {
@@ -398,6 +438,7 @@ mod tests {
     fn from_str_accepts_canonical_and_aliases() {
         assert_eq!("json".parse::<Format>().unwrap(), Format::Json);
         assert_eq!("JSON5".parse::<Format>().unwrap(), Format::Json5);
+        assert_eq!("jsonc".parse::<Format>().unwrap(), Format::Jsonc);
         assert_eq!("yaml".parse::<Format>().unwrap(), Format::Yaml);
         assert_eq!("yml".parse::<Format>().unwrap(), Format::Yaml);
         assert_eq!("toon".parse::<Format>().unwrap(), Format::Toon);
@@ -420,6 +461,10 @@ mod tests {
             Format::from_path(Path::new("a.JSON5")).unwrap(),
             Format::Json5
         );
+        assert_eq!(
+            Format::from_path(Path::new("a.JSONC")).unwrap(),
+            Format::Jsonc
+        );
         assert_eq!(Format::from_path(Path::new("a.yml")).unwrap(), Format::Yaml);
         assert_eq!(
             Format::from_path(Path::new("a.toon")).unwrap(),
@@ -441,6 +486,7 @@ mod tests {
     fn display_matches_extension() {
         assert_eq!(Format::Json.to_string(), "json");
         assert_eq!(Format::Json5.to_string(), "json5");
+        assert_eq!(Format::Jsonc.to_string(), "jsonc");
         assert_eq!(Format::Yaml.to_string(), "yaml");
         assert_eq!(Format::Toon.to_string(), "toon");
         assert_eq!(Format::Toml.to_string(), "toml");
@@ -451,6 +497,7 @@ mod tests {
         for (fmt, text) in [
             (Format::Json, r#"{"a":1}"#),
             (Format::Json5, "{ a: 1 }"),
+            (Format::Jsonc, "{ \"a\": 1, } // kept as syntax only"),
             (Format::Yaml, "a: 1\n"),
             (Format::Toon, "a: 1\n"),
             (Format::Toml, "a = 1\n"),
@@ -489,6 +536,7 @@ mod tests {
     fn cross_format_compatibility_excludes_toml() {
         assert!(Format::Json.is_cross_format_compatible());
         assert!(Format::Json5.is_cross_format_compatible());
+        assert!(Format::Jsonc.is_cross_format_compatible());
         assert!(Format::Yaml.is_cross_format_compatible());
         assert!(Format::Toon.is_cross_format_compatible());
         assert!(!Format::Toml.is_cross_format_compatible());
@@ -498,9 +546,35 @@ mod tests {
     fn compatible_formats_are_grouped_by_conversion_family() {
         assert_eq!(
             Format::Json.compatible_formats(),
-            &[Format::Json, Format::Json5, Format::Yaml, Format::Toon]
+            &[
+                Format::Json,
+                Format::Json5,
+                Format::Jsonc,
+                Format::Yaml,
+                Format::Toon
+            ]
         );
         assert_eq!(Format::Toml.compatible_formats(), &[Format::Toml]);
+    }
+
+    #[test]
+    fn jsonc_accepts_comments_and_trailing_commas_only() {
+        let parsed = Format::Jsonc
+            .parse(
+                r#"{
+  // JSONC comment
+  "name": "demo",
+  "items": [1, 2,],
+}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "name": "demo", "items": [1, 2] })
+        );
+
+        let err = Format::Jsonc.parse("{ name: 'json5-only' }").unwrap_err();
+        assert!(err.to_string().contains("jsonc parse error"));
     }
 
     #[test]

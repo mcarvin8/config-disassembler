@@ -156,6 +156,185 @@ fn json5_roundtrip_preserves_structure() {
 }
 
 #[test]
+fn jsonc_roundtrip_accepts_comments_and_trailing_commas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jsonc_text = r#"{
+  // JSONC keeps JSON's data model but permits comments.
+  "name": "jsonc-demo",
+  /*
+   * Block comments attached to scalar keys stay in _main.jsonc.
+   */
+  "enabled": true,
+  "settings": {
+    "retry": 3,
+    "tags": ["commented", "trailing",],
+  },
+}"#;
+    let input = write_input(tmp.path(), "config.jsonc", jsonc_text);
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input: input.clone(),
+        input_format: Some(Format::Jsonc),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Jsonc),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(disassembled.join("settings.jsonc").exists());
+    assert!(disassembled.join("_main.jsonc").exists());
+    let split_main = fs::read_to_string(disassembled.join("_main.jsonc")).unwrap();
+    let split_settings = fs::read_to_string(disassembled.join("settings.jsonc")).unwrap();
+    assert!(split_main.contains("// JSONC keeps JSON's data model"));
+    assert!(split_main.contains("Block comments attached to scalar keys"));
+    assert!(split_settings.contains(r#""trailing","#));
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.jsonc")),
+        output_format: Some(Format::Jsonc),
+        post_purge: false,
+    })
+    .unwrap();
+
+    let rebuilt = parse_value(Format::Jsonc, &output);
+    let original = parse_value(Format::Jsonc, &input);
+    assert_eq!(rebuilt, original);
+
+    let rebuilt_text = fs::read_to_string(output).unwrap();
+    assert!(rebuilt_text.contains("// JSONC keeps JSON's data model"));
+    assert!(rebuilt_text.contains("Block comments attached to scalar keys"));
+    assert!(rebuilt_text.contains(r#""trailing","#));
+    assert!(rebuilt_text.contains("},"));
+}
+
+#[test]
+fn jsonc_object_without_scalars_roundtrip_preserves_nested_syntax() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jsonc_text = r#"{
+  "settings": {
+    // Nested comments stay with the split object value.
+    "retry": 3,
+  },
+  "features": [
+    "comments",
+    "trailing-commas",
+  ],
+}"#;
+    let input = write_input(tmp.path(), "config.jsonc", jsonc_text);
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input: input.clone(),
+        input_format: Some(Format::Jsonc),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Jsonc),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(!disassembled.join("_main.jsonc").exists());
+    let split_settings = fs::read_to_string(disassembled.join("settings.jsonc")).unwrap();
+    assert!(split_settings.contains("Nested comments stay"));
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.jsonc")),
+        output_format: Some(Format::Jsonc),
+        post_purge: false,
+    })
+    .unwrap();
+
+    assert_eq!(
+        parse_value(Format::Jsonc, &output),
+        parse_value(Format::Jsonc, &input)
+    );
+    let rebuilt_text = fs::read_to_string(output).unwrap();
+    assert!(rebuilt_text.contains("Nested comments stay"));
+    assert!(rebuilt_text.contains(r#""trailing-commas","#));
+}
+
+#[test]
+fn jsonc_array_roundtrip_preserves_element_syntax_and_unique_id_fallbacks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jsonc_text = r#"[
+  {
+    // Duplicate names force the second file to fall back to its index.
+    "name": "alpha",
+    "url": "https://example.com/a",
+  },
+  {
+    "name": "alpha",
+    "url": "https://example.com/b",
+  },
+]"#;
+    let input = write_input(tmp.path(), "items.jsonc", jsonc_text);
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input: input.clone(),
+        input_format: Some(Format::Jsonc),
+        output_dir: Some(tmp.path().join("items")),
+        output_format: Some(Format::Jsonc),
+        unique_id: Some("name".into()),
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(disassembled.join("alpha.jsonc").exists());
+    assert!(disassembled.join("0002.jsonc").exists());
+    let alpha = fs::read_to_string(disassembled.join("alpha.jsonc")).unwrap();
+    assert!(alpha.contains("Duplicate names force"));
+    assert!(alpha.contains(r#""https://example.com/a","#));
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.jsonc")),
+        output_format: Some(Format::Jsonc),
+        post_purge: false,
+    })
+    .unwrap();
+
+    assert_eq!(
+        parse_value(Format::Jsonc, &output),
+        parse_value(Format::Jsonc, &input)
+    );
+    let rebuilt_text = fs::read_to_string(output).unwrap();
+    assert!(rebuilt_text.contains("Duplicate names force"));
+    assert!(rebuilt_text.contains(r#""https://example.com/b","#));
+}
+
+#[test]
+fn jsonc_scalar_root_is_rejected_on_preserving_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = write_input(tmp.path(), "scalar.jsonc", "true\n");
+
+    let err = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Jsonc),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Jsonc),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("top-level value must be an object or array"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn json_object_roundtrip_through_toon_files() {
     let tmp = tempfile::tempdir().unwrap();
     let original = json!({

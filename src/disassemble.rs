@@ -12,11 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use jsonc_parser::ast;
+use jsonc_parser::common::Ranged;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
-use crate::format::{ConversionOperation, Format};
+use crate::format::{jsonc_parse_options, ConversionOperation, Format};
 use crate::ignore_file::DEFAULT_IGNORE_FILENAME;
 use crate::meta::{Meta, Root};
 
@@ -110,12 +112,31 @@ fn disassemble_file(opts: DisassembleOptions) -> Result<PathBuf> {
     }
     fs::create_dir_all(&output_dir)?;
 
-    let value = input_format.load(&opts.input)?;
     let source_filename = opts
         .input
         .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string());
+
+    if input_format == Format::Jsonc && output_format == Format::Jsonc {
+        let root =
+            write_jsonc_root_preserving(&opts.input, &output_dir, opts.unique_id.as_deref())?;
+        let meta = Meta {
+            source_format: input_format,
+            file_format: output_format,
+            source_filename,
+            root,
+        };
+        meta.write(&output_dir)?;
+
+        if opts.post_purge {
+            fs::remove_file(&opts.input)?;
+        }
+
+        return Ok(output_dir);
+    }
+
+    let value = input_format.load(&opts.input)?;
 
     let root = match &value {
         Value::Object(map) => write_object_root(&output_dir, map, output_format)?,
@@ -351,6 +372,247 @@ fn write_array_root(
     Ok(Root::Array { files })
 }
 
+fn write_jsonc_root_preserving(input: &Path, dir: &Path, unique_id: Option<&str>) -> Result<Root> {
+    let text = fs::read_to_string(input)?;
+    let ast = parse_jsonc_ast(&text)?;
+    let value = Format::Jsonc.parse(&text)?;
+
+    match (ast, value) {
+        (ast::Value::Object(object), Value::Object(_)) => {
+            write_jsonc_object_root(dir, &text, object)
+        }
+        (ast::Value::Array(array), Value::Array(items)) => {
+            write_jsonc_array_root(dir, &text, array, &items, unique_id)
+        }
+        _ => Err(Error::Invalid(
+            "top-level value must be an object or array to disassemble".into(),
+        )),
+    }
+}
+
+fn write_jsonc_object_root(dir: &Path, text: &str, object: ast::Object<'_>) -> Result<Root> {
+    let properties = jsonc_object_properties(text, object)?;
+    let mut key_order = Vec::with_capacity(properties.len());
+    let mut key_files: BTreeMap<String, String> = BTreeMap::new();
+    let mut main_segments = Vec::new();
+    let mut used_names: BTreeSet<String> = BTreeSet::new();
+    used_names.insert(format!("{MAIN_BASENAME}.{}", Format::Jsonc.extension()));
+
+    for property in properties {
+        key_order.push(property.key.clone());
+        if property.is_scalar {
+            main_segments.push(property.segment);
+            continue;
+        }
+
+        let filename = unique_filename_for_key(&property.key, Format::Jsonc, &used_names);
+        used_names.insert(filename.clone());
+        let path = dir.join(&filename);
+        let text = ensure_trailing_newline(&property.value_text);
+        fs::write(path, text)?;
+        key_files.insert(property.key, filename);
+    }
+
+    let main_file = if main_segments.is_empty() {
+        None
+    } else {
+        let filename = format!("{MAIN_BASENAME}.{}", Format::Jsonc.extension());
+        let path = dir.join(&filename);
+        let text = render_jsonc_object(main_segments.iter());
+        fs::write(path, text)?;
+        Some(filename)
+    };
+
+    Ok(Root::Object {
+        key_order,
+        key_files,
+        main_file,
+    })
+}
+
+fn write_jsonc_array_root(
+    dir: &Path,
+    text: &str,
+    array: ast::Array<'_>,
+    items: &[Value],
+    unique_id: Option<&str>,
+) -> Result<Root> {
+    if array.elements.len() != items.len() {
+        return Err(Error::Invalid(
+            "JSONC AST and value model disagree on array length".into(),
+        ));
+    }
+
+    let mut files = Vec::with_capacity(array.elements.len());
+    let mut used_names: BTreeSet<String> = BTreeSet::new();
+    let width = digit_width(array.elements.len());
+
+    for (idx, (element, item)) in array.elements.iter().zip(items).enumerate() {
+        let mut basename = unique_id.and_then(|field| unique_id_basename(item, field));
+        if basename
+            .as_ref()
+            .map(|n| used_names.contains(&format!("{n}.{}", Format::Jsonc.extension())))
+            .unwrap_or(false)
+        {
+            basename = None;
+        }
+        let basename = basename.unwrap_or_else(|| format!("{:0width$}", idx + 1, width = width));
+
+        let mut filename = format!("{basename}.{}", Format::Jsonc.extension());
+        if used_names.contains(&filename) {
+            filename = format!(
+                "{basename}-{}.{}",
+                hash_value(item, 8),
+                Format::Jsonc.extension()
+            );
+        }
+        used_names.insert(filename.clone());
+
+        let value_text = element.text(text).trim();
+        fs::write(dir.join(&filename), ensure_trailing_newline(value_text))?;
+        files.push(filename);
+    }
+
+    Ok(Root::Array { files })
+}
+
+struct JsoncPropertySyntax {
+    key: String,
+    is_scalar: bool,
+    segment: String,
+    value_text: String,
+}
+
+fn jsonc_object_properties(
+    text: &str,
+    object: ast::Object<'_>,
+) -> Result<Vec<JsoncPropertySyntax>> {
+    let mut properties = Vec::with_capacity(object.properties.len());
+    for property in object.properties {
+        let key = property.name.clone().into_string();
+        let property_range = property.range();
+        let value_range = property.value.range();
+        properties.push(JsoncPropertySyntax {
+            key,
+            is_scalar: is_jsonc_ast_scalar(&property.value),
+            segment: jsonc_property_segment(text, property_range.start, value_range.end)
+                .to_string(),
+            value_text: property.value.text(text).trim().to_string(),
+        });
+    }
+    Ok(properties)
+}
+
+fn parse_jsonc_ast(text: &str) -> Result<ast::Value<'_>> {
+    jsonc_parser::parse_to_ast(text, &Default::default(), &jsonc_parse_options())
+        .map_err(|e| Error::Invalid(format!("jsonc parse error: {e}")))?
+        .value
+        .ok_or_else(|| Error::Invalid("JSONC document did not contain a value".into()))
+}
+
+fn is_jsonc_ast_scalar(value: &ast::Value<'_>) -> bool {
+    !matches!(value, ast::Value::Object(_) | ast::Value::Array(_))
+}
+
+fn jsonc_property_segment(text: &str, property_start: usize, value_end: usize) -> &str {
+    let start = leading_comment_start(text, line_start(text, property_start));
+    let end = line_end(text, value_end);
+    &text[start..end]
+}
+
+fn leading_comment_start(text: &str, mut start: usize) -> usize {
+    while start > 0 {
+        let previous_line_end = start.saturating_sub(1);
+        let previous_line_start = line_start(text, previous_line_end);
+        let line = &text[previous_line_start..previous_line_end];
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.ends_with("*/")
+        {
+            start = previous_line_start;
+        } else {
+            break;
+        }
+    }
+    start
+}
+
+fn line_start(text: &str, pos: usize) -> usize {
+    text[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+}
+
+fn line_end(text: &str, pos: usize) -> usize {
+    text[pos..]
+        .find('\n')
+        .map(|idx| pos + idx)
+        .unwrap_or(text.len())
+}
+
+fn render_jsonc_object<'a>(segments: impl IntoIterator<Item = &'a String>) -> String {
+    let mut out = String::from("{\n");
+    for segment in segments {
+        out.push_str(&jsonc_segment_with_comma(segment));
+        out.push('\n');
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn jsonc_segment_with_comma(segment: &str) -> String {
+    let segment = segment.trim_matches(|c| c == '\r' || c == '\n');
+    if segment.trim_end().ends_with(',') {
+        return segment.to_string();
+    }
+
+    let last_line_start = segment.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let last_line = &segment[last_line_start..];
+    if let Some(comment_start) = line_comment_start(last_line) {
+        let comment_start = last_line_start + comment_start;
+        let (before_comment, comment) = segment.split_at(comment_start);
+        return format!("{},{}", before_comment.trim_end(), comment);
+    }
+
+    format!("{segment},")
+}
+
+fn line_comment_start(line: &str) -> Option<usize> {
+    let mut chars = line.char_indices().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+        } else if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+            return Some(idx);
+        }
+    }
+
+    None
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    let mut out = text.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 fn is_scalar(value: &Value) -> bool {
     !matches!(value, Value::Object(_) | Value::Array(_))
 }
@@ -419,4 +681,153 @@ fn hash_string(input: &str, len: usize) -> String {
 fn hash_value(value: &Value, len: usize) -> String {
     let canonical = serde_json::to_string(value).unwrap_or_default();
     hash_string(&canonical, len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn jsonc_segment_with_comma_inserts_before_trailing_line_comment() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "name": "demo" // keep this comment"#),
+            r#"  "name": "demo",// keep this comment"#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_ignores_comment_markers_inside_strings() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "url": "https://example.com/a""#),
+            r#"  "url": "https://example.com/a","#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_leaves_existing_comma_alone() {
+        assert_eq!(
+            jsonc_segment_with_comma("  \"enabled\": true,"),
+            "  \"enabled\": true,"
+        );
+    }
+
+    #[test]
+    fn line_comment_start_respects_escaped_quotes() {
+        let line = r#"  "text": "escaped \" quote // still string" // comment"#;
+        assert_eq!(
+            line_comment_start(line),
+            Some(line.find(" // comment").unwrap() + 1)
+        );
+    }
+
+    #[test]
+    fn ensure_trailing_newline_does_not_duplicate_newline() {
+        assert_eq!(ensure_trailing_newline("value\n"), "value\n");
+        assert_eq!(ensure_trailing_newline("value"), "value\n");
+    }
+
+    #[test]
+    fn jsonc_same_format_post_purge_removes_input_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("config.jsonc");
+        fs::write(
+            &input,
+            r#"{
+  "name": "demo",
+  "settings": {
+    "retry": 3,
+  },
+}"#,
+        )
+        .unwrap();
+
+        let output_dir = tmp.path().join("split");
+        let dir = disassemble(DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Jsonc),
+            output_dir: Some(output_dir),
+            output_format: Some(Format::Jsonc),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: true,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        assert!(!input.exists());
+        assert!(dir.join("settings.jsonc").exists());
+        assert!(dir.join(MAIN_BASENAME).with_extension("jsonc").exists());
+    }
+
+    #[test]
+    fn write_jsonc_object_root_writes_nested_and_main_files() {
+        let text = r#"{
+  "name": "demo",
+  "settings": {
+    "retry": 3,
+  },
+}"#;
+        let object = parse_jsonc_ast(text).unwrap().as_object().unwrap().clone();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let root = write_jsonc_object_root(tmp.path(), text, object).unwrap();
+        let root = serde_json::to_value(&root).unwrap();
+        assert_eq!(root["kind"], "object");
+        assert_eq!(root["key_order"], json!(["name", "settings"]));
+        assert_eq!(root["key_files"]["settings"], "settings.jsonc");
+        assert_eq!(root["main_file"], "_main.jsonc");
+        assert!(fs::read_to_string(tmp.path().join("settings.jsonc"))
+            .unwrap()
+            .contains(r#""retry": 3"#));
+        assert!(fs::read_to_string(tmp.path().join("_main.jsonc"))
+            .unwrap()
+            .contains(r#""name": "demo","#));
+    }
+
+    #[test]
+    fn write_jsonc_array_root_rejects_ast_value_length_mismatch() {
+        let text = "[1, 2]";
+        let array = parse_jsonc_ast(text).unwrap().as_array().unwrap().clone();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = write_jsonc_array_root(tmp.path(), text, array, &[json!(1)], None)
+            .expect_err("should reject mismatched inputs");
+
+        assert!(
+            err.to_string()
+                .contains("JSONC AST and value model disagree on array length"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn write_jsonc_array_root_hashes_when_unique_id_collides_with_index_name() {
+        let text = r#"[
+  {
+    "name": "0002",
+    "value": 1,
+  },
+  {
+    "value": 2,
+  },
+]"#;
+        let array = parse_jsonc_ast(text).unwrap().as_array().unwrap().clone();
+        let items = Format::Jsonc
+            .parse(text)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let root = write_jsonc_array_root(tmp.path(), text, array, &items, Some("name")).unwrap();
+        let root = serde_json::to_value(&root).unwrap();
+        let files = root["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], "0002.jsonc");
+        let hashed = files[1].as_str().unwrap();
+        assert!(hashed.starts_with("0002-"), "files: {files:?}");
+        assert!(tmp.path().join(hashed).exists());
+    }
 }

@@ -125,6 +125,7 @@ dependencies = [
  "env_logger",
  "ignore",
  "json5",
+ "jsonc-parser",
  "log",
  "quick-xml",
  "regex",
@@ -384,6 +385,15 @@ checksum = "733a844dbd6fef128e98cb4487b887cb55454d92cd9994b1bafe004fabbe670c"
 dependencies = [
  "serde",
  "ucd-trie",
+]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c2e5dea04f54739ca5694ee06e4448ffda065a55b3427d2b131bd5ea697ea2c"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
