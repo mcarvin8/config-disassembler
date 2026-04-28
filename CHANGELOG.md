@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/mcarvin8/config-disassembler/compare/v0.2.0...v0.3.0) - 2026-04-28
+
+### Added
+
+- support JSONC ([#10](https://github.com/mcarvin8/config-disassembler/pull/10))
+- add TOON format ([#9](https://github.com/mcarvin8/config-disassembler/pull/9))
+
+### Other
+
+- add husky notes
+- *(docs)* update contributing
+- test fix
+- format capabilities ([#8](https://github.com/mcarvin8/config-disassembler/pull/8))
+- update flaky test assert
+
 ## [0.2.0](https://github.com/mcarvin8/config-disassembler/compare/v0.1.1...v0.2.0) - 2026-04-28
 
 ### Added
