@@ -407,10 +407,9 @@ fn write_jsonc_object_root(dir: &Path, text: &str, object: ast::Object<'_>) -> R
 
         let filename = unique_filename_for_key(&property.key, Format::Jsonc, &used_names);
         used_names.insert(filename.clone());
-        fs::write(
-            dir.join(&filename),
-            ensure_trailing_newline(&property.value_text),
-        )?;
+        let path = dir.join(&filename);
+        let text = ensure_trailing_newline(&property.value_text);
+        fs::write(path, text)?;
         key_files.insert(property.key, filename);
     }
 
@@ -418,10 +417,9 @@ fn write_jsonc_object_root(dir: &Path, text: &str, object: ast::Object<'_>) -> R
         None
     } else {
         let filename = format!("{MAIN_BASENAME}.{}", Format::Jsonc.extension());
-        fs::write(
-            dir.join(&filename),
-            render_jsonc_object(main_segments.iter()),
-        )?;
+        let path = dir.join(&filename);
+        let text = render_jsonc_object(main_segments.iter());
+        fs::write(path, text)?;
         Some(filename)
     };
 
@@ -770,24 +768,15 @@ mod tests {
     "retry": 3,
   },
 }"#;
-        let ast::Value::Object(object) = parse_jsonc_ast(text).unwrap() else {
-            panic!("expected object AST");
-        };
+        let object = parse_jsonc_ast(text).unwrap().as_object().unwrap().clone();
         let tmp = tempfile::tempdir().unwrap();
 
         let root = write_jsonc_object_root(tmp.path(), text, object).unwrap();
-
-        let Root::Object {
-            key_order,
-            key_files,
-            main_file,
-        } = root
-        else {
-            panic!("expected object root");
-        };
-        assert_eq!(key_order, vec!["name", "settings"]);
-        assert_eq!(key_files.get("settings").unwrap(), "settings.jsonc");
-        assert_eq!(main_file.as_deref(), Some("_main.jsonc"));
+        let root = serde_json::to_value(&root).unwrap();
+        assert_eq!(root["kind"], "object");
+        assert_eq!(root["key_order"], json!(["name", "settings"]));
+        assert_eq!(root["key_files"]["settings"], "settings.jsonc");
+        assert_eq!(root["main_file"], "_main.jsonc");
         assert!(fs::read_to_string(tmp.path().join("settings.jsonc"))
             .unwrap()
             .contains(r#""retry": 3"#));
@@ -799,9 +788,7 @@ mod tests {
     #[test]
     fn write_jsonc_array_root_rejects_ast_value_length_mismatch() {
         let text = "[1, 2]";
-        let ast::Value::Array(array) = parse_jsonc_ast(text).unwrap() else {
-            panic!("expected array AST");
-        };
+        let array = parse_jsonc_ast(text).unwrap().as_array().unwrap().clone();
         let tmp = tempfile::tempdir().unwrap();
 
         let err = write_jsonc_array_root(tmp.path(), text, array, &[json!(1)], None)
@@ -825,9 +812,7 @@ mod tests {
     "value": 2,
   },
 ]"#;
-        let ast::Value::Array(array) = parse_jsonc_ast(text).unwrap() else {
-            panic!("expected array AST");
-        };
+        let array = parse_jsonc_ast(text).unwrap().as_array().unwrap().clone();
         let items = Format::Jsonc
             .parse(text)
             .unwrap()
@@ -837,13 +822,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
 
         let root = write_jsonc_array_root(tmp.path(), text, array, &items, Some("name")).unwrap();
-
-        let Root::Array { files } = root else {
-            panic!("expected array root");
-        };
+        let root = serde_json::to_value(&root).unwrap();
+        let files = root["files"].as_array().unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0], "0002.jsonc");
-        assert!(files[1].starts_with("0002-"), "files: {files:?}");
-        assert!(tmp.path().join(&files[1]).exists());
+        let hashed = files[1].as_str().unwrap();
+        assert!(hashed.starts_with("0002-"), "files: {files:?}");
+        assert!(tmp.path().join(hashed).exists());
     }
 }
