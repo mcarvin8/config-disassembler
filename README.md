@@ -7,9 +7,7 @@
 
 Disassemble configuration files into smaller, version-control–friendly pieces and reassemble the original on demand. Supported formats: **XML**, **JSON**, **JSON5**, **YAML**, and **TOML**.
 
-A JSON, JSON5, or YAML file can be split into files in any of those three formats and reassembled back into any of them. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
-
-XML, JSON, JSON5, YAML, and TOML support are all implemented directly in this crate. The XML implementation is a port of [`xml-disassembler`](https://github.com/mcarvin8/xml-disassembler-rust) and lives in the in-tree `xml` module — there is no longer an external `xml-disassembler` dependency.
+JSON, JSON5, and YAML files can be split and reassembled among those three formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
 
 ## Installation
 
@@ -25,7 +23,7 @@ XML, JSON, JSON5, YAML, and TOML support are all implemented directly in this cr
 config-disassembler <subcommand> [args...]
 
 Subcommands:
-  xml      Disassemble or reassemble an XML file (in-tree port of xml-disassembler).
+  xml      Disassemble or reassemble an XML file.
   json     Disassemble or reassemble a JSON file.
   json5    Disassemble or reassemble a JSON5 file.
   yaml     Disassemble or reassemble a YAML file.
@@ -41,6 +39,15 @@ Every `disassemble` action accepts an `--ignore-path` flag pointing at a `.gitig
 # .cdignore
 **/secret.json
 **/generated/
+```
+
+### Logging
+
+Logging uses the [log](https://crates.io/crates/log) crate with [env_logger](https://crates.io/crates/env_logger). Control verbosity for any subcommand via the `RUST_LOG` environment variable.
+
+```bash
+# Verbose logging (debug level)
+RUST_LOG=debug config-disassembler <subcommand> ...
 ```
 
 ### XML
@@ -143,15 +150,6 @@ Parsing is done with [quick-xml](https://github.com/tafia/quick-xml), with suppo
 * **CDATA** – Preserved and output as `#cdata` in the parsed structure.
 * **Comments** – Preserved in the XML output.
 * **Attributes** – Stored with `@` prefix (e.g. `@version`, `@encoding`).
-
-#### Logging
-
-Logging uses the [log](https://crates.io/crates/log) crate with [env_logger](https://crates.io/crates/env_logger). Control verbosity via the `RUST_LOG` environment variable.
-
-```bash
-# Verbose logging (debug level)
-RUST_LOG=debug config-disassembler xml disassemble ./my.xml
-```
 
 ### JSON / JSON5 / YAML
 
