@@ -17,6 +17,8 @@ Disassemble configuration files into smaller, version-control–friendly pieces 
 
 JSON, JSON5, JSONC, YAML, and TOON files can be split and reassembled among those five formats. XML files can be split into XML, JSON, JSON5, or YAML files and reassembled from any of those split-file formats back to XML. **TOML is intentionally isolated** — it can only be split into TOML files and reassembled to TOML. See [TOML isolation](#toml-isolation) below for the rationale.
 
+For file-tree diagrams and before/after layouts, see [Examples](docs/examples.md).
+
 ## Installation
 
 ### Cargo
