@@ -185,7 +185,7 @@ Common options:
 
 `<fmt>` is one of `json`, `json5`, `jsonc`, `yaml`, `toon`. (TOML is excluded from these flags — use the dedicated `toml` subcommand.)
 
-JSONC input accepts comments and trailing commas. Reassembled `.jsonc` files are emitted as pretty JSON, which is valid JSONC; comments are treated as syntax and are not preserved.
+JSONC input accepts comments and trailing commas. When JSONC is disassembled to JSONC and reassembled as JSONC, comments and trailing commas are preserved. Cross-format conversions preserve the parsed values, not JSONC-specific syntax.
 
 ### Example: disassemble a JSON file into YAML, then rebuild as JSON
 
