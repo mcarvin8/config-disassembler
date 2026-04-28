@@ -150,21 +150,26 @@ mod tests {
 
     #[tokio::test]
     async fn build_disassembled_file_content_not_object_no_spread() {
-        // No wrap_key, content not object → inner not updated from content (only root_attributes)
+        // No wrap_key, content not object -> inner is only root_attributes.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().to_str().unwrap();
         let mut opts = opts_base(path);
         opts.output_file_name = Some("single.xml");
         opts.wrap_key = None;
         opts.content = json!(42);
+        opts.root_attributes = json!({ "@marker": "kept" });
         build_disassembled_file(opts).await.unwrap();
         let out = fs::read_to_string(temp.path().join("single.xml"))
             .await
             .unwrap();
-        // content 42 is not spread (only objects are); root is empty.
+        assert!(out.contains("<Root"), "expected Root element, got: {out}");
         assert!(
-            out.contains("<Root></Root>") || out.contains("<Root/>"),
-            "expected empty Root element, got: {out}"
+            out.contains("marker"),
+            "expected root attribute, got: {out}"
+        );
+        assert!(
+            out.contains("kept"),
+            "expected root attribute value, got: {out}"
         );
         assert!(!out.contains("42"));
     }
