@@ -684,3 +684,47 @@ fn hash_value(value: &Value, len: usize) -> String {
     let canonical = serde_json::to_string(value).unwrap_or_default();
     hash_string(&canonical, len)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jsonc_segment_with_comma_inserts_before_trailing_line_comment() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "name": "demo" // keep this comment"#),
+            r#"  "name": "demo",// keep this comment"#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_ignores_comment_markers_inside_strings() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "url": "https://example.com/a""#),
+            r#"  "url": "https://example.com/a","#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_leaves_existing_comma_alone() {
+        assert_eq!(
+            jsonc_segment_with_comma("  \"enabled\": true,"),
+            "  \"enabled\": true,"
+        );
+    }
+
+    #[test]
+    fn line_comment_start_respects_escaped_quotes() {
+        let line = r#"  "text": "escaped \" quote // still string" // comment"#;
+        assert_eq!(
+            line_comment_start(line),
+            Some(line.find(" // comment").unwrap() + 1)
+        );
+    }
+
+    #[test]
+    fn ensure_trailing_newline_does_not_duplicate_newline() {
+        assert_eq!(ensure_trailing_newline("value\n"), "value\n");
+        assert_eq!(ensure_trailing_newline("value"), "value\n");
+    }
+}

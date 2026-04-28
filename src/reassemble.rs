@@ -413,4 +413,54 @@ mod tests {
             "got: {err}"
         );
     }
+
+    #[test]
+    fn jsonc_segment_with_comma_inserts_before_trailing_line_comment() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "name": "demo" // keep this comment"#),
+            r#"  "name": "demo",// keep this comment"#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_ignores_urls_inside_strings() {
+        assert_eq!(
+            jsonc_segment_with_comma(r#"  "url": "https://example.com/a""#),
+            r#"  "url": "https://example.com/a","#
+        );
+    }
+
+    #[test]
+    fn assemble_jsonc_object_errors_when_main_file_is_not_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("_main.jsonc"), "[]\n").unwrap();
+
+        let err = assemble_jsonc_object(tmp.path(), &[], &Default::default(), Some("_main.jsonc"))
+            .expect_err("should reject non-object main file");
+
+        assert!(
+            err.to_string().contains("did not contain an object"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn assemble_jsonc_object_errors_when_metadata_key_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("_main.jsonc"), "{}\n").unwrap();
+
+        let err = assemble_jsonc_object(
+            tmp.path(),
+            &["missing".into()],
+            &Default::default(),
+            Some("_main.jsonc"),
+        )
+        .expect_err("should reject missing scalar key");
+
+        assert!(
+            err.to_string()
+                .contains("metadata references key `missing`"),
+            "got: {err}"
+        );
+    }
 }
