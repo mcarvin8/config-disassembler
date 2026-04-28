@@ -1,18 +1,23 @@
-//! Format detection and serialization for JSON, JSON5, and YAML.
+//! Format detection, capabilities, and serialization for value-model formats.
 //!
-//! All three formats are loaded into a common [`serde_json::Value`] so that
-//! a file in one format can be re-emitted in any of the others.
+//! Each format in this module is loaded into a common [`serde_json::Value`].
+//! Conversion rules are expressed as format capabilities so adding another
+//! value-model format only requires registering its aliases, extensions,
+//! conversion family, and serializer/parser here.
 
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+use serde_json::Map;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-/// Supported textual formats for the JSON-family disassembler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported textual formats for the value-model disassembler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     Json,
     Json5,
@@ -26,21 +31,162 @@ pub enum Format {
     Toml,
 }
 
+/// A family of formats that can safely convert among themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatFamily {
+    JsonValue,
+    Toml,
+}
+
+/// Which operation is checking a conversion edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionOperation {
+    Convert,
+    Reassemble,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SplitPayloadLayout {
+    Direct,
+    WrappedByParentKey,
+}
+
+struct FormatSpec {
+    canonical_name: &'static str,
+    display_name: &'static str,
+    aliases: &'static [&'static str],
+    extensions: &'static [&'static str],
+    family: FormatFamily,
+    split_payload_layout: SplitPayloadLayout,
+}
+
 impl Format {
-    /// Canonical file extension (without the leading dot).
-    pub fn extension(self) -> &'static str {
+    /// All formats handled by the value-model disassembler.
+    pub const ALL: &'static [Format] = &[Format::Json, Format::Json5, Format::Yaml, Format::Toml];
+
+    const JSON_VALUE_FAMILY: &'static [Format] = &[Format::Json, Format::Json5, Format::Yaml];
+    const TOML_FAMILY: &'static [Format] = &[Format::Toml];
+
+    fn spec(self) -> &'static FormatSpec {
         match self {
-            Format::Json => "json",
-            Format::Json5 => "json5",
-            Format::Yaml => "yaml",
-            Format::Toml => "toml",
+            Format::Json => &FormatSpec {
+                canonical_name: "json",
+                display_name: "JSON",
+                aliases: &["json"],
+                extensions: &["json"],
+                family: FormatFamily::JsonValue,
+                split_payload_layout: SplitPayloadLayout::Direct,
+            },
+            Format::Json5 => &FormatSpec {
+                canonical_name: "json5",
+                display_name: "JSON5",
+                aliases: &["json5"],
+                extensions: &["json5"],
+                family: FormatFamily::JsonValue,
+                split_payload_layout: SplitPayloadLayout::Direct,
+            },
+            Format::Yaml => &FormatSpec {
+                canonical_name: "yaml",
+                display_name: "YAML",
+                aliases: &["yaml", "yml"],
+                extensions: &["yaml", "yml"],
+                family: FormatFamily::JsonValue,
+                split_payload_layout: SplitPayloadLayout::Direct,
+            },
+            Format::Toml => &FormatSpec {
+                canonical_name: "toml",
+                display_name: "TOML",
+                aliases: &["toml"],
+                extensions: &["toml"],
+                family: FormatFamily::Toml,
+                split_payload_layout: SplitPayloadLayout::WrappedByParentKey,
+            },
         }
     }
 
+    /// Canonical file extension (without the leading dot).
+    pub fn extension(self) -> &'static str {
+        self.spec().canonical_name
+    }
+
+    /// Canonical lower-case name used in CLI and metadata.
+    pub fn canonical_name(self) -> &'static str {
+        self.spec().canonical_name
+    }
+
+    /// Human-facing display name.
+    pub fn display_name(self) -> &'static str {
+        self.spec().display_name
+    }
+
+    /// Accepted names for CLI parsing.
+    pub fn aliases(self) -> &'static [&'static str] {
+        self.spec().aliases
+    }
+
+    /// File extensions that identify this format.
+    pub fn extensions(self) -> &'static [&'static str] {
+        self.spec().extensions
+    }
+
+    /// The conversion family this format belongs to.
+    pub fn family(self) -> FormatFamily {
+        self.spec().family
+    }
+
+    /// Formats that can safely convert to/from this format.
+    pub fn compatible_formats(self) -> &'static [Format] {
+        match self.family() {
+            FormatFamily::JsonValue => Self::JSON_VALUE_FAMILY,
+            FormatFamily::Toml => Self::TOML_FAMILY,
+        }
+    }
+
+    /// Whether CLI `--input-format` / `--output-format` flags are useful
+    /// for this subcommand.
+    pub fn allows_format_overrides(self) -> bool {
+        self.compatible_formats().len() > 1
+    }
+
     /// Whether this format participates in cross-format conversions.
-    /// TOML is the only format that does not.
     pub fn is_cross_format_compatible(self) -> bool {
-        !matches!(self, Format::Toml)
+        self.allows_format_overrides()
+    }
+
+    /// Whether this format can be converted into `output`.
+    pub fn can_convert_to(self, output: Format) -> bool {
+        self.family() == output.family()
+    }
+
+    /// Return a clear error if a conversion edge is not allowed.
+    pub fn ensure_can_convert_to(
+        self,
+        output: Format,
+        operation: ConversionOperation,
+    ) -> Result<()> {
+        if self.can_convert_to(output) {
+            return Ok(());
+        }
+
+        if let Some(name) = self
+            .family()
+            .isolated_format_name()
+            .or_else(|| output.family().isolated_format_name())
+        {
+            return match operation {
+                ConversionOperation::Convert => Err(Error::Invalid(format!(
+                    "{name} can only be converted to and from {name}; got input={self}, output={output}"
+                ))),
+                ConversionOperation::Reassemble => Err(Error::Invalid(format!(
+                    "{name} can only be reassembled to and from {name}; the disassembled \
+                     directory was written in {self} but reassembly target is {output}"
+                ))),
+            };
+        }
+
+        Err(Error::Invalid(format!(
+            "conversion from {self} to {output} is not supported"
+        )))
     }
 
     /// Best-effort detection of a format from a file path's extension.
@@ -49,13 +195,14 @@ impl Format {
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase());
-        match ext.as_deref() {
-            Some("json") => Ok(Format::Json),
-            Some("json5") => Ok(Format::Json5),
-            Some("yaml" | "yml") => Ok(Format::Yaml),
-            Some("toml") => Ok(Format::Toml),
-            _ => Err(Error::UnknownFormat(path.to_path_buf())),
+        if let Some(ext) = ext.as_deref() {
+            for format in Self::ALL {
+                if format.extensions().contains(&ext) {
+                    return Ok(*format);
+                }
+            }
         }
+        Err(Error::UnknownFormat(path.to_path_buf()))
     }
 
     /// Parse a string in this format into a generic [`Value`].
@@ -88,20 +235,76 @@ impl Format {
         let text = fs::read_to_string(path)?;
         self.parse(&text)
     }
+
+    /// Prepare a per-key split payload for this format.
+    ///
+    /// Most formats can write the payload value directly. TOML wraps the
+    /// payload under its parent key so every split file remains a valid TOML
+    /// table document.
+    pub fn wrap_split_payload(self, key: &str, value: &Value) -> Value {
+        match self.spec().split_payload_layout {
+            SplitPayloadLayout::Direct => value.clone(),
+            SplitPayloadLayout::WrappedByParentKey => {
+                let mut wrapper = Map::new();
+                wrapper.insert(key.to_string(), value.clone());
+                Value::Object(wrapper)
+            }
+        }
+    }
+
+    /// Reverse [`Format::wrap_split_payload`] while reassembling.
+    pub fn unwrap_split_payload(self, key: &str, filename: &str, loaded: Value) -> Result<Value> {
+        match self.spec().split_payload_layout {
+            SplitPayloadLayout::Direct => Ok(loaded),
+            SplitPayloadLayout::WrappedByParentKey => {
+                let Value::Object(mut map) = loaded else {
+                    return Err(Error::Invalid(format!(
+                        "{} file `{filename}` did not deserialize to a table",
+                        self.display_name()
+                    )));
+                };
+                map.remove(key).ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "{} file `{filename}` does not contain expected wrapper key `{key}`",
+                        self.display_name()
+                    ))
+                })
+            }
+        }
+    }
+
+    /// Canonical CLI names for all registered formats.
+    pub fn supported_format_list() -> String {
+        Self::ALL
+            .iter()
+            .map(|f| f.canonical_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 impl FromStr for Format {
     type Err = Error;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "json" => Ok(Format::Json),
-            "json5" => Ok(Format::Json5),
-            "yaml" | "yml" => Ok(Format::Yaml),
-            "toml" => Ok(Format::Toml),
-            other => Err(Error::Usage(format!(
-                "unknown format `{other}`; expected json, json5, yaml, or toml"
-            ))),
+        let s = s.to_ascii_lowercase();
+        for format in Format::ALL {
+            if format.aliases().contains(&s.as_str()) {
+                return Ok(*format);
+            }
+        }
+        Err(Error::Usage(format!(
+            "unknown format `{s}`; expected {}",
+            Format::supported_format_list()
+        )))
+    }
+}
+
+impl FormatFamily {
+    fn isolated_format_name(self) -> Option<&'static str> {
+        match self {
+            FormatFamily::JsonValue => None,
+            FormatFamily::Toml => Some("TOML"),
         }
     }
 }
@@ -163,7 +366,7 @@ fn find_null_path(value: &Value, prefix: &str) -> Option<String> {
 
 impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.extension())
+        f.write_str(self.canonical_name())
     }
 }
 
@@ -261,5 +464,40 @@ mod tests {
         assert!(Format::Json5.is_cross_format_compatible());
         assert!(Format::Yaml.is_cross_format_compatible());
         assert!(!Format::Toml.is_cross_format_compatible());
+    }
+
+    #[test]
+    fn compatible_formats_are_grouped_by_conversion_family() {
+        assert_eq!(
+            Format::Json.compatible_formats(),
+            &[Format::Json, Format::Json5, Format::Yaml]
+        );
+        assert_eq!(Format::Toml.compatible_formats(), &[Format::Toml]);
+    }
+
+    #[test]
+    fn conversion_rules_reject_cross_family_edges() {
+        assert!(Format::Json
+            .ensure_can_convert_to(Format::Yaml, ConversionOperation::Convert)
+            .is_ok());
+        let err = Format::Json
+            .ensure_can_convert_to(Format::Toml, ConversionOperation::Convert)
+            .unwrap_err();
+        assert!(err.to_string().contains("TOML can only be converted"));
+    }
+
+    #[test]
+    fn split_payload_wrapping_is_capability_driven() {
+        let value = serde_json::json!([{ "host": "a" }]);
+        assert_eq!(Format::Json.wrap_split_payload("servers", &value), value);
+
+        let wrapped = Format::Toml.wrap_split_payload("servers", &value);
+        assert_eq!(wrapped, serde_json::json!({ "servers": value }));
+        assert_eq!(
+            Format::Toml
+                .unwrap_split_payload("servers", "servers.toml", wrapped)
+                .unwrap(),
+            serde_json::json!([{ "host": "a" }])
+        );
     }
 }

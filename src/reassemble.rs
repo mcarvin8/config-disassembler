@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::format::Format;
+use crate::format::{ConversionOperation, Format};
 use crate::meta::{Meta, Root};
 
 /// Options controlling reassembly.
@@ -40,18 +40,10 @@ pub fn reassemble(opts: ReassembleOptions) -> Result<PathBuf> {
         )));
     }
     let meta = Meta::read(dir)?;
-    let file_format: Format = meta.file_format.into();
-    let output_format: Format = opts
-        .output_format
-        .unwrap_or_else(|| meta.source_format.into());
+    let file_format = meta.file_format;
+    let output_format: Format = opts.output_format.unwrap_or(meta.source_format);
 
-    if (file_format == Format::Toml) != (output_format == Format::Toml) {
-        return Err(Error::Invalid(format!(
-            "TOML can only be reassembled to and from TOML; the disassembled \
-             directory was written in {file_format} but reassembly target is \
-             {output_format}"
-        )));
-    }
+    file_format.ensure_can_convert_to(output_format, ConversionOperation::Reassemble)?;
 
     let value = match &meta.root {
         Root::Object {
@@ -115,37 +107,13 @@ fn assemble_object(
     Ok(Value::Object(out))
 }
 
-/// Reverse of [`disassemble::wrap_per_key_payload`]: TOML per-key files
-/// wrap their payload under the parent key (since TOML cannot have a
-/// non-table root), so unwrap to recover the original value here.
-///
-/// TOML always deserializes to a table at the root, so the only failure
-/// mode is a missing wrapper key (e.g., the on-disk file was edited so
-/// its top-level key no longer matches the metadata).
-///
-/// [`disassemble::wrap_per_key_payload`]: crate::disassemble
 fn unwrap_per_key_payload(
     file_format: Format,
     key: &str,
     filename: &str,
     loaded: Value,
 ) -> Result<Value> {
-    if file_format != Format::Toml {
-        return Ok(loaded);
-    }
-    let Value::Object(mut map) = loaded else {
-        // TOML's grammar guarantees a table root; this branch is
-        // defensive and should never be reached for a file that was
-        // successfully parsed via `Format::Toml`.
-        return Err(Error::Invalid(format!(
-            "TOML file `{filename}` did not deserialize to a table"
-        )));
-    };
-    map.remove(key).ok_or_else(|| {
-        Error::Invalid(format!(
-            "TOML file `{filename}` does not contain expected wrapper key `{key}`"
-        ))
-    })
+    file_format.unwrap_split_payload(key, filename, loaded)
 }
 
 fn assemble_array(dir: &Path, files: &[String], file_format: Format) -> Result<Value> {

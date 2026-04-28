@@ -72,7 +72,7 @@ fn run_format(default_format: Format, args: Vec<String>) -> Result<()> {
 }
 
 fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
-    let toml_only = default_format == Format::Toml;
+    let allows_format_overrides = default_format.allows_format_overrides();
     let mut input: Option<PathBuf> = None;
     let mut output_dir: Option<PathBuf> = None;
     let mut output_format: Option<Format> = None;
@@ -88,20 +88,22 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
             "--output-dir" | "-o" => {
                 output_dir = Some(PathBuf::from(expect_value(&mut iter, "--output-dir")?));
             }
-            "--output-format" if toml_only => {
-                return Err(Error::Usage(
-                    "--output-format is not supported for `toml`; TOML can only be converted to TOML"
-                        .into(),
-                ));
+            "--output-format" if !allows_format_overrides => {
+                return Err(Error::Usage(format!(
+                    "--output-format is not supported for `{default_format}`; {} can only be converted to {}",
+                    default_format.display_name(),
+                    default_format.display_name()
+                )));
             }
             "--output-format" => {
                 output_format = Some(expect_value(&mut iter, "--output-format")?.parse()?);
             }
-            "--input-format" if toml_only => {
-                return Err(Error::Usage(
-                    "--input-format is not supported for `toml`; TOML can only be converted from TOML"
-                        .into(),
-                ));
+            "--input-format" if !allows_format_overrides => {
+                return Err(Error::Usage(format!(
+                    "--input-format is not supported for `{default_format}`; {} can only be converted from {}",
+                    default_format.display_name(),
+                    default_format.display_name()
+                )));
             }
             "--input-format" => {
                 input_format = Some(expect_value(&mut iter, "--input-format")?.parse()?);
@@ -145,7 +147,7 @@ fn run_disassemble(default_format: Format, args: Vec<String>) -> Result<()> {
 }
 
 fn run_reassemble(default_format: Format, args: Vec<String>) -> Result<()> {
-    let toml_only = default_format == Format::Toml;
+    let allows_format_overrides = default_format.allows_format_overrides();
     let mut input_dir: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut output_format: Option<Format> = None;
@@ -157,11 +159,12 @@ fn run_reassemble(default_format: Format, args: Vec<String>) -> Result<()> {
             "--output" | "-o" => {
                 output = Some(PathBuf::from(expect_value(&mut iter, "--output")?));
             }
-            "--output-format" if toml_only => {
-                return Err(Error::Usage(
-                    "--output-format is not supported for `toml`; TOML can only be reassembled to TOML"
-                        .into(),
-                ));
+            "--output-format" if !allows_format_overrides => {
+                return Err(Error::Usage(format!(
+                    "--output-format is not supported for `{default_format}`; {} can only be reassembled to {}",
+                    default_format.display_name(),
+                    default_format.display_name()
+                )));
             }
             "--output-format" => {
                 output_format = Some(expect_value(&mut iter, "--output-format")?.parse()?);
@@ -222,7 +225,7 @@ Run `config-disassembler <subcommand> --help` for subcommand details.\n",
 }
 
 fn print_format_help(format: Format) {
-    if format == Format::Toml {
+    if !format.allows_format_overrides() {
         eprintln!(
             "config-disassembler toml <action> [options]\n\
 \n\
@@ -253,6 +256,7 @@ REASSEMBLE OPTIONS:\n\
         );
         return;
     }
+    let compatible_formats = format_list(format.compatible_formats());
     eprintln!(
         "config-disassembler {format} <action> [options]\n\
 \n\
@@ -278,6 +282,14 @@ REASSEMBLE OPTIONS:\n\
     --output-format <fmt>       Format to write the reassembled file in (default: original source format).\n\
     --post-purge                Remove the input directory after reassembly.\n\
 \n\
-<fmt> is one of: json, json5, yaml. (TOML is excluded -- use the `toml` subcommand.)\n"
+<fmt> is one of: {compatible_formats}. (TOML is excluded -- use the `toml` subcommand.)\n"
     );
+}
+
+fn format_list(formats: &[Format]) -> String {
+    formats
+        .iter()
+        .map(|format| format.canonical_name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

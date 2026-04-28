@@ -55,37 +55,11 @@ pub enum Root {
     },
 }
 
-/// Serde-friendly mirror of [`Format`].
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SerdeFormat {
-    Json,
-    Json5,
-    Yaml,
-    Toml,
-}
-
-impl From<Format> for SerdeFormat {
-    fn from(f: Format) -> Self {
-        match f {
-            Format::Json => SerdeFormat::Json,
-            Format::Json5 => SerdeFormat::Json5,
-            Format::Yaml => SerdeFormat::Yaml,
-            Format::Toml => SerdeFormat::Toml,
-        }
-    }
-}
-
-impl From<SerdeFormat> for Format {
-    fn from(f: SerdeFormat) -> Self {
-        match f {
-            SerdeFormat::Json => Format::Json,
-            SerdeFormat::Json5 => Format::Json5,
-            SerdeFormat::Yaml => Format::Yaml,
-            SerdeFormat::Toml => Format::Toml,
-        }
-    }
-}
+/// Serde-friendly metadata format type.
+///
+/// This remains as an alias for compatibility with callers that referenced
+/// `meta::SerdeFormat`; the actual serde behavior now lives on [`Format`].
+pub type SerdeFormat = Format;
 
 impl Meta {
     /// Write the metadata file into `dir`.
@@ -116,8 +90,8 @@ mod tests {
     #[test]
     fn serde_format_round_trip() {
         for fmt in [Format::Json, Format::Json5, Format::Yaml, Format::Toml] {
-            let s: SerdeFormat = fmt.into();
-            let back: Format = s.into();
+            let text = serde_json::to_string(&fmt).unwrap();
+            let back: SerdeFormat = serde_json::from_str(&text).unwrap();
             assert_eq!(fmt, back);
         }
     }
