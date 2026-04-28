@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/mcarvin8/config-disassembler/compare/v0.1.1...v0.2.0) - 2026-04-28
+
+### Added
+
+- port xml-disassembler in-tree and add ignore-file/directory support across formats ([#6](https://github.com/mcarvin8/config-disassembler/pull/6))
+- add INI support ([#4](https://github.com/mcarvin8/config-disassembler/pull/4))
+
+### Other
+
+- update readme
+
 ## [0.1.1](https://github.com/mcarvin8/config-disassembler/compare/v0.1.0...v0.1.1) - 2026-04-27
 
 ### Other
