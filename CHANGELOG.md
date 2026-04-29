@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/mcarvin8/config-disassembler/compare/v0.3.0...v0.4.0) - 2026-04-29
+
+### Added
+
+- add INI format ([#11](https://github.com/mcarvin8/config-disassembler/pull/11))
+
+### Other
+
+- *(ini)* enhance INI serialization with pretty-print options ([#13](https://github.com/mcarvin8/config-disassembler/pull/13))
+
 ## [0.3.0](https://github.com/mcarvin8/config-disassembler/compare/v0.2.0...v0.3.0) - 2026-04-28
 
 ### Added
