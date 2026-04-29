@@ -11,6 +11,7 @@
 //!   yaml     Disassemble or reassemble a YAML file.
 //!   toon     Disassemble or reassemble a TOON file.
 //!   toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).
+//!   ini      Disassemble or reassemble an INI file (INI <-> INI only).
 //!   help     Show this help text.
 //! ```
 
@@ -47,6 +48,7 @@ pub async fn dispatch(args: Vec<String>) -> Result<()> {
         "yaml" | "yml" => run_format(Format::Yaml, rest),
         "toon" => run_format(Format::Toon, rest),
         "toml" => run_format(Format::Toml, rest),
+        "ini" => run_format(Format::Ini, rest),
         other => Err(Error::Usage(format!(
             "unknown subcommand `{other}`. run `config-disassembler help` for usage."
         ))),
@@ -209,7 +211,7 @@ fn print_help() {
     eprintln!(
         "config-disassembler {ver}\n\
 \n\
-Disassemble configuration files (XML, JSON, JSON5, JSONC, YAML, TOON, TOML) into smaller\n\
+Disassemble configuration files (XML, JSON, JSON5, JSONC, YAML, TOON, TOML, INI) into smaller\n\
 files and reassemble the original on demand.\n\
 \n\
 USAGE:\n\
@@ -223,6 +225,7 @@ SUBCOMMANDS:\n\
     yaml     Disassemble or reassemble a YAML file.\n\
     toon     Disassemble or reassemble a TOON file.\n\
     toml     Disassemble or reassemble a TOML file (TOML <-> TOML only).\n\
+    ini      Disassemble or reassemble an INI file (INI <-> INI only).\n\
     help     Show this help text.\n\
 \n\
 Run `config-disassembler <subcommand> --help` for subcommand details.\n",
@@ -231,26 +234,52 @@ Run `config-disassembler <subcommand> --help` for subcommand details.\n",
 }
 
 fn print_format_help(format: Format) {
-    if !format.allows_format_overrides() {
-        eprintln!(
-            "config-disassembler toml <action> [options]\n\
-\n\
-TOML can only be converted to and from TOML. Cross-format conversion with\n\
-JSON, JSON5, JSONC, YAML, or TOON is rejected because TOML cannot represent `null`,\n\
+    // Dispatch up front so every branch is reachable: the same-format-only
+    // formats (TOML, INI) get their dedicated help text, and the
+    // cross-format family shares one help body.
+    match format {
+        Format::Toml => {
+            print_same_format_help(
+                format,
+                "TOML can only be converted to and from TOML. Cross-format conversion with\n\
+JSON, JSON5, JSONC, YAML, TOON, or INI is rejected because TOML cannot represent `null`,\n\
 forbids array roots, and forces bare keys to precede tables (which would\n\
-reorder values on round-trip).\n\
+reorder values on round-trip).",
+                "                                (TOML disallows array roots, so this only applies to nested arrays.)",
+            );
+        }
+        Format::Ini => {
+            print_same_format_help(
+                format,
+                "INI can only be converted to and from INI. Cross-format conversion with\n\
+JSON, JSON5, JSONC, YAML, TOON, or TOML is rejected because INI stores section\n\
+values as strings or valueless keys and cannot represent arrays or deeper nesting.",
+                "                                (INI cannot represent arrays, so this normally does not apply.)",
+            );
+        }
+        Format::Json | Format::Json5 | Format::Jsonc | Format::Yaml | Format::Toon => {
+            print_cross_format_help(format);
+        }
+    }
+}
+
+fn print_same_format_help(format: Format, explanation: &str, unique_id_note: &str) {
+    eprintln!(
+        "config-disassembler {format} <action> [options]\n\
+\n\
+{explanation}\n\
 \n\
 ACTIONS:\n\
-    disassemble <input>   Split <input>.toml into a directory of TOML files.\n\
-                          <input> may also be a directory; every .toml file\n\
+    disassemble <input>   Split <input>.{extension} into a directory of {display_name} files.\n\
+                          <input> may also be a directory; every .{extension} file\n\
                           beneath it is disassembled in place.\n\
-    reassemble  <dir>     Rebuild the original TOML file from <dir>.\n\
+    reassemble  <dir>     Rebuild the original {display_name} file from <dir>.\n\
 \n\
 DISASSEMBLE OPTIONS:\n\
     -o, --output-dir <dir>      Output directory (default: <input-stem> next to input).\n\
                                 Not allowed when <input> is a directory.\n\
     --unique-id <field>         For array roots, name files by this field on each element.\n\
-                                (TOML disallows array roots, so this only applies to nested arrays.)\n\
+{unique_id_note}\n\
     --ignore-path <path>        Path to a .gitignore-style file used when <input> is a\n\
                                 directory (default: .cdignore in the input directory).\n\
     --pre-purge                 Remove the output directory before writing.\n\
@@ -258,10 +287,13 @@ DISASSEMBLE OPTIONS:\n\
 \n\
 REASSEMBLE OPTIONS:\n\
     -o, --output <file>         Output file (default: derived from metadata next to input dir).\n\
-    --post-purge                Remove the input directory after reassembly.\n"
-        );
-        return;
-    }
+    --post-purge                Remove the input directory after reassembly.\n",
+        extension = format.extension(),
+        display_name = format.display_name()
+    );
+}
+
+fn print_cross_format_help(format: Format) {
     let compatible_formats = format_list(format.compatible_formats());
     eprintln!(
         "config-disassembler {format} <action> [options]\n\
@@ -288,7 +320,7 @@ REASSEMBLE OPTIONS:\n\
     --output-format <fmt>       Format to write the reassembled file in (default: original source format).\n\
     --post-purge                Remove the input directory after reassembly.\n\
 \n\
-<fmt> is one of: {compatible_formats}. (TOML is excluded -- use the `toml` subcommand.)\n"
+<fmt> is one of: {compatible_formats}. (TOML and INI are excluded -- use their dedicated subcommands.)\n"
     );
 }
 

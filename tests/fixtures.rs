@@ -3,7 +3,7 @@
 //! Walks the `fixtures/` directory and runs a cross-format round-trip
 //! matrix on every scenario. Each scenario directory must contain exactly
 //! one `input.<ext>` file (`json`, `json5`, `jsonc`, `yaml`, `yml`, `toon`,
-//! or `toml`) and may
+//! `toml`, or `ini`) and may
 //! optionally contain a `case.json` file describing options:
 //!
 //! ```json
@@ -158,6 +158,7 @@ fn find_input(dir: &Path) -> Option<(PathBuf, Format)> {
         ("yml", Format::Yaml),
         ("toon", Format::Toon),
         ("toml", Format::Toml),
+        ("ini", Format::Ini),
     ];
     for (ext, format) in EXTS {
         let candidate = dir.join(format!("input.{ext}"));

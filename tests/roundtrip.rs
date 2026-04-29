@@ -487,6 +487,105 @@ fn toml_disassembled_dir_cannot_reassemble_to_json() {
 }
 
 #[test]
+fn ini_roundtrip_preserves_structure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ini_text = r#"name = demo
+enabled
+
+[settings]
+host = db.example.com
+port = 5432
+
+[empty]
+"#;
+    let input = write_input(tmp.path(), "config.ini", ini_text);
+
+    let disassembled = disassemble::disassemble(DisassembleOptions {
+        input: input.clone(),
+        input_format: Some(Format::Ini),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Ini),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    assert!(disassembled.join("settings.ini").exists());
+    assert!(disassembled.join("empty.ini").exists());
+    assert!(disassembled.join("_main.ini").exists());
+
+    let output = reassemble::reassemble(ReassembleOptions {
+        input_dir: disassembled,
+        output: Some(tmp.path().join("rebuilt.ini")),
+        output_format: Some(Format::Ini),
+        post_purge: false,
+    })
+    .unwrap();
+
+    let rebuilt = parse_value(Format::Ini, &output);
+    let original = parse_value(Format::Ini, &input);
+    assert_eq!(rebuilt, original);
+}
+
+#[test]
+fn ini_to_json_disassemble_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = write_input(tmp.path(), "c.ini", "[a]\nb = 1\n");
+
+    let err = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Ini),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Json),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("INI can only be converted"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn corrupted_ini_wrapper_key_returns_clear_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = write_input(tmp.path(), "c.ini", "name = demo\n\n[settings]\nx = 1\n");
+
+    let dir = disassemble::disassemble(DisassembleOptions {
+        input,
+        input_format: Some(Format::Ini),
+        output_dir: Some(tmp.path().join("split")),
+        output_format: Some(Format::Ini),
+        unique_id: None,
+        pre_purge: false,
+        post_purge: false,
+        ignore_path: None,
+    })
+    .unwrap();
+
+    fs::write(dir.join("settings.ini"), "[wrong]\nx = 1\n").unwrap();
+
+    let err = reassemble::reassemble(ReassembleOptions {
+        input_dir: dir,
+        output: Some(tmp.path().join("rebuilt.ini")),
+        output_format: Some(Format::Ini),
+        post_purge: false,
+    })
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("does not contain expected wrapper key"),
+        "got: {msg}"
+    );
+    assert!(msg.contains("settings"), "got: {msg}");
+}
+
+#[test]
 fn corrupted_toml_wrapper_key_returns_clear_error() {
     let tmp = tempfile::tempdir().unwrap();
     let input = write_input(

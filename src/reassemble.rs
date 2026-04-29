@@ -387,6 +387,13 @@ mod tests {
     }
 
     #[test]
+    fn unwrap_per_key_payload_extracts_wrapper_key_for_ini() {
+        let v = json!({"settings": {"host": "db.example.com"}});
+        let out = unwrap_per_key_payload(Format::Ini, "settings", "settings.ini", v).unwrap();
+        assert_eq!(out, json!({"host": "db.example.com"}));
+    }
+
+    #[test]
     fn unwrap_per_key_payload_errors_when_wrapper_key_missing() {
         let v = json!({"wrong": 1});
         let err =
@@ -398,6 +405,20 @@ mod tests {
         );
         assert!(msg.contains("right"), "got: {msg}");
         assert!(msg.contains("x.toml"), "got: {msg}");
+    }
+
+    #[test]
+    fn unwrap_per_key_payload_errors_when_ini_wrapper_key_missing() {
+        let v = json!({"wrong": 1});
+        let err =
+            unwrap_per_key_payload(Format::Ini, "right", "x.ini", v).expect_err("should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not contain expected wrapper key"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("right"), "got: {msg}");
+        assert!(msg.contains("x.ini"), "got: {msg}");
     }
 
     #[test]

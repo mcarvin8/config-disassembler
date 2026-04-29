@@ -32,6 +32,7 @@ anyhow = "1"
 regex = "1"
 toon-format = { version = "0.4.5", default-features = false }
 jsonc-parser = { version = "0.32.3", features = ["serde", "cst"] }
+configparser = { version = "3.1.0", features = ["indexmap"] }
 
 [dev-dependencies]
 tempfile = "3"
