@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 
-use configparser::ini::Ini;
+use configparser::ini::{Ini, WriteOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use serde_json::Value;
@@ -457,7 +457,7 @@ fn serialize_ini(value: &Value) -> Result<String> {
         }
     }
 
-    Ok(ini.writes())
+    Ok(ini.pretty_writes(&ini_write_options()))
 }
 
 fn new_ini() -> Ini {
@@ -465,6 +465,17 @@ fn new_ini() -> Ini {
     ini.set_default_section(INI_DEFAULT_SECTION);
     ini.set_multiline(true);
     ini
+}
+
+/// Pretty-print INI with the conventions human-authored INI files usually
+/// follow: spaces around `=` and a blank line between sections. This keeps
+/// reassembled output recognisable next to the original instead of collapsing
+/// it into the most compact form configparser can produce.
+fn ini_write_options() -> WriteOptions {
+    let mut options = WriteOptions::new();
+    options.space_around_delimiters = true;
+    options.blank_lines_between_sections = 1;
+    options
 }
 
 fn ini_value_to_json(value: Option<String>) -> Value {
@@ -796,6 +807,29 @@ port = 5432
     }
 
     #[test]
+    fn ini_serialize_uses_spaces_around_delimiter_and_blank_lines_between_sections() {
+        // Reassembled INI should look like a typical hand-authored file, not
+        // the most compact form configparser can produce. We check both the
+        // delimiter spacing and the blank line that separates sections.
+        let value = serde_json::json!({
+            "name": "demo",
+            "settings": { "host": "db.example.com", "port": "5432" },
+            "empty": {}
+        });
+        let out = Format::Ini.serialize(&value).unwrap();
+        // Normalize CRLF (emitted on Windows) so the structural assertions
+        // below stay platform-independent.
+        let normalized = out.replace("\r\n", "\n");
+        assert!(normalized.contains("name = demo"), "got: {out}");
+        assert!(normalized.contains("host = db.example.com"), "got: {out}");
+        assert!(normalized.contains("port = 5432"), "got: {out}");
+        // configparser writes one blank line *before* every non-default
+        // section header when `blank_lines_between_sections` is 1.
+        assert!(normalized.contains("\n\n[settings]"), "got: {out}");
+        assert!(normalized.contains("\n\n[empty]"), "got: {out}");
+    }
+
+    #[test]
     fn ini_serialize_renders_bool_and_number_scalars() {
         // Top-level bool/number keys exercise the bool/number arms of the
         // INI scalar serializer, which the string-only round trip skips.
@@ -809,10 +843,10 @@ port = 5432
             }
         });
         let out = Format::Ini.serialize(&value).unwrap();
-        assert!(out.contains("enabled=true"), "got: {out}");
-        assert!(out.contains("retries=3"), "got: {out}");
-        assert!(out.contains("ratio=1.5"), "got: {out}");
-        assert!(out.contains("active=false"), "got: {out}");
-        assert!(out.contains("port=5432"), "got: {out}");
+        assert!(out.contains("enabled = true"), "got: {out}");
+        assert!(out.contains("retries = 3"), "got: {out}");
+        assert!(out.contains("ratio = 1.5"), "got: {out}");
+        assert!(out.contains("active = false"), "got: {out}");
+        assert!(out.contains("port = 5432"), "got: {out}");
     }
 }
