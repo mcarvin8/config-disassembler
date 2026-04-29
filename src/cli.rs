@@ -234,32 +234,38 @@ Run `config-disassembler <subcommand> --help` for subcommand details.\n",
 }
 
 fn print_format_help(format: Format) {
-    if !format.allows_format_overrides() {
-        let explanation = match format {
-            Format::Toml => {
+    // Dispatch up front so every branch is reachable: the same-format-only
+    // formats (TOML, INI) get their dedicated help text, and the
+    // cross-format family shares one help body.
+    match format {
+        Format::Toml => {
+            print_same_format_help(
+                format,
                 "TOML can only be converted to and from TOML. Cross-format conversion with\n\
 JSON, JSON5, JSONC, YAML, TOON, or INI is rejected because TOML cannot represent `null`,\n\
 forbids array roots, and forces bare keys to precede tables (which would\n\
-reorder values on round-trip)."
-            }
-            Format::Ini => {
+reorder values on round-trip).",
+                "                                (TOML disallows array roots, so this only applies to nested arrays.)",
+            );
+        }
+        Format::Ini => {
+            print_same_format_help(
+                format,
                 "INI can only be converted to and from INI. Cross-format conversion with\n\
 JSON, JSON5, JSONC, YAML, TOON, or TOML is rejected because INI stores section\n\
-values as strings or valueless keys and cannot represent arrays or deeper nesting."
-            }
-            _ => unreachable!("only same-format formats reach this help branch"),
-        };
-        let unique_id_note = match format {
-            Format::Toml => {
-                "                                (TOML disallows array roots, so this only applies to nested arrays.)"
-            }
-            Format::Ini => {
-                "                                (INI cannot represent arrays, so this normally does not apply.)"
-            }
-            _ => unreachable!("only same-format formats reach this help branch"),
-        };
-        eprintln!(
-            "config-disassembler {format} <action> [options]\n\
+values as strings or valueless keys and cannot represent arrays or deeper nesting.",
+                "                                (INI cannot represent arrays, so this normally does not apply.)",
+            );
+        }
+        Format::Json | Format::Json5 | Format::Jsonc | Format::Yaml | Format::Toon => {
+            print_cross_format_help(format);
+        }
+    }
+}
+
+fn print_same_format_help(format: Format, explanation: &str, unique_id_note: &str) {
+    eprintln!(
+        "config-disassembler {format} <action> [options]\n\
 \n\
 {explanation}\n\
 \n\
@@ -282,11 +288,12 @@ DISASSEMBLE OPTIONS:\n\
 REASSEMBLE OPTIONS:\n\
     -o, --output <file>         Output file (default: derived from metadata next to input dir).\n\
     --post-purge                Remove the input directory after reassembly.\n",
-            extension = format.extension(),
-            display_name = format.display_name()
-        );
-        return;
-    }
+        extension = format.extension(),
+        display_name = format.display_name()
+    );
+}
+
+fn print_cross_format_help(format: Format) {
     let compatible_formats = format_list(format.compatible_formats());
     eprintln!(
         "config-disassembler {format} <action> [options]\n\

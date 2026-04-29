@@ -783,4 +783,36 @@ port = 5432
         assert!(out.contains("[empty]"), "got: {out}");
         assert_eq!(Format::Ini.parse(&out).unwrap(), value);
     }
+
+    #[test]
+    fn ini_serialize_rejects_non_object_roots() {
+        let array_root = serde_json::json!([1, 2, 3]);
+        let err = Format::Ini.serialize(&array_root).unwrap_err();
+        assert!(err.to_string().contains("object root"), "got: {err}");
+
+        let scalar_root = serde_json::json!(42);
+        let err = Format::Ini.serialize(&scalar_root).unwrap_err();
+        assert!(err.to_string().contains("object root"), "got: {err}");
+    }
+
+    #[test]
+    fn ini_serialize_renders_bool_and_number_scalars() {
+        // Top-level bool/number keys exercise the bool/number arms of the
+        // INI scalar serializer, which the string-only round trip skips.
+        let value = serde_json::json!({
+            "enabled": true,
+            "retries": 3,
+            "ratio": 1.5,
+            "section": {
+                "active": false,
+                "port": 5432
+            }
+        });
+        let out = Format::Ini.serialize(&value).unwrap();
+        assert!(out.contains("enabled=true"), "got: {out}");
+        assert!(out.contains("retries=3"), "got: {out}");
+        assert!(out.contains("ratio=1.5"), "got: {out}");
+        assert!(out.contains("active=false"), "got: {out}");
+        assert!(out.contains("port=5432"), "got: {out}");
+    }
 }
