@@ -1795,3 +1795,111 @@ async fn multi_rule_disassemble_then_reassemble_matches_original() {
         "two-rule multi-level round-trip must preserve original XML byte-for-byte"
     );
 }
+
+#[tokio::test]
+async fn nested_multi_rule_disassemble_then_reassemble_matches_original() {
+    // Regression test for the Bot/BotVersion shape: an inner repeating element
+    // (`<steps>`) that lives *inside* every outer repeating element (`<dialogs>`).
+    // Before nested-rule support, the inner rule's `path_segment` was looked up only
+    // under the disassembly root and silently no-op'd, which let the outer reassembly
+    // merge per-step files directly into the dialog and strip the `<steps>` wrapper.
+    let _ = env_logger::try_init();
+
+    // Item names are alphabetical so the disk-sorted reassembly order matches the
+    // original document order; sibling re-ordering inside a multi-level segment is a
+    // separate, pre-existing limitation of the disassembler and is not what this test
+    // is asserting.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MultiRoot xmlns="http://example.com/multi">
+    <description>nested rules sample</description>
+    <dialogs>
+        <label>Alpha dialog</label>
+        <name>Alpha</name>
+        <steps>
+            <id>step-a1</id>
+            <kind>greet</kind>
+        </steps>
+        <steps>
+            <id>step-a2</id>
+            <kind>menu</kind>
+        </steps>
+    </dialogs>
+    <dialogs>
+        <label>Bravo dialog</label>
+        <name>Bravo</name>
+        <steps>
+            <id>step-b1</id>
+            <kind>thank</kind>
+        </steps>
+    </dialogs>
+</MultiRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Nested.multi-meta.xml");
+    std::fs::write(&source, xml).expect("write source");
+
+    // Outer rule first, inner second. The reassembler treats sibling rules as nested
+    // candidates that activate dynamically when their `path_segment` matches a
+    // sub-directory under an outer rule's item.
+    let rules = vec![
+        MultiLevelRule {
+            file_pattern: "dialogs".to_string(),
+            root_to_strip: "dialogs".to_string(),
+            unique_id_elements: "name".to_string(),
+            path_segment: "dialogs".to_string(),
+            wrap_root_element: "MultiRoot".to_string(),
+            wrap_xmlns: String::new(),
+        },
+        MultiLevelRule {
+            file_pattern: "steps".to_string(),
+            root_to_strip: "steps".to_string(),
+            unique_id_elements: "id".to_string(),
+            path_segment: "steps".to_string(),
+            wrap_root_element: "MultiRoot".to_string(),
+            wrap_xmlns: String::new(),
+        },
+    ];
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("name,id,label,kind"),
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            Some(rules.as_slice()),
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let disassembled_dir = base.join("Nested");
+    assert!(disassembled_dir.exists(), "disassembled root should exist");
+    // Inner rule fires per-dialog-item, so each dialog dir should hold a `steps/` subdir.
+    assert!(
+        disassembled_dir.join("dialogs/Alpha/steps").is_dir(),
+        "inner rule must have produced a nested `steps/` directory under each dialog"
+    );
+
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            disassembled_dir.to_str().unwrap(),
+            Some("multi-meta.xml"),
+            false,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt_path = base.join("Nested.multi-meta.xml");
+    assert!(rebuilt_path.exists(), "rebuilt file should exist");
+    let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
+    assert_eq!(
+        rebuilt, xml,
+        "nested multi-level round-trip must preserve original XML byte-for-byte"
+    );
+}
