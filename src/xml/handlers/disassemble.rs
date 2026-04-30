@@ -61,7 +61,7 @@ impl DisassembleXmlFileHandler {
         post_purge: bool,
         ignore_path: &str,
         format: &str,
-        multi_level_rule: Option<&MultiLevelRule>,
+        multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let strategy = strategy.unwrap_or("unique-id");
@@ -83,6 +83,9 @@ impl DisassembleXmlFileHandler {
         let relative_path = path.strip_prefix(&cwd).unwrap_or(path).to_string_lossy();
         let relative_path = Self::posix_path(&relative_path);
 
+        // Treat an empty rules slice as "no multi-level".
+        let multi_level_rules = multi_level_rules.filter(|rules| !rules.is_empty());
+
         if meta.is_file() {
             self.handle_file(
                 file_path,
@@ -92,7 +95,7 @@ impl DisassembleXmlFileHandler {
                 pre_purge,
                 post_purge,
                 format,
-                multi_level_rule,
+                multi_level_rules,
                 decompose_rules,
             )
             .await?;
@@ -106,7 +109,7 @@ impl DisassembleXmlFileHandler {
                 pre_purge,
                 post_purge,
                 format,
-                multi_level_rule,
+                multi_level_rules,
                 decompose_rules,
             )
             .await?;
@@ -125,7 +128,7 @@ impl DisassembleXmlFileHandler {
         pre_purge: bool,
         post_purge: bool,
         format: &str,
-        multi_level_rule: Option<&MultiLevelRule>,
+        multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let resolved = Path::new(file_path)
@@ -156,7 +159,7 @@ impl DisassembleXmlFileHandler {
             pre_purge,
             post_purge,
             format,
-            multi_level_rule,
+            multi_level_rules,
             decompose_rules,
         )
         .await
@@ -171,7 +174,7 @@ impl DisassembleXmlFileHandler {
         pre_purge: bool,
         post_purge: bool,
         format: &str,
-        multi_level_rule: Option<&MultiLevelRule>,
+        multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let dir_path = normalize_path_unix(dir_path);
@@ -203,7 +206,7 @@ impl DisassembleXmlFileHandler {
                 pre_purge,
                 post_purge,
                 format,
-                multi_level_rule,
+                multi_level_rules,
                 decompose_rules,
             )
             .await?;
@@ -221,7 +224,7 @@ impl DisassembleXmlFileHandler {
         pre_purge: bool,
         post_purge: bool,
         format: &str,
-        multi_level_rule: Option<&MultiLevelRule>,
+        multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("Parsing file to disassemble: {}", file_path);
@@ -249,9 +252,14 @@ impl DisassembleXmlFileHandler {
         })
         .await?;
 
-        if let Some(rule) = multi_level_rule {
-            self.recursively_disassemble_multi_level(&output_path, rule, format)
-                .await?;
+        // Apply each multi-level rule in order. Each rule walks the same disassembly tree
+        // independently; rules are merged into the shared `.multi_level.json` so reassembly
+        // can replay them in order.
+        if let Some(rules) = multi_level_rules {
+            for rule in rules {
+                self.recursively_disassemble_multi_level(&output_path, rule, format)
+                    .await?;
+            }
         }
 
         Ok(())
@@ -345,7 +353,13 @@ impl DisassembleXmlFileHandler {
                     })
                     .await?;
 
-                    match config.rules.first_mut() {
+                    // Find an existing entry for this rule by (file_pattern, root_to_strip).
+                    // Multiple rules may co-exist in `.multi_level.json` (one per logical
+                    // segment); per-rule deduplication keeps each one a singleton.
+                    let existing_idx = config.rules.iter().position(|r| {
+                        r.file_pattern == rule.file_pattern && r.root_to_strip == rule.root_to_strip
+                    });
+                    match existing_idx {
                         None => {
                             let wrap_root = parsed
                                 .as_object()
@@ -372,10 +386,13 @@ impl DisassembleXmlFileHandler {
                                 wrap_xmlns: stored_xmlns,
                             });
                         }
-                        Some(r) if r.wrap_xmlns.is_empty() => {
-                            r.wrap_xmlns = wrap_xmlns;
+                        Some(idx) => {
+                            // Backfill xmlns from the source if we didn't have one yet; otherwise
+                            // leave the existing entry alone (the first observed file wins).
+                            if config.rules[idx].wrap_xmlns.is_empty() {
+                                config.rules[idx].wrap_xmlns = wrap_xmlns;
+                            }
                         }
-                        Some(_) => {}
                     }
                 }
             }

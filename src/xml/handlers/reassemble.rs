@@ -63,18 +63,20 @@ impl ReassembleXmlFileHandler {
             }
         }
 
-        let base_segment = config.as_ref().and_then(|c| {
-            c.rules.first().map(|r| {
-                (
-                    file_path.clone(),
-                    r.path_segment.clone(),
-                    true, // extract_inner: segment files have document_root > segment > content
-                )
+        // Build one base-segment entry per multi-level rule so the recursive walker can
+        // recognize each rule's path_segment under the disassembly root.
+        let base_segments: Vec<(String, String, bool)> = config
+            .as_ref()
+            .map(|c| {
+                c.rules
+                    .iter()
+                    .map(|r| (file_path.clone(), r.path_segment.clone(), true))
+                    .collect()
             })
-        });
+            .unwrap_or_default();
         // When multi-level reassembly is done, purge the entire disassembled directory
         let post_purge_final = post_purge || config.is_some();
-        self.reassemble_plain(&file_path, file_extension, post_purge_final, base_segment)
+        self.reassemble_plain(&file_path, file_extension, post_purge_final, &base_segments)
             .await
     }
 
@@ -110,11 +112,11 @@ impl ReassembleXmlFileHandler {
                 let sub_path = sub_entry.path();
                 if sub_path.is_dir() {
                     let sub_path_str = normalize_path_unix(&sub_path.to_string_lossy());
-                    self.reassemble_plain(&sub_path_str, Some("xml"), true, None)
+                    self.reassemble_plain(&sub_path_str, Some("xml"), true, &[])
                         .await?;
                 }
             }
-            self.reassemble_plain(&process_path_str, Some("xml"), true, None)
+            self.reassemble_plain(&process_path_str, Some("xml"), true, &[])
                 .await?;
         }
         ensure_segment_files_structure(
@@ -128,20 +130,23 @@ impl ReassembleXmlFileHandler {
     }
 
     /// Merge and write reassembled XML (no multi-level pre-step). Used internally.
-    /// When base_segment is Some((base_path, segment_name, extract_inner)), processing that base path
-    /// treats the segment subdir as one key whose value is an array; when extract_inner is true,
-    /// each file's root has document_root > segment > content and we use content (not whole root).
+    /// `base_segments` carries one tuple `(base_path, segment_name, extract_inner)` per
+    /// multi-level rule. When the recursive walker reaches `base_path` and finds a subdir
+    /// whose name matches one of the segment_names, that subdir's XML files are folded
+    /// into a single array under the segment_name key. When extract_inner is true, each
+    /// file's structure is `document_root > segment_name > content` and only the content
+    /// is collected; otherwise the whole root is kept.
     async fn reassemble_plain(
         &self,
         file_path: &str,
         file_extension: Option<&str>,
         post_purge: bool,
-        base_segment: Option<(String, String, bool)>,
+        base_segments: &[(String, String, bool)],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         log::debug!("Parsing directory to reassemble: {}", file_path);
         let parsed_objects = self
-            .process_files_in_directory(file_path.to_string(), base_segment)
+            .process_files_in_directory(file_path.to_string(), base_segments.to_vec())
             .await?;
 
         if parsed_objects.is_empty() {
@@ -187,7 +192,7 @@ impl ReassembleXmlFileHandler {
     fn process_files_in_directory<'a>(
         &'a self,
         dir_path: String,
-        base_segment: Option<(String, String, bool)>,
+        base_segments: Vec<(String, String, bool)>,
     ) -> ProcessDirFuture<'a> {
         Box::pin(async move {
             let mut parsed = Vec::new();
@@ -203,12 +208,11 @@ impl ReassembleXmlFileHandler {
                 a_name.cmp(&b_name)
             });
 
-            let is_base = base_segment
-                .as_ref()
-                .map(|(base, _, _)| dir_path == *base)
-                .unwrap_or(false);
-            let segment_name = base_segment.as_ref().map(|(_, name, _)| name.as_str());
-            let extract_inner = base_segment.as_ref().map(|(_, _, e)| *e).unwrap_or(false);
+            // We are at the disassembly root for a given rule when our dir_path matches
+            // the base_path stored on that rule. Each rule shares the same base_path in
+            // the current implementation, but tracking them per-entry keeps the door open
+            // for future per-rule base_paths without another signature change.
+            let is_base = base_segments.iter().any(|(base, _, _)| dir_path == *base);
 
             for entry in entries {
                 let path = entry.path();
@@ -225,20 +229,24 @@ impl ReassembleXmlFileHandler {
                     // Anything not a regular file is treated as a directory; symlinks and
                     // other exotic entries simply recurse via read_dir below.
                     let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if is_base && segment_name == Some(dir_name) {
+                    let matched_segment = if is_base {
+                        base_segments
+                            .iter()
+                            .find(|(_, seg_name, _)| seg_name == dir_name)
+                            .cloned()
+                    } else {
+                        None
+                    };
+                    if let Some((_, segment_name, extract_inner)) = matched_segment {
                         let segment_element = self
-                            .collect_segment_as_array(
-                                &file_path,
-                                segment_name.unwrap(),
-                                extract_inner,
-                            )
+                            .collect_segment_as_array(&file_path, &segment_name, extract_inner)
                             .await?;
                         if let Some(el) = segment_element {
                             parsed.push(el);
                         }
                     } else {
                         let sub_parsed = self
-                            .process_files_in_directory(file_path, base_segment.clone())
+                            .process_files_in_directory(file_path, base_segments.clone())
                             .await?;
                         parsed.extend(sub_parsed);
                     }

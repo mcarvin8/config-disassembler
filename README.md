@@ -89,7 +89,7 @@ config-disassembler xml parse       <path>
 | `--format <fmt>` | Output format: `xml`, `json`, `json5`, `yaml` | `xml` |
 | `--strategy <name>` | `unique-id` or `grouped-by-tag` | `unique-id` |
 | `-p`, `--split-tags <spec>` | With `grouped-by-tag`: split or group nested tags into subdirs (e.g. `objectPermissions:split:object,fieldPermissions:group:field`) | (none) |
-| `--multi-level <spec>` | Further disassemble matching files: `file_pattern:root_to_strip:unique_id_elements` | (none) |
+| `--multi-level <spec>` | Further disassemble matching files: `file_pattern:root_to_strip:unique_id_elements`. Multiple rules separated by `;`. | (none) |
 
 #### Reassemble options
 
@@ -158,6 +158,18 @@ config-disassembler xml disassemble ./Cloud_Kicks_Inner_Circle.loyaltyProgramSet
 ```
 
 A `.multi_level.json` config is written in the disassembly root so **reassemble** automatically does inner-level reassembly first, wraps files with the original root, then reassembles the top level. No extra flags are needed for reassembly.
+
+###### Multiple multi-level rules
+
+When a single XML file has more than one nested-array section that you want to split (e.g. an Agentforce bot version with `botDialogs` and `mlIntents`, or a custom metadata type with `sectionA` and `sectionB`), pass multiple rules separated by `;`. Each rule produces its own segment subdirectory under the disassembly root and is persisted as a separate entry in `.multi_level.json`; reassembly walks the rules in order.
+
+```bash
+config-disassembler xml disassemble ./Sample.multi-meta.xml \
+  --unique-id-elements "id,name,label" \
+  --multi-level "sectionA:sectionA:id;sectionB:sectionB:name"
+```
+
+Each rule still has the same shape (`file_pattern:root_to_strip:unique_id_elements`); the third part is comma-separated, which is why rules are joined with `;`. Whitespace around each rule is trimmed; trailing or empty rules (e.g. `a:R:id;`) are skipped silently.
 
 > **Caveat:** Multi-level reassembly removes disassembled directories after reassembling each level, even when you do not pass `--postpurge`. This is required so the next level can merge the reassembled XML files. Use version control (e.g. Git) to recover the tree if needed, or run reassembly only in a pipeline where these changes can be discarded.
 
