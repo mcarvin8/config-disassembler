@@ -1,0 +1,27 @@
+tests/xml_disassemble_reassemble.rs
+  ef9ea97ed44c3cc0 1798-1905
+src/xml/multi_level.rs
+  ef9ea97ed44c3cc0 168-177
+src/xml/handlers/reassemble.rs
+  ef9ea97ed44c3cc0 6,9-10,12,40-42,64-68,70-80,102-141,144-145,168-197,199-203,205-207,209-210,538,561
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "45462146d283cc2c5b4bc737db9e40a5d2408099",
+  "prompts": {
+    "ef9ea97ed44c3cc0": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "e7cf3b90-6332-40e1-bbe2-c8f5603ab147",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin",
+      "messages": [],
+      "total_additions": 233,
+      "total_deletions": 24,
+      "accepted_lines": 225,
+      "overriden_lines": 0
+    }
+  }
+}
