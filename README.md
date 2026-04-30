@@ -20,6 +20,10 @@ JSON, JSON5, JSONC, YAML, and TOON files can be split and reassembled among thos
 
 For file-tree diagrams and before/after layouts, see [Examples](docs/examples.md).
 
+> 💡 **Node.js support available**  
+> This crate can also be used in Node.js environments via Neon bindings:  
+> 👉 [config-disassembler-node](https://github.com/mcarvin8/config-disassembler-node])
+
 ## Installation
 
 ### Cargo
