@@ -61,7 +61,7 @@ pub fn parse_decompose_spec(spec: &str) -> Vec<DecomposeRule> {
     rules
 }
 
-/// Parse --multi-level spec: `file_pattern:root_to_strip:unique_id_elements`.
+/// Parse a single --multi-level spec: `file_pattern:root_to_strip:unique_id_elements`.
 pub fn parse_multi_level_spec(spec: &str) -> Option<MultiLevelRule> {
     let parts: Vec<&str> = spec.splitn(3, ':').collect();
     if parts.len() != 3 {
@@ -80,6 +80,20 @@ pub fn parse_multi_level_spec(spec: &str) -> Option<MultiLevelRule> {
         wrap_root_element: root_to_strip.to_string(),
         wrap_xmlns: String::new(),
     })
+}
+
+/// Parse one or more --multi-level specs separated by `;`.
+///
+/// Each rule is `file_pattern:root_to_strip:unique_id_elements`; rules are joined by `;`
+/// because the third part is itself a comma-separated list. Empty rules (e.g. trailing `;`)
+/// are skipped silently. Malformed rules are dropped (the caller may warn separately if it
+/// needs to surface that to the user).
+pub fn parse_multi_level_specs(spec: &str) -> Vec<MultiLevelRule> {
+    spec.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(parse_multi_level_spec)
+        .collect()
 }
 
 /// Parse disassemble args: `<path> [options]`.
@@ -213,7 +227,7 @@ pub fn print_usage() {
     eprintln!(
         "    --strategy <name>              - unique-id or grouped-by-tag (default: unique-id)"
     );
-    eprintln!("    --multi-level <spec>          - Further disassemble matching files: file_pattern:root_to_strip:unique_id_elements");
+    eprintln!("    --multi-level <spec>          - Further disassemble matching files: file_pattern:root_to_strip:unique_id_elements (multiple rules separated by ';')");
     eprintln!("    -p, --split-tags <spec>       - With grouped-by-tag: split/group nested tags (e.g. objectPermissions:split:object,fieldPermissions:group:field)");
     eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml)");
 }
@@ -241,12 +255,13 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
     let opts = parse_disassemble_args(args);
     let path = opts.path.unwrap_or(".");
     let strategy = opts.strategy.unwrap_or("unique-id");
-    let multi_level_rule = opts
+    let multi_level_rules: Vec<MultiLevelRule> = opts
         .multi_level
-        .as_ref()
-        .and_then(|s| parse_multi_level_spec(s));
-    if opts.multi_level.is_some() && multi_level_rule.is_none() {
-        eprintln!("Invalid --multi-level spec; use file_pattern:root_to_strip:unique_id_elements");
+        .as_deref()
+        .map(parse_multi_level_specs)
+        .unwrap_or_default();
+    if opts.multi_level.is_some() && multi_level_rules.is_empty() {
+        eprintln!("Invalid --multi-level spec; use file_pattern:root_to_strip:unique_id_elements (multiple rules separated by ';')");
     }
     let decompose_rules: Vec<DecomposeRule> = if strategy == "grouped-by-tag" {
         opts.split_tags
@@ -263,6 +278,11 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
     let resolved_ignore = crate::ignore_file::resolve_xml_ignore_path(opts.ignore_path, &cwd);
+    let multi_level_rules_ref = if multi_level_rules.is_empty() {
+        None
+    } else {
+        Some(multi_level_rules.as_slice())
+    };
     let mut handler = DisassembleXmlFileHandler::new();
     handler
         .disassemble(
@@ -273,7 +293,7 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             opts.post_purge,
             &resolved_ignore,
             opts.format,
-            multi_level_rule.as_ref(),
+            multi_level_rules_ref,
             decompose_rules_ref,
         )
         .await?;
@@ -360,6 +380,40 @@ mod tests {
         assert!(parse_multi_level_spec(":Root:ids").is_none());
         assert!(parse_multi_level_spec("file::ids").is_none());
         assert!(parse_multi_level_spec("file:Root:").is_none());
+    }
+
+    #[test]
+    fn parse_multi_level_specs_single_rule_returns_one() {
+        let rules = parse_multi_level_specs("a-meta:Root:id");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].file_pattern, "a-meta");
+    }
+
+    #[test]
+    fn parse_multi_level_specs_semicolon_separates_rules() {
+        let rules =
+            parse_multi_level_specs("a-meta:RootA:id1,id2; b-meta:RootB:other ; c-meta:RootC:k");
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].file_pattern, "a-meta");
+        assert_eq!(rules[0].unique_id_elements, "id1,id2");
+        assert_eq!(rules[1].file_pattern, "b-meta");
+        assert_eq!(rules[1].root_to_strip, "RootB");
+        assert_eq!(rules[2].file_pattern, "c-meta");
+    }
+
+    #[test]
+    fn parse_multi_level_specs_skips_empty_and_malformed() {
+        // Trailing semicolons and malformed rules are dropped without aborting the rest.
+        let rules = parse_multi_level_specs("a:R:id; ; bad ; b:R:id;");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].file_pattern, "a");
+        assert_eq!(rules[1].file_pattern, "b");
+    }
+
+    #[test]
+    fn parse_multi_level_specs_empty_string_returns_empty() {
+        assert!(parse_multi_level_specs("").is_empty());
+        assert!(parse_multi_level_specs(" ; ;").is_empty());
     }
 
     #[test]

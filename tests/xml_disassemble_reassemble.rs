@@ -687,7 +687,7 @@ async fn multi_level_disassemble_then_reassemble_matches_original() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1137,7 +1137,7 @@ async fn multi_level_with_empty_path_segment_and_xmlns_derives_segment() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1179,7 +1179,7 @@ async fn multi_level_with_explicit_xmlns_preserved() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1228,7 +1228,7 @@ async fn multi_level_with_multiple_matching_files_appends_rule_once() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1300,7 +1300,7 @@ async fn multi_level_rule_without_matching_file_is_noop() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1527,7 +1527,7 @@ async fn multi_level_skips_unparseable_matching_file() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1575,7 +1575,7 @@ async fn multi_level_skips_matching_file_without_root_to_strip() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1625,7 +1625,7 @@ async fn multi_level_skips_matching_file_with_non_object_strip_target() {
             false,
             ".xmldisassemblerignore",
             "xml",
-            Some(&rule),
+            Some(std::slice::from_ref(&rule)),
             None,
         )
         .await
@@ -1669,4 +1669,129 @@ async fn reassemble_multi_level_skips_unparseable_segment_file() {
         .reassemble(out_dir.to_str().unwrap(), Some("xml"), false)
         .await
         .expect("reassemble");
+}
+
+/// Multi-rule round-trip: a single XML file with two distinct repeating sections is
+/// disassembled with two multi-level rules and reassembled, with the result byte-equal
+/// to the input. Exercises the new multi-rule plumbing in disassemble/reassemble end to end.
+#[tokio::test]
+async fn multi_rule_disassemble_then_reassemble_matches_original() {
+    let _ = env_logger::try_init();
+
+    // Include a leaf sibling (`<description>`) so `MultiRoot` has at least one non-array
+    // child. That leaf-only file carries the document-level xmlns through reassembly the
+    // same way it does in the single-rule loyalty case.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<MultiRoot xmlns="http://example.com/multi">
+    <description>two-section sample</description>
+    <sectionA>
+        <items>
+            <id>a1</id>
+            <label>Alpha One</label>
+        </items>
+        <items>
+            <id>a2</id>
+            <label>Alpha Two</label>
+        </items>
+    </sectionA>
+    <sectionB>
+        <records>
+            <name>Beta_One</name>
+            <value>1</value>
+        </records>
+        <records>
+            <name>Beta_Two</name>
+            <value>2</value>
+        </records>
+    </sectionB>
+</MultiRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Sample.multi-meta.xml");
+    std::fs::write(&source, xml).expect("write source");
+
+    let rules = vec![
+        MultiLevelRule {
+            file_pattern: "sectionA".to_string(),
+            root_to_strip: "sectionA".to_string(),
+            unique_id_elements: "id".to_string(),
+            path_segment: "sectionA".to_string(),
+            wrap_root_element: "MultiRoot".to_string(),
+            wrap_xmlns: String::new(),
+        },
+        MultiLevelRule {
+            file_pattern: "sectionB".to_string(),
+            root_to_strip: "sectionB".to_string(),
+            unique_id_elements: "name".to_string(),
+            path_segment: "sectionB".to_string(),
+            wrap_root_element: "MultiRoot".to_string(),
+            wrap_xmlns: String::new(),
+        },
+    ];
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("id,name,label"),
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            Some(rules.as_slice()),
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let disassembled_dir = base.join("Sample");
+    assert!(
+        disassembled_dir.exists(),
+        "disassembled directory should exist"
+    );
+
+    // Both rules must have been persisted to .multi_level.json so reassembly can replay them.
+    let cfg_path = disassembled_dir.join(".multi_level.json");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).expect("read multi_level config"))
+            .expect("parse multi_level config");
+    let stored_rules = cfg
+        .get("rules")
+        .and_then(|r| r.as_array())
+        .expect("rules array");
+    assert_eq!(
+        stored_rules.len(),
+        2,
+        ".multi_level.json must persist both rules"
+    );
+    let patterns: Vec<String> = stored_rules
+        .iter()
+        .filter_map(|r| {
+            r.get("file_pattern")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect();
+    assert!(patterns.contains(&"sectionA".to_string()));
+    assert!(patterns.contains(&"sectionB".to_string()));
+
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            disassembled_dir.to_str().unwrap(),
+            Some("multi-meta.xml"),
+            false,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt_path = base.join("Sample.multi-meta.xml");
+    assert!(rebuilt_path.exists(), "rebuilt file should exist");
+    let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
+    assert_eq!(
+        rebuilt, xml,
+        "two-rule multi-level round-trip must preserve original XML byte-for-byte"
+    );
 }
