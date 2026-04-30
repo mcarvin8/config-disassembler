@@ -165,7 +165,16 @@ pub async fn ensure_segment_files_structure(
             }
             serde_json::Value::Object(inner_clean)
         } else {
-            serde_json::Value::Object(root_val.clone())
+            // The inner wrapper must not carry an `xmlns` attribute (only the document
+            // root keeps it). Strip it from the cloned content so nested-rule wrapping
+            // doesn't emit `<inner_wrapper xmlns="...">` siblings.
+            let mut inner_clean = Map::new();
+            for (k, v) in &root_val {
+                if k != "@xmlns" {
+                    inner_clean.insert(k.clone(), v.clone());
+                }
+            }
+            serde_json::Value::Object(inner_clean)
         };
 
         let already_correct = current_root_key == document_root

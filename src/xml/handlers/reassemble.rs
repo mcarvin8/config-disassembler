@@ -3,11 +3,13 @@
 use crate::xml::builders::{build_xml_string, merge_xml_elements, reorder_root_keys};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
-use crate::xml::types::XmlElement;
+use crate::xml::types::{MultiLevelRule, XmlElement};
 use crate::xml::utils::normalize_path_unix;
 use serde_json::Value;
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tokio::fs;
 
@@ -35,6 +37,9 @@ type ProcessDirFuture<'a> = Pin<
     >,
 >;
 
+type SegmentFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>>;
+
 pub struct ReassembleXmlFileHandler;
 
 impl ReassembleXmlFileHandler {
@@ -56,9 +61,23 @@ impl ReassembleXmlFileHandler {
         let path = Path::new(&file_path);
         let config = load_multi_level_config(path).await;
         if let Some(ref config) = config {
-            for rule in &config.rules {
+            // Process each rule whose path_segment exists as a directory at the
+            // disassembly root. Inner-only rules (whose segment lives nested under another
+            // rule's item dir) are handled dynamically when the parent rule walks its
+            // items; we hand them in as `nested_rules` candidates here.
+            for (i, rule) in config.rules.iter().enumerate() {
                 let segment_path = path.join(&rule.path_segment);
-                self.reassemble_multi_level_segment(&segment_path, rule)
+                if !segment_path.is_dir() {
+                    continue;
+                }
+                let nested: Vec<MultiLevelRule> = config
+                    .rules
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, r)| r.clone())
+                    .collect();
+                self.reassemble_multi_level_segment(&segment_path, rule, &nested)
                     .await?;
             }
         }
@@ -80,12 +99,50 @@ impl ReassembleXmlFileHandler {
             .await
     }
 
-    /// Reassemble a single multi-level segment directory: walk each process dir, reassemble
-    /// nested segments, reassemble the process, then ensure the wrapper structure.
-    async fn reassemble_multi_level_segment(
+    /// Reassemble a single multi-level segment directory.
+    ///
+    /// For each item directory under `segment_path` (e.g. each `<dialog>/` under
+    /// `botDialogs/`):
+    ///
+    /// 1. **Phase 1 — nested rules first.** For every immediate sub-directory whose name
+    ///    matches a `nested_rules` candidate's `path_segment`, recursively reassemble
+    ///    that sub-directory as its own segment. This wraps each per-step file in
+    ///    `<wrap_root_element><inner_segment>...</inner_segment></wrap_root_element>` *before*
+    ///    the outer-level merge sees it, so multiple inner items survive as siblings
+    ///    rather than collapsing into a single bag of leaves.
+    ///
+    /// 2. **Phase 2 — flat sub-directories.** Any remaining sub-directory (anything not
+    ///    consumed by phase 1) is collapsed into a per-item `.xml` at the parent level
+    ///    via [`Self::reassemble_plain`], the original behaviour for things like
+    ///    decompose-rule outputs.
+    ///
+    /// 3. **Phase 3 — merge item.** Everything in the item directory (the `.xml` files
+    ///    written by phases 1 and 2 plus any leaf `.xml` already there) is merged into
+    ///    a single `.xml` at the parent level.
+    ///
+    /// Finally, [`ensure_segment_files_structure`] wraps every `.xml` in `segment_path`
+    /// in `<wrap_root_element><path_segment>...</path_segment></wrap_root_element>` so
+    /// the parent reassembly sees correctly-wrapped siblings.
+    fn reassemble_multi_level_segment<'a>(
+        &'a self,
+        segment_path: &'a Path,
+        rule: &'a MultiLevelRule,
+        nested_rules: &'a [MultiLevelRule],
+    ) -> SegmentFuture<'a> {
+        let segment_path = segment_path.to_path_buf();
+        let rule = rule.clone();
+        let nested_rules = nested_rules.to_vec();
+        Box::pin(async move {
+            self.reassemble_multi_level_segment_inner(&segment_path, &rule, &nested_rules)
+                .await
+        })
+    }
+
+    async fn reassemble_multi_level_segment_inner(
         &self,
         segment_path: &Path,
-        rule: &crate::xml::types::MultiLevelRule,
+        rule: &MultiLevelRule,
+        nested_rules: &[MultiLevelRule],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !segment_path.is_dir() {
             return Ok(());
@@ -108,14 +165,49 @@ impl ReassembleXmlFileHandler {
                 sub_entries.push(e);
             }
             sub_entries.sort_by_key(|e| e.file_name());
-            for sub_entry in sub_entries {
-                let sub_path = sub_entry.path();
-                if sub_path.is_dir() {
-                    let sub_path_str = normalize_path_unix(&sub_path.to_string_lossy());
-                    self.reassemble_plain(&sub_path_str, Some("xml"), true, &[])
-                        .await?;
+
+            // Phase 1: drain any sub-directory that matches a nested rule's
+            // `path_segment` so it is re-wrapped before the outer merge runs.
+            let mut handled: HashSet<OsString> = HashSet::new();
+            for sub_entry in &sub_entries {
+                let sub_path: PathBuf = sub_entry.path();
+                if !sub_path.is_dir() {
+                    continue;
                 }
+                let sub_name = sub_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let Some(nested_rule) = nested_rules.iter().find(|r| r.path_segment == sub_name)
+                else {
+                    continue;
+                };
+                // Pass everything *except* the rule we just matched as deeper candidates.
+                // Sibling rules remain candidates further down the tree without re-entering
+                // the same rule on a sub-dir that happens to share its name.
+                let deeper: Vec<MultiLevelRule> = nested_rules
+                    .iter()
+                    .filter(|r| r.path_segment != nested_rule.path_segment)
+                    .cloned()
+                    .collect();
+                self.reassemble_multi_level_segment(&sub_path, nested_rule, &deeper)
+                    .await?;
+                handled.insert(sub_entry.file_name());
             }
+
+            // Phase 2: collapse remaining sub-directories into per-item .xml files at
+            // the parent level (preserves existing behaviour for non-nested-rule subdirs).
+            for sub_entry in &sub_entries {
+                let sub_path = sub_entry.path();
+                if !sub_path.is_dir() {
+                    continue;
+                }
+                if handled.contains(&sub_entry.file_name()) {
+                    continue;
+                }
+                let sub_path_str = normalize_path_unix(&sub_path.to_string_lossy());
+                self.reassemble_plain(&sub_path_str, Some("xml"), true, &[])
+                    .await?;
+            }
+
+            // Phase 3: merge everything in the item dir into a single .xml at the parent.
             self.reassemble_plain(&process_path_str, Some("xml"), true, &[])
                 .await?;
         }
@@ -443,7 +535,7 @@ mod tests {
             wrap_root_element: "Root".to_string(),
             wrap_xmlns: String::new(),
         };
-        h.reassemble_multi_level_segment(&file, &rule)
+        h.reassemble_multi_level_segment(&file, &rule, &[])
             .await
             .unwrap();
     }
@@ -466,7 +558,7 @@ mod tests {
             wrap_root_element: "Root".to_string(),
             wrap_xmlns: "http://example.com".to_string(),
         };
-        h.reassemble_multi_level_segment(&segment, &rule)
+        h.reassemble_multi_level_segment(&segment, &rule, &[])
             .await
             .unwrap();
     }
