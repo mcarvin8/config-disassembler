@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/mcarvin8/config-disassembler/compare/v0.4.2...v0.4.3) - 2026-05-01
+
+### Fixed
+
+- *(xml)* hash outer element on unique-id fallback ([#18](https://github.com/mcarvin8/config-disassembler/pull/18))
+
 ## [0.4.2](https://github.com/mcarvin8/config-disassembler/compare/v0.4.1...v0.4.2) - 2026-04-30
 
 ### Fixed
