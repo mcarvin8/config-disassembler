@@ -2008,3 +2008,130 @@ async fn disassemble_preserves_dotted_full_names_in_output_dir() {
         "process B must round-trip byte-for-byte"
     );
 }
+
+/// End-to-end exercise of compound `unique_id_elements` (e.g.
+/// `actionName+pageOrSobjectType+formFactor`). The Dreamhouse fixture has
+/// four `<actionOverrides>` items that *all* share `<actionName>View</...>`,
+/// so single-field keying collapses every sibling into one filename and
+/// loses three of them. Compound keying must produce four distinct,
+/// readable shards and a clean round-trip.
+#[tokio::test]
+async fn compound_unique_id_elements_disambiguate_action_overrides() {
+    let _ = env_logger::try_init();
+
+    let fixture = "fixtures/xml/array-of-leaves/Dreamhouse.app-meta.xml";
+    assert!(
+        Path::new(fixture).exists(),
+        "Fixture {} must exist (run from project root)",
+        fixture
+    );
+
+    let original_content = std::fs::read_to_string(fixture).expect("read fixture");
+    // Sanity: the fixture must actually contain four siblings sharing
+    // <actionName>View</actionName>; otherwise the test is no-op.
+    assert_eq!(
+        original_content.matches("<actionOverrides>").count(),
+        4,
+        "fixture must have 4 <actionOverrides> for this test to be meaningful"
+    );
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Dreamhouse.app-meta.xml");
+    std::fs::copy(fixture, &source).expect("copy fixture");
+
+    // The compound `actionName+pageOrSobjectType+formFactor` uniquely
+    // identifies each of the four <actionOverrides> rows; the trailing
+    // single-field candidate exists so any siblings missing one of the
+    // compound fields can still pick up a readable id (would otherwise
+    // hash). `fullName,name` are still the implicit defaults via the
+    // disassembler's prepended fallback list.
+    let unique_id = "actionName+pageOrSobjectType+formFactor,actionName";
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some(unique_id),
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    // The disassembler emits one shard per actionOverride under
+    // `Dreamhouse/actionOverrides/`. With compound keying we expect
+    // exactly the four readable filenames below and zero hash filenames.
+    let overrides_dir = base.join("Dreamhouse").join("actionOverrides");
+    assert!(
+        overrides_dir.is_dir(),
+        "actionOverrides output dir must exist: {}",
+        overrides_dir.display()
+    );
+
+    let mut shard_names: Vec<String> = std::fs::read_dir(&overrides_dir)
+        .expect("read actionOverrides dir")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".actionOverrides-meta.xml"))
+        .collect();
+    shard_names.sort();
+
+    let expected: Vec<String> = [
+        "View__Broker__c__Large.actionOverrides-meta.xml",
+        "View__Broker__c__Small.actionOverrides-meta.xml",
+        "View__Property__c__Large.actionOverrides-meta.xml",
+        "View__Property__c__Small.actionOverrides-meta.xml",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    assert_eq!(
+        shard_names, expected,
+        "compound key must produce four readable, distinct filenames; got {:?}",
+        shard_names
+    );
+
+    // Round-trip must preserve every <actionOverrides> sibling. The
+    // fixture is excluded from byte-equality checks because sibling order
+    // isn't preserved, so we instead assert the *set* of <content>
+    // values - one per actionOverride - is fully retained.
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            base.join("Dreamhouse").to_str().unwrap(),
+            Some("app-meta.xml"),
+            true,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt_path = base.join("Dreamhouse.app-meta.xml");
+    let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
+    let original_overrides: std::collections::BTreeSet<&str> = original_content
+        .match_indices("<content>")
+        .map(|(idx, _)| {
+            let rest = &original_content[idx + "<content>".len()..];
+            let end = rest.find("</content>").expect("content end");
+            &rest[..end]
+        })
+        .collect();
+    let rebuilt_overrides: std::collections::BTreeSet<&str> = rebuilt
+        .match_indices("<content>")
+        .map(|(idx, _)| {
+            let rest = &rebuilt[idx + "<content>".len()..];
+            let end = rest.find("</content>").expect("content end");
+            &rest[..end]
+        })
+        .collect();
+    assert_eq!(
+        original_overrides, rebuilt_overrides,
+        "compound-keyed round-trip must preserve every <content> value"
+    );
+}

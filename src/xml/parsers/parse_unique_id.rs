@@ -1,9 +1,41 @@
 //! Parse unique ID from XML element for file naming.
+//!
+//! ## Configuration syntax
+//!
+//! `unique_id_elements` is a comma-separated list of *candidates*; the first
+//! candidate that fully resolves against an element wins. Each candidate is
+//! either:
+//!
+//! * a single field name (e.g. `fullName`) - matches when that field is
+//!   present anywhere in the element's subtree, or
+//! * a `+`-joined **compound** of two or more field names (e.g.
+//!   `actionName+pageOrSobjectType+formFactor`) - matches only when *every*
+//!   sub-field resolves at the same level, in which case the resolved
+//!   values are joined with [`COMPOUND_VALUE_SEPARATOR`] (`__`).
+//!
+//! Compounds let metadata types like `<profileActionOverrides>` - whose
+//! natural unique key is `actionName + pageOrSobjectType + formFactor +
+//! profile [+ recordType]` - produce stable, readable filenames instead of
+//! collapsing every sibling into a SHA-256 fallback. Listing both the wide
+//! and narrow forms (`A+B+C+D, A+B+C, A`) gives a graceful fallback chain
+//! when an item only carries some of the keys.
+//!
+//! Backwards compatibility: any spec that contains no `+` is parsed as a
+//! list of single-field candidates and behaves identically to releases
+//! prior to compound-key support.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::xml::types::XmlElement;
+
+/// Separator inserted between resolved values when a compound candidate
+/// matches. Picked because filenames are filesystem-safe everywhere and
+/// because individual Salesforce identifier names rarely contain the
+/// double-underscore (single `_` is common - e.g. `Account_Name__c` - so
+/// a single underscore would round-trip ambiguously when values themselves
+/// already contain `_`).
+const COMPOUND_VALUE_SEPARATOR: &str = "__";
 
 /// Hash the full canonicalized JSON form of an element to derive an 8-char
 /// filename. SHA-256 over distinct content yields distinct prefixes with
@@ -48,26 +80,70 @@ fn value_as_string(value: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn find_direct_field_match(element: &XmlElement, field_names: &[&str]) -> Option<String> {
-    let obj = element.as_object()?;
-    for name in field_names {
-        if let Some(value) = obj.get(*name) {
-            if let Some(s) = value_as_string(value) {
-                return Some(s);
-            }
-        }
-    }
-    None
+/// Parse the user-supplied spec into a list of candidates, where each
+/// candidate is itself a list of field names. A candidate of length 1 is a
+/// plain single-field match (legacy behaviour); length >= 2 is a compound.
+///
+/// Empty entries (from leading/trailing commas, double commas, or stray `+`
+/// separators) are filtered so a copy-pasted spec like `, name ,, +foo+ ,`
+/// degrades to `[["name"], ["foo"]]` rather than panicking on empty lookups.
+fn parse_candidates(spec: &str) -> Vec<Vec<&str>> {
+    spec.split(',')
+        .map(|candidate| {
+            candidate
+                .split('+')
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .collect::<Vec<&str>>()
+        })
+        .filter(|fields| !fields.is_empty())
+        .collect()
 }
 
-/// Search for a configured unique-id field anywhere in the subtree rooted at
-/// `element`. Returns `Some(id)` only when a configured field is *actually*
-/// matched; returns `None` when nothing matches so the caller can fall back to
-/// hashing the *outer* element rather than a single inner child.
+/// Match a single candidate against the element's *direct* fields. A
+/// single-field candidate succeeds when the field is present and resolves
+/// to a non-empty string; a compound candidate succeeds only when every
+/// sub-field is present and non-empty, in which case the resolved values
+/// are joined with [`COMPOUND_VALUE_SEPARATOR`].
+///
+/// Restricting compounds to the same level keeps the semantics intuitive:
+/// `actionName+profile+recordType` describes a single record's shape, not
+/// a search for those tokens scattered across the subtree.
+fn match_candidate_at_direct(element: &XmlElement, fields: &[&str]) -> Option<String> {
+    let obj = element.as_object()?;
+    let mut parts: Vec<String> = Vec::with_capacity(fields.len());
+    for field in fields {
+        let value = obj.get(*field).and_then(value_as_string)?;
+        if value.is_empty() {
+            return None;
+        }
+        parts.push(value);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join(COMPOUND_VALUE_SEPARATOR))
+}
+
+/// Search for a configured unique-id candidate anywhere in the subtree
+/// rooted at `element`. Returns `Some(id)` only when a candidate fully
+/// resolves; returns `None` so the caller can fall back to hashing the
+/// *outer* element rather than a single inner child.
+///
+/// Order of evaluation:
+/// 1. Try every candidate against the direct fields of `element` (so a
+///    direct match always beats a deeper one - preserves the priority that
+///    callers configuring `fullName,name` historically relied on).
+/// 2. If nothing matched, recurse into recursable children and repeat.
 fn find_id_in_subtree(element: &XmlElement, unique_id_elements: &str) -> Option<String> {
-    let field_names: Vec<&str> = unique_id_elements.split(',').map(|s| s.trim()).collect();
-    if let Some(direct) = find_direct_field_match(element, &field_names) {
-        return Some(direct);
+    let candidates = parse_candidates(unique_id_elements);
+    if candidates.is_empty() {
+        return None;
+    }
+    for candidate in &candidates {
+        if let Some(id) = match_candidate_at_direct(element, candidate) {
+            return Some(id);
+        }
     }
     let obj = element.as_object()?;
     for (_, child) in obj {
@@ -252,6 +328,138 @@ mod tests {
 
         let mixed = json!({ "@attr": "x", "name": "y" });
         assert!(is_recursable_object(&mixed));
+    }
+
+    // ---- compound-key support ----------------------------------------------
+
+    /// A `<profileActionOverrides>` element with the full key set. The
+    /// compound `actionName+pageOrSobjectType+formFactor+profile` must
+    /// resolve to all four values joined with `__`.
+    #[test]
+    fn compound_resolves_when_all_fields_present() {
+        let el = json!({
+            "actionName": { "#text": "Tab" },
+            "content": { "#text": "Home_Page_Default" },
+            "formFactor": { "#text": "Large" },
+            "pageOrSobjectType": { "#text": "standard-home" },
+            "type": { "#text": "Flexipage" },
+            "profile": { "#text": "Implementation_Lightning" }
+        });
+        let id =
+            parse_unique_id_element(&el, Some("actionName+pageOrSobjectType+formFactor+profile"));
+        assert_eq!(id, "Tab__standard-home__Large__Implementation_Lightning");
+    }
+
+    /// A compound that names a field the element doesn't have must NOT
+    /// match - the next candidate (a narrower compound, then a single
+    /// field) takes over.
+    #[test]
+    fn compound_falls_through_when_one_field_missing() {
+        // `<actionOverrides>` (no profile, no recordType) - the wide compound
+        // must fail, the narrow compound must succeed.
+        let el = json!({
+            "actionName": { "#text": "View" },
+            "content": { "#text": "LUX_Case_Release_Candidate_Copy" },
+            "formFactor": { "#text": "Large" },
+            "pageOrSobjectType": { "#text": "Case" },
+            "type": { "#text": "Flexipage" }
+        });
+        let spec = "actionName+pageOrSobjectType+formFactor+profile,actionName+pageOrSobjectType+formFactor,actionName";
+        assert_eq!(
+            parse_unique_id_element(&el, Some(spec)),
+            "View__Case__Large"
+        );
+    }
+
+    /// All compound candidates miss → the loop must fall back to the
+    /// single-field candidate at the tail of the spec, and ultimately to
+    /// the outer-element hash if even that misses.
+    #[test]
+    fn compound_then_single_then_hash_fallback() {
+        let el = json!({
+            "actionName": { "#text": "View" }
+        });
+        let spec_all_compound =
+            "actionName+pageOrSobjectType+formFactor+profile,actionName+pageOrSobjectType";
+        let id = parse_unique_id_element(&el, Some(spec_all_compound));
+        assert_eq!(
+            id.len(),
+            8,
+            "no candidate should match → hash fallback, got {id}"
+        );
+
+        let spec_with_single_tail = "actionName+pageOrSobjectType+formFactor,actionName";
+        assert_eq!(
+            parse_unique_id_element(&el, Some(spec_with_single_tail)),
+            "View"
+        );
+    }
+
+    /// Empty values (`<recordType></recordType>`) must be treated as
+    /// missing for the purpose of compound matching - otherwise we would
+    /// emit filenames like `View__Account__Large__` with a trailing
+    /// separator and silently collide with siblings that genuinely lack
+    /// the field.
+    #[test]
+    fn compound_treats_empty_values_as_missing() {
+        let el = json!({
+            "actionName": { "#text": "View" },
+            "pageOrSobjectType": { "#text": "Account" },
+            "recordType": { "#text": "" }  // explicitly empty
+        });
+        let spec = "actionName+pageOrSobjectType+recordType,actionName+pageOrSobjectType";
+        assert_eq!(
+            parse_unique_id_element(&el, Some(spec)),
+            "View__Account",
+            "empty <recordType> must be treated as missing"
+        );
+    }
+
+    /// Distinct profileActionOverrides siblings sharing actionName +
+    /// pageOrSobjectType + formFactor but differing in `profile` must
+    /// produce distinct compound IDs (not collide).
+    #[test]
+    fn compound_disambiguates_siblings_that_share_outer_fields() {
+        let make = |profile: &str| {
+            json!({
+                "actionName": { "#text": "Tab" },
+                "content": { "#text": "Home_Page_Default" },
+                "formFactor": { "#text": "Large" },
+                "pageOrSobjectType": { "#text": "standard-home" },
+                "type": { "#text": "Flexipage" },
+                "profile": { "#text": profile }
+            })
+        };
+        let spec = "actionName+pageOrSobjectType+formFactor+profile";
+        let a = parse_unique_id_element(&make("Implementation_Lightning"), Some(spec));
+        let b = parse_unique_id_element(&make("Sales_Lightning"), Some(spec));
+        assert_ne!(a, b);
+        assert!(a.ends_with("Implementation_Lightning"));
+        assert!(b.ends_with("Sales_Lightning"));
+    }
+
+    /// A single-field spec must behave identically to releases prior to
+    /// compound-key support: same priority (direct first, then nested),
+    /// same hash fallback, no spurious `__` separators.
+    #[test]
+    fn single_field_behaviour_is_unchanged() {
+        let el = json!({ "name": "Get_Info", "label": "Get Info" });
+        assert_eq!(parse_unique_id_element(&el, Some("name")), "Get_Info");
+
+        // Direct vs nested priority preserved.
+        let nested = json!({
+            "wrapper": { "name": "NestedName" }
+        });
+        assert_eq!(parse_unique_id_element(&nested, Some("name")), "NestedName");
+    }
+
+    /// Pathological/malformed specs - leading commas, stray `+`, all
+    /// whitespace - must not panic and must degrade to hash fallback.
+    #[test]
+    fn malformed_spec_degrades_to_hash() {
+        let el = json!({ "foo": "bar" });
+        let id = parse_unique_id_element(&el, Some(",,+,, "));
+        assert_eq!(id.len(), 8, "all-empty candidates → hash fallback");
     }
 
     /// Recursion must only return when a configured unique-id field is

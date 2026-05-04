@@ -107,6 +107,7 @@ Each nested element is written to its own file, named by a unique identifier (or
 Best for fine-grained diffs and version control.
 
 * **UID-based layout** – When you provide `--unique-id-elements` (e.g. `name,id,apexClass`), nested elements are named by the first matching field value. For Salesforce flows, a typical list might be: `apexClass,name,object,field,layout,actionName,targetReference,assignToReference,choiceText,promptText`. Using unique-id elements also ensures predictable sorting in the reassembled output.
+* **Compound keys (`+`)** – Each comma-separated *candidate* in the list may be a `+`-joined compound (e.g. `actionName+pageOrSobjectType+formFactor+profile`). A compound matches only when every sub-field is present and non-empty at the same level, in which case the resolved values are joined with `__` to form the filename. Useful for metadata whose natural unique key is multi-field, like Salesforce `<profileActionOverrides>` (`actionName + pageOrSobjectType + formFactor + profile [+ recordType]`); without compounds, every sibling sharing an `actionName` would collapse to one filename. List both wide and narrow forms (e.g. `A+B+C+D, A+B+C, A`) for graceful fallback when items only carry some keys.
 * **Hash-based layout** – When no unique ID is found, elements are named with an 8-character hash of their content (e.g. `419e0199.botMlDomain-meta.xml`).
 
 ##### `grouped-by-tag`
