@@ -1903,3 +1903,108 @@ async fn nested_multi_rule_disassemble_then_reassemble_matches_original() {
         "nested multi-level round-trip must preserve original XML byte-for-byte"
     );
 }
+
+/// Regression: filenames whose stem contains more than one dot (e.g. Salesforce
+/// approval processes named `<SObject>.<ProcessName>.approvalProcess-meta.xml`)
+/// were collapsing into a single `<SObject>/` directory because the disassembler
+/// split at the *first* dot. Two distinct processes for the same SObject would
+/// share an output dir and silently merge during reassembly. This test confirms
+/// each dotted-fullName file gets its own output dir and round-trips losslessly.
+#[tokio::test]
+async fn disassemble_preserves_dotted_full_names_in_output_dir() {
+    let _ = env_logger::try_init();
+
+    // Use a nested element (`approvalStep`) so the disassembler actually emits an
+    // output directory; pure-leaf documents are short-circuited with a "leaf only"
+    // warning and never produce a directory regardless of the basename logic.
+    let process_a = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ApprovalProcess xmlns="http://soap.sforce.com/2006/04/metadata">
+    <active>false</active>
+    <label>New Account Merges 2</label>
+    <approvalStep>
+        <name>Step_One</name>
+        <description>First step for process A</description>
+    </approvalStep>
+</ApprovalProcess>"#;
+    let process_b = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ApprovalProcess xmlns="http://soap.sforce.com/2006/04/metadata">
+    <active>true</active>
+    <label>New Account Merges 3</label>
+    <approvalStep>
+        <name>Step_Two</name>
+        <description>First step for process B</description>
+    </approvalStep>
+</ApprovalProcess>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let file_a = base.join("Account_Merge__c.New_Account_Merges_2.approvalProcess-meta.xml");
+    let file_b = base.join("Account_Merge__c.New_Account_Merges_3.approvalProcess-meta.xml");
+    std::fs::write(&file_a, process_a).expect("write a");
+    std::fs::write(&file_b, process_b).expect("write b");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    for file in [&file_a, &file_b] {
+        disassemble
+            .disassemble(
+                file.to_str().unwrap(),
+                None,
+                Some("unique-id"),
+                false,
+                false,
+                ".xmldisassemblerignore",
+                "xml",
+                None,
+                None,
+            )
+            .await
+            .expect("disassemble");
+    }
+
+    let dir_a = base.join("Account_Merge__c.New_Account_Merges_2");
+    let dir_b = base.join("Account_Merge__c.New_Account_Merges_3");
+    assert!(
+        dir_a.is_dir(),
+        "expected per-process output dir, got: {}",
+        dir_a.display()
+    );
+    assert!(
+        dir_b.is_dir(),
+        "expected per-process output dir, got: {}",
+        dir_b.display()
+    );
+    // The buggy behaviour collapsed both files into a single `<sobject>/` dir.
+    assert!(
+        !base.join("Account_Merge__c").exists(),
+        "must NOT create a shared sobject-only output dir; that's the bug we're fixing"
+    );
+
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            dir_a.to_str().unwrap(),
+            Some("approvalProcess-meta.xml"),
+            true,
+        )
+        .await
+        .expect("reassemble a");
+    reassemble
+        .reassemble(
+            dir_b.to_str().unwrap(),
+            Some("approvalProcess-meta.xml"),
+            true,
+        )
+        .await
+        .expect("reassemble b");
+
+    let rebuilt_a = std::fs::read_to_string(&file_a).expect("read rebuilt a");
+    let rebuilt_b = std::fs::read_to_string(&file_b).expect("read rebuilt b");
+    assert_eq!(
+        rebuilt_a, process_a,
+        "process A must round-trip byte-for-byte"
+    );
+    assert_eq!(
+        rebuilt_b, process_b,
+        "process B must round-trip byte-for-byte"
+    );
+}

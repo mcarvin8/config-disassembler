@@ -51,6 +51,22 @@ impl DisassembleXmlFileHandler {
             .unwrap_or(false)
     }
 
+    /// Derive the disassembled-output directory name from a file stem.
+    ///
+    /// We strip only the trailing extension-like segment (everything after the **last** `.`),
+    /// so `HR_Admin.permissionset-meta` collapses to `HR_Admin` while
+    /// `Account.MyApprovalProcess.approvalProcess-meta` collapses to `Account.MyApprovalProcess`.
+    /// Splitting at the *first* dot — the previous behaviour — was lossy for metadata types
+    /// whose fullName itself contains a dot (e.g. Salesforce approval processes, quick actions,
+    /// custom-metadata records) because two files like `A.X.foo-meta.xml` and `A.Y.foo-meta.xml`
+    /// both resolved to `A/`, silently merging unrelated components.
+    fn output_dir_basename(file_stem: &str) -> &str {
+        file_stem
+            .rsplit_once('.')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(file_stem)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn disassemble(
         &mut self,
@@ -233,7 +249,7 @@ impl DisassembleXmlFileHandler {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("output");
-        let base_name = file_name.split('.').next().unwrap_or(file_name);
+        let base_name = Self::output_dir_basename(file_name);
         let output_path = Path::new(dir_path).join(base_name);
 
         if pre_purge && output_path.exists() {
@@ -337,7 +353,7 @@ impl DisassembleXmlFileHandler {
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("output");
-                    let output_dir_name = file_stem.split('.').next().unwrap_or(file_stem);
+                    let output_dir_name = Self::output_dir_basename(file_stem);
                     let parent = path.parent().unwrap_or(dir_path);
                     let second_level_output = parent.join(output_dir_name);
 
@@ -462,5 +478,50 @@ mod tests {
     fn is_ignored_default_false_without_rules() {
         let handler = DisassembleXmlFileHandler::new();
         assert!(!handler.is_ignored("some/path.xml"));
+    }
+
+    #[test]
+    fn output_dir_basename_strips_only_last_dot_segment() {
+        // Plain Salesforce-style metadata: strip the `.<suffix>-meta` tail.
+        assert_eq!(
+            DisassembleXmlFileHandler::output_dir_basename("HR_Admin.permissionset-meta"),
+            "HR_Admin"
+        );
+        assert_eq!(
+            DisassembleXmlFileHandler::output_dir_basename("Get_Info.flow-meta"),
+            "Get_Info"
+        );
+    }
+
+    #[test]
+    fn output_dir_basename_preserves_dotted_full_names() {
+        // Approval processes are named `<sobject>.<process>` which yields a stem containing
+        // *two* dots. The old `split('.').next()` returned just `<sobject>`, causing
+        // distinct processes for the same sobject to land in the same output directory and
+        // silently merge during reassembly. The new behaviour keeps the dotted fullName.
+        assert_eq!(
+            DisassembleXmlFileHandler::output_dir_basename(
+                "Account_Merge__c.New_Account_Merges_2.approvalProcess-meta"
+            ),
+            "Account_Merge__c.New_Account_Merges_2"
+        );
+        assert_eq!(
+            DisassembleXmlFileHandler::output_dir_basename(
+                "Account_Merge__c.New_Account_Merges_3.approvalProcess-meta"
+            ),
+            "Account_Merge__c.New_Account_Merges_3"
+        );
+        // Quick actions follow the same `<sobject>.<action>` pattern.
+        assert_eq!(
+            DisassembleXmlFileHandler::output_dir_basename("Case.LogACall.quickAction-meta"),
+            "Case.LogACall"
+        );
+    }
+
+    #[test]
+    fn output_dir_basename_no_dot_returns_stem_unchanged() {
+        // Stems without any dot are passed through verbatim (no extension to strip).
+        assert_eq!(DisassembleXmlFileHandler::output_dir_basename("Foo"), "Foo");
+        assert_eq!(DisassembleXmlFileHandler::output_dir_basename(""), "");
     }
 }
