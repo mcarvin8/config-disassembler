@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/mcarvin8/config-disassembler/compare/v0.4.3...v0.4.4) - 2026-05-04
+
+### Fixed
+
+- *(xml)* preserve dotted fullNames in disassembled output directory ([#21](https://github.com/mcarvin8/config-disassembler/pull/21))
+
+### Other
+
+- set dependabot to monthly
+
 ## [0.4.3](https://github.com/mcarvin8/config-disassembler/compare/v0.4.2...v0.4.3) - 2026-05-01
 
 ### Fixed
