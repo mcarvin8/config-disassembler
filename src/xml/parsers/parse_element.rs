@@ -28,6 +28,7 @@ pub async fn parse_element_unified(params: XmlElementParams<'_>) -> UnifiedParse
         xml_declaration,
         strategy,
         leaf_content: _,
+        precomputed_unique_id,
     } = params;
 
     let is_array = element.is_array();
@@ -57,6 +58,7 @@ pub async fn parse_element_unified(params: XmlElementParams<'_>) -> UnifiedParse
                 format,
                 xml_declaration: xml_declaration.clone(),
                 unique_id_elements,
+                precomputed_unique_id,
             })
             .await;
             return UnifiedParseResult {

@@ -25,6 +25,12 @@ pub struct XmlElementParams<'a> {
     pub format: &'a str,
     pub xml_declaration: Option<XmlElement>,
     pub strategy: &'a str,
+    /// Pre-resolved unique-ID for this element. When `Some`, the file
+    /// writer uses this verbatim and skips its own `parse_unique_id_element`
+    /// derivation. Set by the caller when collision detection across a
+    /// sibling group has determined this element must use a hash fallback
+    /// instead of its derived id (see `resolve_collision_safe_ids`).
+    pub precomputed_unique_id: Option<&'a str>,
 }
 
 /// Options for building a single disassembled file.
@@ -41,6 +47,10 @@ pub struct BuildDisassembledFileOptions<'a> {
     pub format: &'a str,
     pub xml_declaration: Option<XmlElement>,
     pub unique_id_elements: Option<&'a str>,
+    /// Pre-resolved unique-ID for this element. When `Some`, takes
+    /// precedence over `unique_id_elements` derivation. See the matching
+    /// field on [`XmlElementParams`] for details.
+    pub precomputed_unique_id: Option<&'a str>,
 }
 
 /// Result from unified element parsing.

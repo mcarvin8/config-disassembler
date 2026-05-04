@@ -1,7 +1,10 @@
 //! Build disassembled files from source XML file.
 
 use crate::xml::builders::{build_disassembled_file, extract_root_attributes};
-use crate::xml::parsers::{extract_xml_declaration_from_raw, parse_element_unified};
+use crate::xml::parsers::{
+    extract_xml_declaration_from_raw, parse_element_unified, parse_unique_id_element,
+    short_hash_for_element,
+};
 use crate::xml::types::{
     BuildDisassembledFilesOptions, DecomposeRule, XmlElementArrayMap, XmlElementParams,
 };
@@ -27,6 +30,110 @@ fn order_xml_element_keys(content: &Map<String, Value>, key_order: &[String]) ->
         }
     }
     Value::Object(ordered)
+}
+
+/// Resolve a collision-safe unique-ID for every nested sibling in a group.
+///
+/// For each entry in `elements`, derive its unique-ID via the configured
+/// `unique_id_elements` (sanitized at the boundary of
+/// `parse_unique_id_element`), then check whether that id is unique within
+/// the group. When two or more siblings would resolve to the same filename,
+/// *all* of them fall back to a per-element SHA-256 short hash so no
+/// sibling is silently overwritten on disk.
+///
+/// Returns a `Vec<Option<String>>` parallel to `elements`. `None` means the
+/// caller should let `build_disassembled_file` derive the id itself (used
+/// for non-nested elements where the override is irrelevant). `Some(id)`
+/// means the caller MUST pass that id verbatim as `precomputed_unique_id`
+/// so the file write uses the collision-safe filename.
+///
+/// A single WARN log per colliding group names the parent key, the
+/// collided id, and the sibling count so users can investigate their
+/// `unique_id_elements` configuration. The default (silent-but-safe)
+/// fallback is intentional: pre-0.4.6 the collision caused outright data
+/// loss with no log at all, so any visibility is an upgrade.
+fn resolve_collision_safe_ids(
+    elements: &[Value],
+    unique_id_elements: Option<&str>,
+    parent_key: &str,
+    strategy: &str,
+) -> Vec<Option<String>> {
+    if strategy != "unique-id" {
+        // grouped-by-tag has its own write path with deterministic
+        // filename derivation; collision detection is meaningless there.
+        return vec![None; elements.len()];
+    }
+
+    // First pass: derive each sibling's unique-id (or `None` for elements
+    // that won't trigger the unique-id write path - leaves and arrays).
+    let derived: Vec<Option<String>> = elements
+        .iter()
+        .map(|el| {
+            if !is_nested_for_unique_id(el) {
+                return None;
+            }
+            Some(parse_unique_id_element(el, unique_id_elements))
+        })
+        .collect();
+
+    // Tally cardinality of each id across the group, then build the set
+    // of colliding ids. We own the strings so the rest of this function
+    // can consume `derived` without juggling borrows.
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for id in derived.iter().flatten() {
+        *counts.entry(id.clone()).or_insert(0) += 1;
+    }
+    let collided: std::collections::HashSet<String> = counts
+        .iter()
+        .filter_map(|(k, &v)| if v > 1 { Some(k.clone()) } else { None })
+        .collect();
+
+    if collided.is_empty() {
+        return derived;
+    }
+
+    // One WARN per colliding id describing the impact, using the same
+    // `log::warn!` channel already used elsewhere in the crate. The order
+    // is non-deterministic across HashMap rehash boundaries but the
+    // *content* is stable.
+    for id in &collided {
+        let count = counts.get(id).copied().unwrap_or(0);
+        log::warn!(
+            "uniqueIdElements collision: <{parent_key}> id \"{id}\" matched {count} sibling elements; \
+             falling back to SHA-256 content hashes for the colliding group. \
+             Consider adding more discriminating fields to uniqueIdElements for this metadata type."
+        );
+    }
+
+    // Second pass: replace any id that landed in a colliding group with a
+    // per-element content hash. The hash is computed on the same outer
+    // element used for the derivation so distinct content -> distinct hash
+    // even when the derived id collided.
+    derived
+        .into_iter()
+        .zip(elements.iter())
+        .map(|(maybe_id, element)| match maybe_id {
+            Some(id) if collided.contains(&id) => Some(short_hash_for_element(element)),
+            other => other,
+        })
+        .collect()
+}
+
+/// Mirrors the nesting predicate inside `parse_element_unified` so we can
+/// pre-compute ids only for elements that will actually take the
+/// unique-id write path. Leaves and arrays are dispatched differently and
+/// don't need a precomputed override.
+fn is_nested_for_unique_id(element: &Value) -> bool {
+    if element.is_array() {
+        return false;
+    }
+    element
+        .as_object()
+        .map(|obj| {
+            obj.keys()
+                .any(|k| !k.starts_with('#') && !k.starts_with('@') && k != "?xml")
+        })
+        .unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -61,8 +168,15 @@ async fn disassemble_element_keys(
             None => vec![val.clone()],
         };
 
-        for chunk in elements.chunks(BATCH_SIZE) {
-            for element in chunk {
+        // Pre-resolve a collision-safe unique-id for every sibling so the
+        // nested write path can never silently overwrite a peer. Computed
+        // once per (key, sibling-group) and reused across the chunk loop.
+        let resolved_ids = resolve_collision_safe_ids(&elements, unique_id_elements, key, strategy);
+
+        for (chunk_offset, chunk) in elements.chunks(BATCH_SIZE).enumerate() {
+            for (within_chunk, element) in chunk.iter().enumerate() {
+                let global_idx = chunk_offset * BATCH_SIZE + within_chunk;
+                let precomputed = resolved_ids.get(global_idx).and_then(Option::as_deref);
                 let result = parse_element_unified(XmlElementParams {
                     element: element.clone(),
                     disassembled_path,
@@ -76,6 +190,7 @@ async fn disassemble_element_keys(
                     format,
                     xml_declaration: xml_declaration.cloned(),
                     strategy,
+                    precomputed_unique_id: precomputed,
                 })
                 .await;
 
@@ -186,6 +301,7 @@ async fn write_nested_groups(
                             format: options.format,
                             xml_declaration: options.xml_declaration.clone(),
                             unique_id_elements: None,
+                            precomputed_unique_id: None,
                         })
                         .await;
                 }
@@ -219,6 +335,7 @@ async fn write_nested_groups(
                             format: options.format,
                             xml_declaration: options.xml_declaration.clone(),
                             unique_id_elements: None,
+                            precomputed_unique_id: None,
                         })
                         .await;
                 }
@@ -249,6 +366,7 @@ async fn fallback_write_one_file(
         format: options.format,
         xml_declaration: options.xml_declaration.clone(),
         unique_id_elements: None,
+        precomputed_unique_id: None,
     })
     .await;
 }
@@ -357,6 +475,7 @@ pub async fn build_disassembled_files_unified(
             format,
             xml_declaration: xml_declaration.clone(),
             unique_id_elements: None,
+            precomputed_unique_id: None,
         })
         .await;
     }
@@ -431,6 +550,171 @@ mod tests {
     fn get_root_info_returns_none_for_non_object_or_decl_only() {
         assert!(get_root_info(&json!("s")).is_none());
         assert!(get_root_info(&json!({ "?xml": {} })).is_none());
+    }
+
+    // ---- collision detection (issue #24) -----------------------------------
+
+    /// Helper for collision-detection tests: build an `<actionOverrides>`
+    /// element where the `actionName` field drives the unique-id derivation
+    /// and the `content` field drives the per-element hash. Decoupling the
+    /// two lets the tests construct distinct-content siblings whose
+    /// derived ids deliberately collide - the exact shape that triggered
+    /// the silent data loss tracked in #24.
+    fn make_action_override(name: &str, content_seed: &str) -> Value {
+        json!({
+            "actionName": { "#text": name },
+            "content": { "#text": format!("Page_{content_seed}") },
+            "formFactor": { "#text": "Large" }
+        })
+    }
+
+    #[test]
+    fn resolve_no_collision_returns_derived_ids_unchanged() {
+        // Three siblings with distinct actionNames must each keep their
+        // derived id - no fallback to hashes when there's no collision.
+        let elements = vec![
+            make_action_override("View", "v1"),
+            make_action_override("Edit", "e1"),
+            make_action_override("New", "n1"),
+        ];
+        let resolved = resolve_collision_safe_ids(
+            &elements,
+            Some("actionName"),
+            "actionOverrides",
+            "unique-id",
+        );
+        assert_eq!(
+            resolved,
+            vec![
+                Some("View".to_string()),
+                Some("Edit".to_string()),
+                Some("New".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_collision_falls_back_to_hash_for_entire_group() {
+        // Three siblings sharing actionName=View but differing in content
+        // must ALL fall back to a per-element hash. Hashing only the
+        // duplicates beyond the first would still let one row "win" the
+        // readable id, breaking idempotence: the same input would produce
+        // a different first-winner across runs depending on iteration order.
+        let elements = vec![
+            make_action_override("View", "v1"),
+            make_action_override("View", "v2"),
+            make_action_override("View", "v3"),
+        ];
+        let resolved = resolve_collision_safe_ids(
+            &elements,
+            Some("actionName"),
+            "actionOverrides",
+            "unique-id",
+        );
+        let ids: Vec<&str> = resolved
+            .iter()
+            .map(|o| {
+                o.as_deref()
+                    .expect("nested element must have a resolved id")
+            })
+            .collect();
+        // Every id is an 8-char hex hash; all three must be distinct
+        // because the underlying `content` field differs per row.
+        for id in &ids {
+            assert_eq!(id.len(), 8, "expected hash fallback, got {id:?}");
+            assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+        let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+        assert_eq!(unique.len(), 3, "siblings must produce distinct hashes");
+    }
+
+    #[test]
+    fn resolve_partial_collision_only_collapses_the_colliding_subgroup() {
+        // Only the two `View` rows collide; `Edit` and `New` keep their
+        // derived ids. The hash fallback is targeted - it doesn't punish
+        // siblings that already had unique derived ids.
+        let elements = vec![
+            make_action_override("View", "v1"),
+            make_action_override("Edit", "e1"),
+            make_action_override("View", "v2"),
+            make_action_override("New", "n1"),
+        ];
+        let resolved = resolve_collision_safe_ids(
+            &elements,
+            Some("actionName"),
+            "actionOverrides",
+            "unique-id",
+        );
+        // Edit and New keep their names verbatim.
+        assert_eq!(resolved[1], Some("Edit".to_string()));
+        assert_eq!(resolved[3], Some("New".to_string()));
+        // The two Views fall back to distinct hashes.
+        let v0 = resolved[0].as_deref().unwrap();
+        let v2 = resolved[2].as_deref().unwrap();
+        assert_eq!(v0.len(), 8);
+        assert_eq!(v2.len(), 8);
+        assert_ne!(v0, v2, "colliding siblings must hash distinctly");
+        assert_ne!(v0, "View");
+        assert_ne!(v2, "View");
+    }
+
+    #[test]
+    fn resolve_skips_grouped_by_tag_strategy() {
+        // The grouped-by-tag write path has its own filename derivation;
+        // this helper must be a no-op for it so we don't double-pay.
+        let elements = vec![
+            make_action_override("View", "v1"),
+            make_action_override("View", "v2"),
+        ];
+        let resolved = resolve_collision_safe_ids(
+            &elements,
+            Some("actionName"),
+            "actionOverrides",
+            "grouped-by-tag",
+        );
+        assert_eq!(resolved, vec![None, None]);
+    }
+
+    #[test]
+    fn resolve_returns_none_for_leaves_and_arrays() {
+        // Only nested-object elements take the unique-id write path. Leaves
+        // (`{ "#text": "..." }`) and arrays go through different code, so
+        // their slot in the parallel resolved-id vec must be `None`.
+        let elements = vec![
+            json!({ "#text": "leaf" }),
+            json!([{ "x": "y" }]),
+            make_action_override("Tab", "t1"),
+        ];
+        let resolved =
+            resolve_collision_safe_ids(&elements, Some("actionName"), "tabs", "unique-id");
+        assert_eq!(resolved[0], None);
+        assert_eq!(resolved[1], None);
+        assert_eq!(resolved[2], Some("Tab".to_string()));
+    }
+
+    #[test]
+    fn resolve_collision_after_sanitization_falls_back_to_hash() {
+        // Two distinct un-sanitized values `Foo/Bar` and `Foo_Bar` collapse
+        // to the same sanitized form `Foo_Bar`. The collision detector
+        // must fire on the sanitized value (which is what reaches disk),
+        // not on the raw original. Otherwise we'd silently overwrite.
+        let elements = vec![
+            json!({ "milestoneName": { "#text": "Foo/Bar" } }),
+            json!({ "milestoneName": { "#text": "Foo_Bar" } }),
+        ];
+        let resolved =
+            resolve_collision_safe_ids(&elements, Some("milestoneName"), "milestones", "unique-id");
+        // Both must fall back to hashes because their sanitized ids would
+        // collide on the same shard path.
+        let a = resolved[0].as_deref().unwrap();
+        let b = resolved[1].as_deref().unwrap();
+        assert_eq!(
+            a.len(),
+            8,
+            "expected hash fallback for sanitization-induced collision"
+        );
+        assert_eq!(b.len(), 8);
+        assert_ne!(a, b, "distinct content must hash distinctly");
     }
 
     #[tokio::test]

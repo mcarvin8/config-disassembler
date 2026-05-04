@@ -26,6 +26,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 
 use crate::xml::types::XmlElement;
 
@@ -36,6 +37,88 @@ use crate::xml::types::XmlElement;
 /// a single underscore would round-trip ambiguously when values themselves
 /// already contain `_`).
 const COMPOUND_VALUE_SEPARATOR: &str = "__";
+
+/// Replacement character substituted in for any byte that's illegal or
+/// portability-unsafe in a path segment. Underscore matches the convention
+/// used by `sanitize_filename` in the grouped-by-tag write path so behavior
+/// is consistent across strategies.
+const SANITIZED_REPLACEMENT: char = '_';
+
+/// True for characters that are illegal or portability-unsafe inside a
+/// single path segment on at least one supported OS:
+///
+/// - `/` `\`            path separators on Unix / Windows
+/// - `:` `*` `?` `"` `<` `>` `|`   reserved on Windows
+/// - ASCII control bytes (0x00-0x1F)  break terminals and zip readers
+///
+/// Salesforce identifier fields can legitimately contain any of these.
+/// `EntitlementProcess.milestones[*].milestoneName`, for example, accepts
+/// free-form text and we have seen `TrustFile Transaction Sync/Import
+/// Complete` in the wild - the embedded `/` was being interpreted as a
+/// path separator and silently dropped data on round-trip (see #25).
+fn is_illegal_path_char(c: char) -> bool {
+    matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_ascii_control()
+}
+
+/// True for trailing characters that Windows silently strips when creating
+/// a file. Leaving these in would let two distinct inputs (`Foo.` vs `Foo`,
+/// `Foo ` vs `Foo`) collide on disk on Windows but not on Unix, breaking
+/// cross-platform stability of disassembled output. Tab is *not* in this
+/// set: Windows accepts trailing tab in filenames and we'd rather replace
+/// the (rare) tab with `_` via the control-char path than silently lose
+/// the byte.
+fn is_trailing_strip_char(c: char) -> bool {
+    matches!(c, '.' | ' ')
+}
+
+/// Sanitize a resolved unique-ID value into a portable path segment.
+///
+/// Borrows the input on the happy path - the vast majority of Salesforce
+/// identifiers (`fullName`, `name`, `developerName`, ...) only contain
+/// ASCII alphanumerics, underscores, hyphens, and dots, all of which are
+/// passed through verbatim. We only allocate when the input contains an
+/// illegal character or has a trailing `.`/space that Windows would
+/// silently strip on write.
+///
+/// Order of operations matters:
+///   1. Trim trailing `.`/space from the *input*. Windows would strip them
+///      on write anyway, so doing it deterministically here keeps Linux
+///      and Windows producing byte-identical filenames.
+///   2. Replace illegal chars in the trimmed input with `_`. Each illegal
+///      char becomes exactly one `_` so the resulting length, and the
+///      mapping between original and replacement positions, is stable.
+///
+/// The substitution is deterministic so the produced filename is stable
+/// across runs and across machines, which keeps source-control diffs
+/// meaningful. When two distinct un-sanitized values collapse to the same
+/// sanitized form (for example `Foo/Bar` and `Foo_Bar` both produce
+/// `Foo_Bar`), the upstream caller's collision detector catches it and
+/// falls back to per-element SHA-256 hashes for the colliding siblings.
+fn sanitize_path_segment(s: &str) -> Cow<'_, str> {
+    let trimmed = s.trim_end_matches(is_trailing_strip_char);
+    let needs_replacement = trimmed.chars().any(is_illegal_path_char);
+    let was_trimmed = trimmed.len() != s.len();
+    if !needs_replacement && !was_trimmed {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for c in trimmed.chars() {
+        if is_illegal_path_char(c) {
+            out.push(SANITIZED_REPLACEMENT);
+        } else {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        // Edge case: input was entirely trimmed away (e.g. `". "`). Returning
+        // an empty string would produce a path like `.<tag>-meta.xml` which
+        // is also invalid. Use a single underscore so the file still writes;
+        // the upstream collision detector will hash any siblings that pile
+        // up here.
+        out.push(SANITIZED_REPLACEMENT);
+    }
+    Cow::Owned(out)
+}
 
 /// Hash the full canonicalized JSON form of an element to derive an 8-char
 /// filename. SHA-256 over distinct content yields distinct prefixes with
@@ -165,12 +248,29 @@ fn find_id_in_subtree(element: &XmlElement, unique_id_elements: &str) -> Option<
 /// child shares a value - e.g. a list of `<actionOverrides>` that all start
 /// with `<actionName>View</actionName>` - still produce distinct filenames
 /// reflecting their distinct content.
+///
+/// Resolved configured-field values are passed through [`sanitize_path_segment`]
+/// before being returned so any path-illegal characters in the source value
+/// (e.g. `/` in an `EntitlementProcess` `milestoneName`) are mapped to a
+/// safe placeholder. Hash-fallback values are pure hex and pass through the
+/// sanitizer as a no-op.
 pub fn parse_unique_id_element(element: &XmlElement, unique_id_elements: Option<&str>) -> String {
-    if let Some(ids) = unique_id_elements {
+    let raw = if let Some(ids) = unique_id_elements {
         find_id_in_subtree(element, ids).unwrap_or_else(|| create_short_hash(element))
     } else {
         create_short_hash(element)
+    };
+    match sanitize_path_segment(&raw) {
+        Cow::Borrowed(_) => raw,
+        Cow::Owned(s) => s,
     }
+}
+
+/// Hash an arbitrary [`XmlElement`] to its 8-character short hash. Exposed so
+/// the upstream collision detector can request a deterministic fallback for
+/// individual siblings without re-deriving the hash logic.
+pub fn short_hash_for_element(element: &XmlElement) -> String {
+    create_short_hash(element)
 }
 
 #[cfg(test)]
@@ -460,6 +560,149 @@ mod tests {
         let el = json!({ "foo": "bar" });
         let id = parse_unique_id_element(&el, Some(",,+,, "));
         assert_eq!(id.len(), 8, "all-empty candidates → hash fallback");
+    }
+
+    // ---- path-segment sanitization (issue #25) ------------------------------
+
+    /// Salesforce identifiers can legitimately contain characters that are
+    /// illegal in a path segment. The most common offender is `/` (seen in
+    /// the wild on `EntitlementProcess.milestones[*].milestoneName`). Without
+    /// sanitization the resolved id `Foo/Bar` is interpreted by the OS as
+    /// the path `Foo/Bar.tag-meta.xml`, silently writing into a non-existent
+    /// `Foo/` directory and dropping data. Each forbidden char must collapse
+    /// to a single `_`.
+    #[test]
+    fn sanitize_replaces_path_separators() {
+        assert_eq!(sanitize_path_segment("Foo/Bar"), "Foo_Bar");
+        assert_eq!(sanitize_path_segment("Foo\\Bar"), "Foo_Bar");
+        assert_eq!(
+            sanitize_path_segment("TrustFile Transaction Sync/Import Complete"),
+            "TrustFile Transaction Sync_Import Complete"
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_windows_reserved_chars() {
+        for c in [':', '*', '?', '"', '<', '>', '|'] {
+            let input = format!("a{c}b");
+            assert_eq!(sanitize_path_segment(&input), "a_b", "char={c}");
+        }
+    }
+
+    #[test]
+    fn sanitize_replaces_control_characters() {
+        // 0x00 (NUL), 0x09 (TAB), 0x1F (US) all map to `_`.
+        assert_eq!(sanitize_path_segment("a\u{0}b"), "a_b");
+        assert_eq!(sanitize_path_segment("a\u{1f}b"), "a_b");
+    }
+
+    #[test]
+    fn sanitize_strips_trailing_dot_and_space() {
+        // Windows write semantics drop trailing `.` and space silently;
+        // leaving them in would let two distinct inputs collide on disk.
+        // Tab and other control characters are NOT in this set - they're
+        // replaced with `_` via the control-char path so the byte isn't
+        // lost (`Foo\t` -> `Foo_` rather than `Foo`).
+        assert_eq!(sanitize_path_segment("Foo."), "Foo");
+        assert_eq!(sanitize_path_segment("Foo "), "Foo");
+        assert_eq!(sanitize_path_segment("Foo. ."), "Foo");
+        assert_eq!(sanitize_path_segment("Foo\t"), "Foo_");
+    }
+
+    #[test]
+    fn sanitize_passes_safe_inputs_through_unchanged() {
+        // Borrows on the happy path - exercise via the Cow variant.
+        let cases = [
+            "Account",
+            "Account_Name__c",
+            "Sample_Object_005__c",
+            "Implementation - TrustFile Amazon",
+            "View",
+            "TrustFile Account Setup Complete",
+            "View__Account__Large__SalesProfile",
+            // Inner dots are fine; only TRAILING dots are stripped.
+            "Account.LogACall",
+            "Sample_Object_017__c.Sample_Record_Type_0123",
+        ];
+        for case in cases {
+            match sanitize_path_segment(case) {
+                Cow::Borrowed(s) => assert_eq!(s, case, "unexpected mutation for {case:?}"),
+                Cow::Owned(s) => panic!("unexpected allocation for {case:?}: got {s:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn sanitize_replaces_illegal_chars_one_for_one() {
+        // Each illegal char becomes exactly one `_` so the result length
+        // and structure mirror the input - critical for collision-detection
+        // signal: two distinct inputs differing only in their illegal chars
+        // produce distinct sanitized outputs and the collision detector
+        // does not need to fire.
+        assert_eq!(sanitize_path_segment("///"), "___");
+        assert_eq!(sanitize_path_segment("/"), "_");
+        assert_eq!(sanitize_path_segment("a/b/c"), "a_b_c");
+        assert_eq!(sanitize_path_segment("a*b?c"), "a_b_c");
+    }
+
+    #[test]
+    fn sanitize_replacement_yields_underscore_when_input_collapses_to_empty() {
+        // Edge case: input is entirely trailing-trim-able (e.g. `". ."` or `". "`).
+        // After trim the string is empty, which would produce a degenerate
+        // filename like `.<tag>-meta.xml`. Substitute a single `_` so the
+        // file still writes; the upstream collision detector will hash any
+        // siblings that pile up here.
+        assert_eq!(sanitize_path_segment(". ."), "_");
+        assert_eq!(sanitize_path_segment(". "), "_");
+        assert_eq!(sanitize_path_segment("."), "_");
+        assert_eq!(sanitize_path_segment(" "), "_");
+    }
+
+    #[test]
+    fn sanitize_handles_empty_input() {
+        // Empty in -> empty out. Caller is responsible for upgrading to a
+        // hash if they need a non-empty filename; sanitize itself has no
+        // useful work to do here.
+        let out = sanitize_path_segment("");
+        assert!(matches!(out, Cow::Borrowed(s) if s.is_empty()));
+    }
+
+    /// `parse_unique_id_element` MUST apply sanitization at the boundary so
+    /// every caller (single-field, compound, multi-level) gets it for free.
+    /// This is the regression test that pairs with issue #25.
+    #[test]
+    fn parse_unique_id_element_sanitizes_resolved_value() {
+        let el = json!({
+            "milestoneName": { "#text": "TrustFile Transaction Sync/Import Complete" }
+        });
+        let id = parse_unique_id_element(&el, Some("milestoneName"));
+        assert!(!id.contains('/'), "resolved id must not contain `/`: {id}");
+        assert_eq!(id, "TrustFile Transaction Sync_Import Complete");
+    }
+
+    #[test]
+    fn parse_unique_id_element_sanitizes_compound_values() {
+        // Compound values are joined with `__`; if any component contains
+        // an illegal char it must be sanitized BEFORE the join (otherwise
+        // the illegal char survives into the produced filename).
+        let el = json!({
+            "actionName": { "#text": "View" },
+            "pageOrSobjectType": { "#text": "Sample/Object__c" },
+            "formFactor": { "#text": "Large" }
+        });
+        let id = parse_unique_id_element(&el, Some("actionName+pageOrSobjectType+formFactor"));
+        assert!(!id.contains('/'), "compound id must not contain `/`: {id}");
+        assert_eq!(id, "View__Sample_Object__c__Large");
+    }
+
+    #[test]
+    fn parse_unique_id_element_hash_fallback_is_unaffected_by_sanitizer() {
+        // Hash fallback returns 8 hex chars, all of which are safe; the
+        // sanitizer must be a no-op here.
+        let el = json!({ "a": "b" });
+        let id = parse_unique_id_element(&el, Some("name"));
+        assert_eq!(id.len(), 8);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     /// Recursion must only return when a configured unique-id field is

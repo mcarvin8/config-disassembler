@@ -24,6 +24,7 @@ pub async fn build_disassembled_file(
         xml_declaration,
         format,
         unique_id_elements,
+        precomputed_unique_id,
     } = options;
 
     let target_directory = if let Some(subdir) = subdirectory {
@@ -36,7 +37,14 @@ pub async fn build_disassembled_file(
         name.to_string()
     } else if let Some(wk) = wrap_key {
         if !is_grouped_array && content.is_object() {
-            let id = parse_unique_id_element(&content, unique_id_elements);
+            // Caller-supplied id wins. The collision detector in
+            // `disassemble_element_keys` injects a content hash here when
+            // two siblings of the same parent would otherwise resolve to
+            // the same filename - without that override we'd silently
+            // overwrite the first-written sibling on the second write.
+            let id = precomputed_unique_id
+                .map(str::to_string)
+                .unwrap_or_else(|| parse_unique_id_element(&content, unique_id_elements));
             format!("{}.{}-meta.{}", id, wk, format)
         } else {
             "output".to_string()
@@ -105,6 +113,7 @@ mod tests {
             xml_declaration: None,
             format: "xml",
             unique_id_elements: None,
+            precomputed_unique_id: None,
         }
     }
 
