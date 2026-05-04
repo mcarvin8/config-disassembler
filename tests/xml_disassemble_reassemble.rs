@@ -2135,3 +2135,265 @@ async fn compound_unique_id_elements_disambiguate_action_overrides() {
         "compound-keyed round-trip must preserve every <content> value"
     );
 }
+
+// -------- collision detection (issue #24) ------------------------------------
+
+/// Deliberately under-narrow `unique_id_elements`: every `<actionOverrides>`
+/// in the fixture shares the configured key (`actionName`), so all four would
+/// resolve to the same shard filename. Pre-fix this caused silent data loss -
+/// `View.actionOverrides-meta.xml` was overwritten three times and only the
+/// last sibling survived. Post-fix the disassembler must:
+///
+/// 1. Detect the four-way collision on `actionName=View`.
+/// 2. Fall back to per-element SHA-256 hashes for the entire colliding
+///    group so each sibling lands in a distinct file.
+/// 3. Round-trip without dropping any of the four `<content>` values.
+#[tokio::test]
+async fn unique_id_collision_falls_back_to_hashes_per_sibling() {
+    let _ = env_logger::try_init();
+
+    // Inline fixture: four <actionOverrides> sharing actionName=View but
+    // with distinct <content> payloads. This is the exact shape that
+    // triggered the silent data loss tracked in issue #24.
+    let fixture_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<CustomApplication xmlns="http://soap.sforce.com/2006/04/metadata">
+    <actionOverrides>
+        <actionName>View</actionName>
+        <content>Page_Alpha</content>
+        <formFactor>Large</formFactor>
+        <pageOrSobjectType>Account</pageOrSobjectType>
+        <type>Flexipage</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <content>Page_Bravo</content>
+        <formFactor>Large</formFactor>
+        <pageOrSobjectType>Account</pageOrSobjectType>
+        <type>Flexipage</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <content>Page_Charlie</content>
+        <formFactor>Large</formFactor>
+        <pageOrSobjectType>Account</pageOrSobjectType>
+        <type>Flexipage</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <content>Page_Delta</content>
+        <formFactor>Large</formFactor>
+        <pageOrSobjectType>Account</pageOrSobjectType>
+        <type>Flexipage</type>
+    </actionOverrides>
+    <label>Collision_Test</label>
+</CustomApplication>
+"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Collision_Test.app-meta.xml");
+    std::fs::write(&source, fixture_xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            // Single-field key that deliberately collides on every sibling.
+            Some("actionName"),
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let overrides_dir = base.join("Collision_Test").join("actionOverrides");
+    assert!(
+        overrides_dir.is_dir(),
+        "actionOverrides output dir must exist: {}",
+        overrides_dir.display()
+    );
+
+    let shard_names: Vec<String> = std::fs::read_dir(&overrides_dir)
+        .expect("read actionOverrides dir")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".actionOverrides-meta.xml"))
+        .collect();
+
+    // Pre-fix: only one shard survived. Post-fix: all four written.
+    assert_eq!(
+        shard_names.len(),
+        4,
+        "every colliding sibling must produce its own shard; got {shard_names:?}"
+    );
+
+    // Each shard's stem is `<8-hex-hash>` (SHA-256 fallback). None should
+    // be the readable `View` name because the collision detector forces
+    // hashes for the *entire* colliding group, not just the duplicates
+    // beyond the first.
+    for name in &shard_names {
+        let stem = name.trim_end_matches(".actionOverrides-meta.xml");
+        assert_eq!(
+            stem.len(),
+            8,
+            "expected 8-char hash stem after collision fallback, got {stem:?}"
+        );
+        assert!(
+            stem.chars().all(|c| c.is_ascii_hexdigit()),
+            "stem must be hex hash, got {stem:?}"
+        );
+    }
+
+    // Round-trip preserves every <content> value - the regression that
+    // motivated the fix is now closed.
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            base.join("Collision_Test").to_str().unwrap(),
+            Some("app-meta.xml"),
+            true,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt =
+        std::fs::read_to_string(base.join("Collision_Test.app-meta.xml")).expect("read rebuilt");
+    for needle in ["Page_Alpha", "Page_Bravo", "Page_Charlie", "Page_Delta"] {
+        assert!(
+            rebuilt.contains(needle),
+            "rebuilt XML must contain {needle}; got:\n{rebuilt}"
+        );
+    }
+}
+
+// -------- path-segment sanitization (issue #25) -----------------------------
+
+/// `EntitlementProcess.milestones[*].milestoneName` is free-form text and
+/// can legitimately contain characters that are illegal in a path segment.
+/// Pre-fix, a `/` in the value was interpreted as a directory separator
+/// during shard write - the file silently went to a non-existent path
+/// and the milestone vanished from disassembled output. Post-fix the `/`
+/// is mapped to `_` deterministically and the milestone round-trips.
+#[tokio::test]
+async fn unique_id_value_with_path_separator_is_sanitized() {
+    let _ = env_logger::try_init();
+
+    // Inline fixture: two milestones with normal names plus one whose
+    // `milestoneName` contains a `/` - the exact failure mode from #25.
+    let fixture_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<EntitlementProcess xmlns="http://soap.sforce.com/2006/04/metadata">
+    <name>Sanitize_Test</name>
+    <SObjectType>Case</SObjectType>
+    <milestones>
+        <milestoneName>FirstResponse</milestoneName>
+        <minutesToComplete>30</minutesToComplete>
+    </milestones>
+    <milestones>
+        <milestoneName>TrustFile Transaction Sync/Import Complete</milestoneName>
+        <minutesToComplete>60</minutesToComplete>
+    </milestones>
+    <milestones>
+        <milestoneName>Resolution</milestoneName>
+        <minutesToComplete>120</minutesToComplete>
+    </milestones>
+</EntitlementProcess>
+"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Sanitize_Test.entitlementProcess-meta.xml");
+    std::fs::write(&source, fixture_xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("milestoneName"),
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let milestones_dir = base.join("Sanitize_Test").join("milestones");
+    assert!(
+        milestones_dir.is_dir(),
+        "milestones output dir must exist: {}",
+        milestones_dir.display()
+    );
+
+    // The crucial assertion: the milestone with a `/` in its name must
+    // produce ONE shard file in `milestones/`. Pre-fix the `/` created
+    // a `milestones/TrustFile Transaction Sync/` subdirectory (or failed
+    // to write at all), and the milestone vanished.
+    let mut shard_names: Vec<String> = std::fs::read_dir(&milestones_dir)
+        .expect("read milestones dir")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".milestones-meta.xml"))
+        .collect();
+    shard_names.sort();
+
+    assert_eq!(
+        shard_names.len(),
+        3,
+        "every milestone must produce its own shard, including the one with `/` in its name; got {shard_names:?}"
+    );
+
+    let expected_sanitized = "TrustFile Transaction Sync_Import Complete.milestones-meta.xml";
+    assert!(
+        shard_names.iter().any(|n| n == expected_sanitized),
+        "expected sanitized filename {expected_sanitized:?} in {shard_names:?}"
+    );
+
+    // No subdirectories under milestones/ - the `/` must NOT have been
+    // interpreted as a path separator. (Pre-fix this assertion was the
+    // smoking gun: a `TrustFile Transaction Sync` directory existed.)
+    let subdir_count = std::fs::read_dir(&milestones_dir)
+        .expect("read milestones dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .count();
+    assert_eq!(
+        subdir_count, 0,
+        "no path-separator interpretation: milestones/ must contain only files"
+    );
+
+    // Round-trip preserves the original milestoneName verbatim - the
+    // sanitization affects only the on-disk filename, not the XML payload.
+    let reassemble = ReassembleXmlFileHandler::new();
+    reassemble
+        .reassemble(
+            base.join("Sanitize_Test").to_str().unwrap(),
+            Some("entitlementProcess-meta.xml"),
+            true,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt = std::fs::read_to_string(base.join("Sanitize_Test.entitlementProcess-meta.xml"))
+        .expect("read rebuilt");
+    assert!(
+        rebuilt
+            .contains("<milestoneName>TrustFile Transaction Sync/Import Complete</milestoneName>"),
+        "rebuilt XML must contain the original `/`-bearing milestoneName verbatim; got:\n{rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("<milestoneName>FirstResponse</milestoneName>"),
+        "rebuilt XML must contain other milestones too; got:\n{rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("<milestoneName>Resolution</milestoneName>"),
+        "rebuilt XML must contain other milestones too; got:\n{rebuilt}"
+    );
+}

@@ -110,6 +110,15 @@ Best for fine-grained diffs and version control.
 * **Compound keys (`+`)** – Each comma-separated *candidate* in the list may be a `+`-joined compound (e.g. `actionName+pageOrSobjectType+formFactor+profile`). A compound matches only when every sub-field is present and non-empty at the same level, in which case the resolved values are joined with `__` to form the filename. Useful for metadata whose natural unique key is multi-field, like Salesforce `<profileActionOverrides>` (`actionName + pageOrSobjectType + formFactor + profile [+ recordType]`); without compounds, every sibling sharing an `actionName` would collapse to one filename. List both wide and narrow forms (e.g. `A+B+C+D, A+B+C, A`) for graceful fallback when items only carry some keys.
 * **Hash-based layout** – When no unique ID is found, elements are named with an 8-character hash of their content (e.g. `419e0199.botMlDomain-meta.xml`).
 
+###### Filename safety: sanitization and collision fallback
+
+Resolved unique-id values are converted into safe path segments before they reach disk. Two protections compose:
+
+* **Path-segment sanitization** – Path separators (`/`, `\`), Windows-reserved characters (`:`, `*`, `?`, `"`, `<`, `>`, `|`), and ASCII control bytes in the resolved value are each replaced with a single `_`. Trailing `.` and spaces (which Windows strips silently when creating files) are removed before the replacement. So a Salesforce milestone named `TrustFile Transaction Sync/Import Complete` produces the shard `TrustFile Transaction Sync_Import Complete.milestones-meta.xml` on every platform, instead of being interpreted as a `TrustFile Transaction Sync/` directory.
+* **Sibling-collision detection** – After sanitization, every nested sibling of the same parent key gets its derived unique-id checked against its peers. If two or more siblings would resolve to the same filename — for example because the configured `--unique-id-elements` is too narrow for that metadata type, or because sanitization happened to fold two distinct values into the same form — the disassembler falls back to per-element 8-character SHA-256 hashes for the **entire** colliding group. Each colliding sibling lands in its own shard, a `WARN` is emitted naming the parent tag and the collided id, and the original suggestion to widen `--unique-id-elements` is preserved in the log.
+
+These behaviors are applied automatically; no configuration is required. The combination guarantees that disassembly never silently overwrites or drops a sibling, and that disassembled output is byte-identical across Windows, macOS, and Linux for the same input.
+
 ##### `grouped-by-tag`
 
 All nested elements with the same tag go into one file per tag. Leaf content stays in the base file named after the original XML.
