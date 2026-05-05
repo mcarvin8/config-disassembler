@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/mcarvin8/config-disassembler/compare/v0.4.5...v0.5.0) - 2026-05-05
+
+### Fixed
+
+- *(xml)* flush + shutdown disassembled file handle before returning ([#28](https://github.com/mcarvin8/config-disassembler/pull/28))
+- *(xml)* sanitize unique-id values + detect sibling collisions ([#26](https://github.com/mcarvin8/config-disassembler/pull/26))
+
 ## [0.4.5](https://github.com/mcarvin8/config-disassembler/compare/v0.4.4...v0.4.5) - 2026-05-04
 
 ### Added
