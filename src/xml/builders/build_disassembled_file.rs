@@ -88,8 +88,19 @@ pub async fn build_disassembled_file(
         build_xml_string(&wrapped_xml)
     };
 
+    // Tokio's `write_all` only guarantees the bytes are queued in the
+    // runtime's userspace buffer; it does NOT guarantee they have reached
+    // the OS or that the file is visible to subsequent readers. Without
+    // an explicit `flush` + `shutdown`, callers that immediately read the
+    // disassembled tree (test harnesses, multi-step pipelines) can race
+    // and observe a partially-written directory - the failure mode is a
+    // "missing" shard whose write was queued but not yet flushed when
+    // the directory was scanned. `shutdown` fully closes the handle and
+    // waits for the underlying file to be flushed, eliminating the race.
     let mut file = fs::File::create(&output_path).await?;
     file.write_all(output_string.as_bytes()).await?;
+    file.flush().await?;
+    file.shutdown().await?;
     log::debug!("Created disassembled file: {}", output_path.display());
 
     Ok(())
