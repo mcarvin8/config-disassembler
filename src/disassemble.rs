@@ -269,11 +269,6 @@ fn is_ignored(ignore: &Option<Gitignore>, root: &Path, path: &Path, is_dir: bool
     ign.matched(candidate, is_dir).is_ignore()
 }
 
-fn directory_is_empty(dir: &Path) -> Result<bool> {
-    let mut entries = fs::read_dir(dir)?;
-    Ok(entries.next().is_none())
-}
-
 fn default_output_dir(input: &Path) -> Result<PathBuf> {
     let stem = input.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
         Error::Invalid(format!(
