@@ -194,16 +194,6 @@ fn disassemble_directory(opts: DisassembleOptions) -> Result<PathBuf> {
         disassemble_file(child_opts)?;
     }
 
-    if opts.post_purge {
-        // Only remove the input directory if it is now empty (every
-        // file we looked at was post-purged and no other content
-        // remains). Otherwise leave it alone so we don't clobber files
-        // the user kept around (output dirs, the ignore file, etc.).
-        if directory_is_empty(&root)? {
-            fs::remove_dir_all(&root)?;
-        }
-    }
-
     Ok(root)
 }
 
