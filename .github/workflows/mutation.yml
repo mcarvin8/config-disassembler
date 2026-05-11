@@ -1,0 +1,108 @@
+name: Mutation Testing
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/mutants.toml'
+      - '.github/workflows/mutation.yml'
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run the full mutation test suite instead of incremental'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.ref }}-mutation
+  cancel-in-progress: true
+
+jobs:
+  incremental:
+    if: ${{ github.event_name == 'pull_request' || !inputs.full }}
+    name: Incremental mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Compute diff vs base
+        id: diff
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          MERGE_BASE=$(git merge-base HEAD "origin/$BASE_REF")
+          git diff "$MERGE_BASE" HEAD -- src tests Cargo.toml Cargo.lock > mutation.diff
+          if [ -s mutation.diff ]; then
+            echo "has_diff=true" >> "$GITHUB_OUTPUT"
+            echo "Diff lines: $(wc -l < mutation.diff)"
+          else
+            echo "has_diff=false" >> "$GITHUB_OUTPUT"
+            echo "No relevant changes; mutation testing will be skipped."
+          fi
+
+      - name: Run incremental mutation testing
+        if: steps.diff.outputs.has_diff == 'true'
+        run: cargo mutants --no-shuffle --in-diff mutation.diff
+
+      - name: Upload mutation report
+        if: always() && steps.diff.outputs.has_diff == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-incremental
+          path: mutants.out
+          if-no-files-found: ignore
+
+  full:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+    name: Full mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run full mutation testing
+        run: cargo mutants --no-shuffle
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-full
+          path: mutants.out
+          if-no-files-found: ignore
