@@ -11,10 +11,28 @@ exclude_globs = [
 # Skip trait impls that are pure delegations or where mutants are typically
 # equivalent (Debug/From/source). The Display impl in `error.rs` is exercised
 # by `tests::display_covers_all_variants`, so we leave it mutable.
+#
+# We also skip the human-facing help / format-name strings. These are
+# documentation surfaces, not behavior: pinning them down would require
+# snapshot tests whose only purpose is to fail when the help text is edited,
+# which is the opposite of what we want. The wording is reviewed manually.
 exclude_re = [
     "impl .*Debug for",
     "impl From<.*> for Error",
     "fn source",
+    # CLI help printers (config-disassembler top-level CLI).
+    "fn print_help",
+    "fn print_format_help",
+    "fn print_same_format_help",
+    "fn print_cross_format_help",
+    # Helper that joins format names for the `<fmt>` line in help output.
+    "fn format_list",
+    # `Format::display_name` is the human-friendly format label used in
+    # help text and error messages; `Format::supported_format_list` is the
+    # human-readable comma-joined name list for error contexts. Both are
+    # cosmetic.
+    "fn display_name",
+    "fn supported_format_list",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
