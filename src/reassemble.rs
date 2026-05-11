@@ -436,6 +436,151 @@ mod tests {
     }
 
     #[test]
+    fn leading_comment_start_at_zero_returns_zero_without_looping() {
+        // Mutating the `start > 0` loop guard to `start >= 0` would hang here
+        // because `saturating_sub(1)` keeps `start` pinned at 0.
+        assert_eq!(leading_comment_start("any leading text", 0), 0);
+        assert_eq!(leading_comment_start("", 0), 0);
+    }
+
+    #[test]
+    fn leading_comment_start_walks_through_consecutive_line_comments() {
+        let text = "// first comment\n// second comment\n  \"a\": 1\n";
+        let property_line_start = text.find("  \"a\"").unwrap();
+        // All preceding lines are comments, so the function walks all the way
+        // back to position 0. A replacement returning `1` would not match.
+        assert_eq!(leading_comment_start(text, property_line_start), 0);
+    }
+
+    #[test]
+    fn line_end_returns_pos_plus_newline_offset() {
+        assert_eq!(line_end("abc\ndef", 0), 3);
+        assert_eq!(line_end("abc\ndef", 1), 3);
+        assert_eq!(line_end("abc\ndef", 2), 3);
+        assert_eq!(line_end("no-newline", 0), 10);
+    }
+
+    #[test]
+    fn render_jsonc_property_normalizes_crlf_line_endings_in_value() {
+        // The `trim_matches(|c| c == '\r' || c == '\n')` collapses CRLF wrapping
+        // around the value. Mutating `||` to `&&` would leave the wrapping in
+        // place because no single character is both \r AND \n.
+        let rendered = render_jsonc_property("name", "\r\n\"demo\"\r\n").unwrap();
+        assert!(
+            !rendered.contains('\r'),
+            "expected CR stripped: {rendered:?}"
+        );
+        assert!(rendered.starts_with("  \"name\": \"demo\""));
+        assert!(rendered.ends_with(','));
+    }
+
+    #[test]
+    fn render_jsonc_array_element_first_line_has_no_leading_newline() {
+        // The `if idx > 0 { push('\n') }` guard would push a leading newline
+        // for the first line if mutated to `>=`.
+        let rendered = render_jsonc_array_element("{\n  \"a\": 1\n}");
+        assert!(
+            !rendered.starts_with('\n'),
+            "first line should not be prefixed with newline: {rendered:?}"
+        );
+        // Subsequent lines still get newline separators.
+        assert!(rendered.contains("\n"));
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_strips_surrounding_newlines_before_appending_comma() {
+        // Mutating the trim_matches `||` to `&&` would leave the surrounding
+        // newlines in place because a char can't be both \r and \n.
+        let with_lf = "\n  \"name\": \"demo\"\n";
+        let out = jsonc_segment_with_comma(with_lf);
+        assert!(!out.starts_with('\n'), "stripped leading LF: {out:?}");
+        assert!(out.ends_with(','), "appended trailing comma: {out:?}");
+
+        let with_crlf = "\r\n  \"x\": 1\r\n";
+        let out = jsonc_segment_with_comma(with_crlf);
+        assert!(!out.starts_with('\r'), "stripped leading CRLF: {out:?}");
+        assert!(!out.starts_with('\n'), "stripped leading CRLF: {out:?}");
+    }
+
+    #[test]
+    fn default_output_path_uses_meta_source_filename_with_output_extension() {
+        // The function must return a sibling path of `dir` whose stem matches
+        // the original source file and whose extension matches `output_format`.
+        // A `Ok(Default::default())` mutant would return an empty PathBuf.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("config-out");
+        let meta = Meta {
+            source_format: Format::Json,
+            file_format: Format::Json,
+            source_filename: Some("orig.json".into()),
+            root: Root::Object {
+                key_order: vec![],
+                key_files: std::collections::BTreeMap::new(),
+                main_file: None,
+            },
+        };
+        let out = default_output_path(&dir, &meta, Format::Yaml).unwrap();
+        let expected = tmp.path().join("orig.yaml");
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn default_output_path_falls_back_to_dir_name_when_source_filename_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("settings");
+        let meta = Meta {
+            source_format: Format::Json,
+            file_format: Format::Json,
+            source_filename: None,
+            root: Root::Object {
+                key_order: vec![],
+                key_files: std::collections::BTreeMap::new(),
+                main_file: None,
+            },
+        };
+        let out = default_output_path(&dir, &meta, Format::Json).unwrap();
+        assert_eq!(out, tmp.path().join("settings.json"));
+    }
+
+    #[test]
+    fn reassemble_creates_missing_parent_directory_for_output_path() {
+        // The `if !parent.as_os_str().is_empty()` guard exists so we don't try
+        // to create a parent for a bare-filename path. Deleting the `!` would
+        // skip directory creation for normal paths, and the subsequent
+        // `fs::write` would fail with "path not found".
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // Disassemble a tiny JSON file so the metadata + part files exist.
+        let input = tmp.path().join("orig.json");
+        std::fs::write(&input, r#"{"a": 1}"#).unwrap();
+        crate::disassemble::disassemble(crate::disassemble::DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Json),
+            output_dir: Some(src_dir.clone()),
+            output_format: Some(Format::Json),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        // Reassemble into a subdirectory that does not yet exist.
+        let nested_target = tmp.path().join("nested").join("output").join("out.json");
+        let out = reassemble(ReassembleOptions {
+            input_dir: src_dir,
+            output: Some(nested_target.clone()),
+            output_format: Some(Format::Json),
+            post_purge: false,
+        })
+        .unwrap();
+        assert_eq!(out, nested_target);
+        assert!(nested_target.exists());
+    }
+
+    #[test]
     fn jsonc_segment_with_comma_inserts_before_trailing_line_comment() {
         assert_eq!(
             jsonc_segment_with_comma(r#"  "name": "demo" // keep this comment"#),

@@ -787,6 +787,175 @@ mod tests {
     }
 
     #[test]
+    fn unique_id_basename_accepts_numeric_field() {
+        // Regression guard: a numeric unique-id field must produce a filename,
+        // not fall through to the `None` arm.
+        let v = json!({"id": 42});
+        assert_eq!(unique_id_basename(&v, "id"), Some("42".to_string()));
+    }
+
+    #[test]
+    fn unique_id_basename_accepts_bool_field() {
+        // Regression guard: a boolean unique-id field must produce a filename.
+        let v = json!({"flag": true});
+        assert_eq!(unique_id_basename(&v, "flag"), Some("true".to_string()));
+        let v = json!({"flag": false});
+        assert_eq!(unique_id_basename(&v, "flag"), Some("false".to_string()));
+    }
+
+    #[test]
+    fn unique_id_basename_returns_none_for_missing_or_unsupported() {
+        let v = json!({"id": "x"});
+        assert_eq!(unique_id_basename(&v, "missing"), None);
+        let v = json!({"id": null});
+        assert_eq!(unique_id_basename(&v, "id"), None);
+        let v = json!({"id": ["nested"]});
+        assert_eq!(unique_id_basename(&v, "id"), None);
+    }
+
+    #[test]
+    fn sanitize_preserves_allowed_chars_and_replaces_others() {
+        // Each disjunct of the allowed-char check must be exercised: alphanumeric,
+        // dash, underscore, and dot all survive; anything else becomes `_`.
+        assert_eq!(sanitize("abc123-_."), "abc123-_");
+        assert_eq!(sanitize("foo@bar!"), "foo_bar_");
+        // Leading/trailing dots are trimmed off after the per-char map.
+        assert_eq!(sanitize(".start.end."), "start.end");
+        assert_eq!(sanitize("name with spaces"), "name_with_spaces");
+    }
+
+    #[test]
+    fn hash_string_is_deterministic_truncated_lowercase_hex() {
+        let h = hash_string("hello", 8);
+        assert_eq!(h.len(), 8);
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Determinism.
+        assert_eq!(h, hash_string("hello", 8));
+        // Sensitivity to input.
+        assert_ne!(h, hash_string("world", 8));
+        // First 8 hex chars of SHA-256("hello") are 2cf24dba.
+        assert_eq!(h, "2cf24dba");
+    }
+
+    #[test]
+    fn hash_value_is_deterministic_and_distinguishes_inputs() {
+        let a = hash_value(&json!({"k": 1}), 12);
+        assert_eq!(a.len(), 12);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(a, hash_value(&json!({"k": 1}), 12));
+        assert_ne!(a, hash_value(&json!({"k": 2}), 12));
+    }
+
+    #[test]
+    fn digit_width_floors_at_four_and_grows_above_four_digit_counts() {
+        // Floor cases: small counts always pad to 4.
+        assert_eq!(digit_width(1), 4);
+        assert_eq!(digit_width(9), 4);
+        assert_eq!(digit_width(10), 4);
+        assert_eq!(digit_width(999), 4);
+        assert_eq!(digit_width(1000), 4);
+        // Above the floor: the function returns the actual digit count.
+        // These assertions distinguish the original arithmetic from mutants
+        // that swap `/=` for `%=`/`*=` or `+=` for `-=`/`*=`.
+        assert_eq!(digit_width(10_000), 5);
+        assert_eq!(digit_width(100_000), 6);
+        assert_eq!(digit_width(1_000_000), 7);
+    }
+
+    #[test]
+    fn leading_comment_start_at_zero_returns_zero_without_looping() {
+        // Mutating the `start > 0` loop guard to `start >= 0` would hang here
+        // because `saturating_sub(1)` on 0 keeps `start` at 0 forever.
+        assert_eq!(leading_comment_start("any leading text", 0), 0);
+        assert_eq!(leading_comment_start("", 0), 0);
+    }
+
+    #[test]
+    fn leading_comment_start_walks_through_consecutive_line_comments() {
+        let text = "// first comment\n// second comment\n  \"a\": 1\n";
+        let property_line_start = text.find("  \"a\"").unwrap();
+        // All preceding lines are comments, so the function walks all the way
+        // back to position 0. A replacement that always returns `1` would
+        // produce a non-zero result.
+        assert_eq!(leading_comment_start(text, property_line_start), 0);
+    }
+
+    #[test]
+    fn leading_comment_start_stops_at_non_comment_line() {
+        let text = "  \"prev\": true,\n// comment\n  \"a\": 1\n";
+        let property_line_start = text.find("  \"a\"").unwrap();
+        let comment_line_start = text.find("// comment").unwrap();
+        assert_eq!(
+            leading_comment_start(text, property_line_start),
+            comment_line_start
+        );
+    }
+
+    #[test]
+    fn line_end_returns_pos_plus_newline_offset() {
+        // The original maps `find('\n')` from `pos` to `pos + idx`. A mutant
+        // that replaces `+` with `*` would yield 0 for `pos = 0` (matching
+        // the original) but 2 for `pos = 1` (where the original returns 3).
+        assert_eq!(line_end("abc\ndef", 0), 3);
+        assert_eq!(line_end("abc\ndef", 1), 3);
+        assert_eq!(line_end("abc\ndef", 2), 3);
+    }
+
+    #[test]
+    fn line_end_returns_text_len_when_no_newline_follows() {
+        assert_eq!(line_end("abcdef", 0), 6);
+        assert_eq!(line_end("abcdef", 3), 6);
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_strips_surrounding_newlines_before_appending_comma() {
+        // The leading `trim_matches(|c| c == '\r' || c == '\n')` would become a no-op
+        // if the `||` is mutated to `&&` (no character is both \r AND \n).
+        let with_lf = "\n  \"name\": \"demo\"\n";
+        let out = jsonc_segment_with_comma(with_lf);
+        assert!(!out.starts_with('\n'), "stripped leading LF: {out:?}");
+        assert!(out.ends_with(','), "appended trailing comma: {out:?}");
+
+        let with_crlf = "\r\n  \"x\": 1\r\n";
+        let out = jsonc_segment_with_comma(with_crlf);
+        assert!(!out.starts_with('\r'), "stripped leading CRLF: {out:?}");
+        assert!(!out.starts_with('\n'), "stripped leading CRLF: {out:?}");
+    }
+
+    #[test]
+    fn disassemble_file_does_not_purge_existing_output_when_prepurge_false() {
+        // Regression guard for the `pre_purge && output_dir.exists()` predicate:
+        // mutating `&&` to `||` would delete a pre-existing output directory
+        // even when the caller did not ask for it.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("a.json");
+        fs::write(&input, r#"{"x": 1}"#).unwrap();
+        let output_dir = tmp.path().join("split");
+        fs::create_dir_all(&output_dir).unwrap();
+        let preexisting = output_dir.join("preexisting.txt");
+        fs::write(&preexisting, "keep me").unwrap();
+
+        disassemble(DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Json),
+            output_dir: Some(output_dir.clone()),
+            output_format: Some(Format::Json),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        assert!(
+            preexisting.exists(),
+            "pre_purge=false must not remove the existing output directory"
+        );
+    }
+
+    #[test]
     fn write_jsonc_array_root_hashes_when_unique_id_collides_with_index_name() {
         let text = r#"[
   {
