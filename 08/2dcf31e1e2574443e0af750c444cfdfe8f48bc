@@ -1,0 +1,26 @@
+.github/workflows/mutation.yml
+  s_9d8da00257762a::t_1aa4fd457b3f17 1-108
+.gitignore
+  s_9d8da00257762a::t_d691e160f00156 4-8
+.cargo/mutants.toml
+  s_9d8da00257762a::t_d44c0c39e838c0 1-26
+CONTRIBUTING.md
+  s_9d8da00257762a::t_80c75711d3140e 120-136
+  s_9d8da00257762a::t_13942703a1adf9 37-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "082dcf31e1e2574443e0af750c444cfdfe8f48bc",
+  "prompts": {},
+  "sessions": {
+    "s_9d8da00257762a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "77c37170-73f8-4704-8a45-0df131ebfd06",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin <90224411+mcarvin8@users.noreply.github.com>"
+    }
+  }
+}
