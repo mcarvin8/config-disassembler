@@ -31,7 +31,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || !inputs.full }}
     name: Incremental mutation testing
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -57,9 +57,20 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           MERGE_BASE=$(git merge-base HEAD "origin/$BASE_REF")
           git diff "$MERGE_BASE" HEAD -- src tests Cargo.toml Cargo.lock > mutation.diff
+          # Track which Rust files changed so we can fall back to --file
+          # when --in-diff finds no mutable lines (e.g. a PR that only edits
+          # `#[cfg(test)] mod tests`). cargo-mutants does not mutate test
+          # code, so an in-diff filter on a test-only PR would yield no
+          # mutants and silently pass.
+          git diff --name-only --diff-filter=AM "$MERGE_BASE" HEAD -- 'src/**' 'tests/**' \
+            | grep '\.rs$' > changed-rs.txt || true
           if [ -s mutation.diff ]; then
             echo "has_diff=true" >> "$GITHUB_OUTPUT"
             echo "Diff lines: $(wc -l < mutation.diff)"
+            if [ -s changed-rs.txt ]; then
+              echo "Changed Rust files:"
+              cat changed-rs.txt
+            fi
           else
             echo "has_diff=false" >> "$GITHUB_OUTPUT"
             echo "No relevant changes; mutation testing will be skipped."
@@ -67,7 +78,27 @@ jobs:
 
       - name: Run incremental mutation testing
         if: steps.diff.outputs.has_diff == 'true'
-        run: cargo mutants --no-shuffle --in-diff mutation.diff
+        run: |
+          set -euo pipefail
+          # Fast path: only mutate the production lines that appear in the
+          # PR diff. cargo-mutants prints "No mutants to filter" and exits 0
+          # when the diff covers only test code, in which case we fall back
+          # to mutating every changed Rust file so the new tests get a
+          # chance to kill the mutants they were written to target.
+          LOG=$(mktemp)
+          cargo mutants --no-shuffle --in-diff mutation.diff 2>&1 | tee "$LOG"
+          if grep -q "No mutants to filter" "$LOG"; then
+            if [ ! -s changed-rs.txt ]; then
+              echo "::notice::No Rust source changes; nothing to mutate."
+              exit 0
+            fi
+            echo "::notice::--in-diff produced no mutants (test-only diff); re-running scoped to changed files."
+            FILE_ARGS=()
+            while IFS= read -r f; do
+              FILE_ARGS+=("--file" "$f")
+            done < changed-rs.txt
+            cargo mutants --no-shuffle "${FILE_ARGS[@]}"
+          fi
 
       - name: Upload mutation report
         if: always() && steps.diff.outputs.has_diff == 'true'

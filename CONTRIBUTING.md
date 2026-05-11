@@ -35,8 +35,11 @@ All pull requests run automated checks:
 - Documentation builds with warnings denied using `cargo doc`.
 - A RustSec audit runs on pull requests, dependency changes, and a daily schedule.
 - Mutation testing runs via `cargo-mutants` against the lines changed by the
-  pull request. A full-suite run is available on demand via the
-  `Mutation Testing` workflow's `workflow_dispatch` trigger.
+  pull request. If the diff only touches `#[cfg(test)] mod tests` blocks (a
+  common shape for PRs that close coverage gaps), the workflow falls back to
+  mutating every changed Rust file in full so the new tests get a chance to
+  kill the existing surviving mutants. A full-suite run is available on
+  demand via the `Mutation Testing` workflow's `workflow_dispatch` trigger.
 
 Releases are automated after changes land on `main`:
 
