@@ -35,8 +35,11 @@ All pull requests run automated checks:
 - Documentation builds with warnings denied using `cargo doc`.
 - A RustSec audit runs on pull requests, dependency changes, and a daily schedule.
 - Mutation testing runs via `cargo-mutants` against the lines changed by the
-  pull request. A full-suite run is available on demand via the
-  `Mutation Testing` workflow's `workflow_dispatch` trigger.
+  pull request. If the diff only touches `#[cfg(test)] mod tests` blocks (a
+  common shape for PRs that close coverage gaps), the workflow falls back to
+  mutating every changed Rust file in full so the new tests get a chance to
+  kill the existing surviving mutants. A full-suite run is available on
+  demand via the `Mutation Testing` workflow's `workflow_dispatch` trigger.
 
 Releases are automated after changes land on `main`:
 
@@ -133,6 +136,20 @@ match the CI formatting and lint expectations.
 
   Configuration lives in `.cargo/mutants.toml`. The HTML/text report is written
   to `mutants.out/` (gitignored).
+
+  The config excludes a few function families from mutation testing:
+
+  - `impl Debug for ...`, `impl From<...> for Error`, and `fn source`: pure
+    delegations / typically-equivalent mutants.
+  - `fn print_help`, `fn print_format_help`, `fn print_same_format_help`,
+    `fn print_cross_format_help`, `fn format_list`, `fn display_name`, and
+    `fn supported_format_list`: human-facing help / format-label strings
+    where the only way to "kill" a mutant is a snapshot test whose only job
+    is to fail when the help text is intentionally edited.
+
+  If you find yourself adding similar pure-text functions, extend
+  `exclude_re` in `.cargo/mutants.toml` rather than writing a snapshot
+  test purely to satisfy mutation testing.
 
 - Check to see if there are code formatting issues
 
