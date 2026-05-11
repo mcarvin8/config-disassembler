@@ -1,0 +1,21 @@
+.github/workflows/mutation.yml
+  s_9d8da00257762a::t_1e8306eb099c73 34,60-66,70-73,81-101
+CONTRIBUTING.md
+  s_9d8da00257762a::t_349101e4b630be 38-42,140-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "3f483529ac314f3f35d6425236a6d78c82bf3bde",
+  "prompts": {},
+  "sessions": {
+    "s_9d8da00257762a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "77c37170-73f8-4704-8a45-0df131ebfd06",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin <90224411+mcarvin8@users.noreply.github.com>"
+    }
+  }
+}
