@@ -475,6 +475,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_disassemble_args_space_form_value_is_not_misread_as_positional_path() {
+        // For every option that accepts a value in separated form, when the option
+        // is the leading argument and no positional path precedes it, the captured
+        // value must not be re-treated as the positional path. This pins down the
+        // `i += 1` advance after a value is consumed (regression: a missed advance
+        // would cause the parser to revisit the value on the next iteration and
+        // store it in `path`).
+        let cases: &[(&[&str], &str)] = &[
+            (&["--unique-id-elements", "name"], "name"),
+            (&["--ignore-path", ".foo"], ".foo"),
+            (&["--format", "yaml"], "yaml"),
+            (&["--strategy", "grouped-by-tag"], "grouped-by-tag"),
+            (&["--multi-level", "p:R:ids"], "p:R:ids"),
+            (&["--split-tags", "t:split:f"], "t:split:f"),
+            (&["-p", "t:split:f"], "t:split:f"),
+        ];
+        for (args, expected_value) in cases {
+            let owned: Vec<String> = args.iter().map(|s| sv(s)).collect();
+            let opts = parse_disassemble_args(&owned);
+            assert!(
+                opts.path.is_none(),
+                "args {args:?}: value `{expected_value}` was incorrectly captured as path"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_disassemble_args_space_form_value_missing_does_not_panic() {
+        // When a value-consuming option is the last arg with no following value,
+        // the bounds check (`if i < args.len()`) must prevent an out-of-bounds
+        // read. Each of these inputs would panic if the bounds check is mutated
+        // from `<` to `<=`.
+        let options = [
+            "--unique-id-elements",
+            "--ignore-path",
+            "--format",
+            "--strategy",
+            "--multi-level",
+            "--split-tags",
+            "-p",
+        ];
+        for opt in options {
+            let args = [opt].iter().map(|s| sv(s)).collect::<Vec<_>>();
+            let opts = parse_disassemble_args(&args);
+            // The defaults assertion is incidental; the real assertion is that
+            // the call above does not panic.
+            assert!(opts.path.is_none(), "bare option `{opt}` set a path");
+        }
+    }
+
+    #[test]
     fn parse_disassemble_args_p_alias_for_split_tags() {
         let args = ["file.xml", "-p", "a:split:b"]
             .iter()
