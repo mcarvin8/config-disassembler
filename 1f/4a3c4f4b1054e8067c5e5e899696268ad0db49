@@ -1,0 +1,22 @@
+src/disassemble.rs
+  s_9d8da00257762a::t_88813008a63d90 790-957
+src/reassemble.rs
+  s_9d8da00257762a::t_bf369e3891db31 573
+  s_9d8da00257762a::t_4981d3b136a38c 439-572,574-582
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "1f4a3c4f4b1054e8067c5e5e899696268ad0db49",
+  "prompts": {},
+  "sessions": {
+    "s_9d8da00257762a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "77c37170-73f8-4704-8a45-0df131ebfd06",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin <90224411+mcarvin8@users.noreply.github.com>"
+    }
+  }
+}
