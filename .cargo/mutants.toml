@@ -1,0 +1,26 @@
+# Configuration for cargo-mutants (https://mutants.rs/).
+#
+# Run `cargo mutants` locally to use this config. `cargo mutants --in-diff <file>`
+# only mutates lines covered by the supplied unified diff; CI uses that for PRs.
+
+# Pure entry points / boilerplate — nothing worth mutating.
+exclude_globs = [
+    "src/main.rs",
+]
+
+# Skip trait impls that are pure delegations or where mutants are typically
+# equivalent (Debug/From/source). The Display impl in `error.rs` is exercised
+# by `tests::display_covers_all_variants`, so we leave it mutable.
+exclude_re = [
+    "impl .*Debug for",
+    "impl From<.*> for Error",
+    "fn source",
+]
+
+# Give the suite extra wall-clock budget under mutation; minimums prevent flaky
+# kills on fast unit tests that happen to time out under contention.
+timeout_multiplier = 2.0
+minimum_test_timeout = 60.0
+
+# Match CI test invocation so feature-gated code paths are exercised.
+additional_cargo_args = ["--all-features"]

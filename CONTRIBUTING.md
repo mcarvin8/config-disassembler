@@ -34,6 +34,9 @@ All pull requests run automated checks:
 - Clippy runs with `cargo clippy --all-targets --all-features --workspace -- -D warnings`.
 - Documentation builds with warnings denied using `cargo doc`.
 - A RustSec audit runs on pull requests, dependency changes, and a daily schedule.
+- Mutation testing runs via `cargo-mutants` against the lines changed by the
+  pull request. A full-suite run is available on demand via the
+  `Mutation Testing` workflow's `workflow_dispatch` trigger.
 
 Releases are automated after changes land on `main`:
 
@@ -113,6 +116,23 @@ match the CI formatting and lint expectations.
   ```shell
   cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
   ```
+
+- Run mutation testing locally (install `cargo-mutants` first):
+
+  ```shell
+  # Full run (long)
+  cargo mutants
+
+  # Scoped to a single file (fast)
+  cargo mutants -f src/xml/handlers/disassemble.rs
+
+  # Mutate only what your branch changed vs main (matches CI)
+  git diff "$(git merge-base HEAD origin/main)" HEAD -- src tests > mutation.diff
+  cargo mutants --in-diff mutation.diff
+  ```
+
+  Configuration lives in `.cargo/mutants.toml`. The HTML/text report is written
+  to `mutants.out/` (gitignored).
 
 - Check to see if there are code formatting issues
 
