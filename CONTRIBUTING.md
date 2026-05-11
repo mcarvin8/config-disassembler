@@ -134,6 +134,20 @@ match the CI formatting and lint expectations.
   Configuration lives in `.cargo/mutants.toml`. The HTML/text report is written
   to `mutants.out/` (gitignored).
 
+  The config excludes a few function families from mutation testing:
+
+  - `impl Debug for ...`, `impl From<...> for Error`, and `fn source`: pure
+    delegations / typically-equivalent mutants.
+  - `fn print_help`, `fn print_format_help`, `fn print_same_format_help`,
+    `fn print_cross_format_help`, `fn format_list`, `fn display_name`, and
+    `fn supported_format_list`: human-facing help / format-label strings
+    where the only way to "kill" a mutant is a snapshot test whose only job
+    is to fail when the help text is intentionally edited.
+
+  If you find yourself adding similar pure-text functions, extend
+  `exclude_re` in `.cargo/mutants.toml` rather than writing a snapshot
+  test purely to satisfy mutation testing.
+
 - Check to see if there are code formatting issues
 
   ```shell
