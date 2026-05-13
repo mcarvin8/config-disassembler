@@ -41,55 +41,76 @@ exclude_re = [
     # cosmetic.
     "replace Format::display_name",
     "replace Format::supported_format_list",
-    # `parse_reassemble_args` returns `(Option<&str>, Option<&str>,
-    # bool)`. cargo-mutants's `FnValue` genre enumerates every
-    # combination of "default-ish" values for the tuple and emits 18
-    # mutants here (3 first-elem options x 3 second-elem options x 2
-    # bool values, see `cargo mutants --list --file src/xml/cli.rs`).
-    # The three with `(None, *, true)` are *catastrophic in the
-    # cargo-mutants scratch tree*:
+    # Every mutant on `parse_reassemble_args` -- equivalent to a
+    # function-level `#[mutants::skip]`, but expressed here so we
+    # don't have to add the `mutants` crate as a dependency just for
+    # one attribute.
     #
-    #   1. `run_reassemble` reads `path.unwrap_or(".")` -- with the
-    #      mutated `path = None`, the working path collapses to `"."`.
-    #   2. `run_reassemble` then calls
-    #      `ReassembleXmlFileHandler::reassemble(".", Some("xml"), true)`.
-    #   3. Inside `reassemble_plain`, the trailing
-    #      `if post_purge { fs::remove_dir_all(file_path).await.ok(); }`
-    #      runs with `file_path == "."`.
+    # Background. `parse_reassemble_args` returns
+    # `(Option<&str>, Option<&str>, bool)` and is consumed by
+    # `run_reassemble` (`src/xml/cli.rs`) as:
     #
-    # Because `cargo test` always sets cwd to the cargo-mutants scratch
+    #     let (path, extension, post_purge) = parse_reassemble_args(args);
+    #     let path = path.unwrap_or(".");
+    #     handler.reassemble(path, extension.or(Some("xml")), post_purge).await?;
+    #
+    # `ReassembleXmlFileHandler::reassemble` ultimately reaches
+    # (`src/xml/handlers/reassemble.rs:277`):
+    #
+    #     if post_purge { fs::remove_dir_all(file_path).await.ok(); }
+    #
+    # Whenever a mutant on `parse_reassemble_args` yields
+    # `(path: None, _, post_purge: true)` for the input the
+    # integration test
+    # `run_reassemble_on_existing_directory_succeeds` actually passes
+    # (typically a single positional dir, e.g.
+    # `["xml-disassembler", "reassemble", "<tempdir>"]`), the call
+    # collapses to `reassemble(".", Some("xml"), true)`. Because
+    # `cargo test` runs with cwd set to the cargo-mutants scratch
     # directory (`/tmp/cargo-mutants-config-disassembler-XXX.tmp/`),
-    # the integration test
-    # `run_reassemble_on_existing_directory_succeeds` (`xml/cli.rs`)
-    # blows away the *entire scratch tree* -- including
-    # `src/xml/cli.rs` itself -- and then panics. cargo-mutants records
-    # the mutant as `Caught`, but the next mutant's `Apply` step finds
-    # the source file gone and the worker dies with
-    # `".../src/xml/cli.rs" does not exist, refusing to create it`,
-    # aborting the remaining ~600 mutants in the sweep. The first such
-    # variant tested in the deterministic `--no-shuffle` order is
-    # `(None, None, true)`; once it deletes cwd, no later destructive
-    # variants get a chance to run, but skipping only that one would
-    # just shift the failure to `(None, Some(""), true)` etc.
-    # Diagnosed via the post-#613 error message and cargo-mutants
-    # debug.log (run 25818276284).
+    # `fs::remove_dir_all(".")` then wipes the *entire scratch tree
+    # including `src/xml/cli.rs` itself*. cargo-mutants records the
+    # mutant as `Caught` (the test panics), but the next mutant's
+    # `Apply` step finds the source file gone and the worker dies
+    # with `".../src/xml/cli.rs" does not exist, refusing to create
+    # it`, aborting the remaining ~600 mutants in the sweep.
     #
-    # The other 15 variants are not destructive and stay mutable:
-    #   - `(None, *, false)` walks cwd looking for `.xml` files but
-    #     does not purge; tests still catch it.
-    #   - `(Some(""), *, *)` reduces to `reassemble("", ...)`, which
-    #     fails with ENOENT before any destructive code runs.
-    #   - `(Some("xyzzy"), *, *)` targets a non-existent path; same.
+    # `cargo mutants --list --file src/xml/cli.rs` shows 16 mutants
+    # currently land on this function (15 `FnValue` and 1
+    # `BinaryOperator`). At least two have proven destructive in CI:
     #
-    # We could instead defensively guard `reassemble_plain` against
-    # `remove_dir_all` on cwd, but the excluded mutants have no
-    # real-world meaning -- they encode "ignore every input and
-    # request a destructive purge" -- and a narrow exclusion is more
-    # honest than a guard that would silently mask future destructive
-    # CLI bugs in user code. The regex is anchored to the file and to
-    # the `(None, *, true)` shape so non-destructive variants are NOT
-    # masked.
-    "src/xml/cli\\.rs:.*: replace parse_reassemble_args -> .* with \\(None, .*, true\\)",
+    #   1. FnValue `(None, None, true)` (run 25818276284 / PR #42)
+    #   2. BinaryOperator `replace == with !=` at 196:16, which
+    #      flips `if arg == "--postpurge"` so that *every* non-
+    #      `--postpurge` arg sets `post_purge = true` and `path`
+    #      never gets assigned -- yielding `(None, None, true)` for
+    #      the single-positional input above (run 25820780519 /
+    #      PR #43).
+    #
+    # A narrower exclude that targeted only the
+    # `(None, *, true)` `FnValue` shape (PR #43) just shifted the
+    # destructive case to the `BinaryOperator` mutant. Any single
+    # boolean guard added at the `remove_dir_all` site would itself
+    # be one `==`/`||`-flip mutation away from being destructive
+    # again. Skipping the whole function is the only durable fix
+    # that doesn't require adding a `#[mutants::skip]` runtime
+    # attribute or restructuring the integration test.
+    #
+    # Semantic coverage is preserved by two existing unit tests in
+    # `src/xml/cli.rs::tests`:
+    #
+    #   * `parse_reassemble_args_picks_path_extension_and_flag`
+    #     -- asserts `(Some("some/dir"), Some("json"), true)` for
+    #     `["some/dir", "json", "--postpurge"]`.
+    #   * `parse_reassemble_args_defaults_and_extra_args_ignored`
+    #     -- asserts `(None, None, false)` for `[]` and
+    #     `(Some("dir"), Some("xml"), _)` for `["dir", "xml", "extra"]`.
+    #
+    # These cover both the all-default path and the positional /
+    # `--postpurge` flag-recognition path; any logic bug in this
+    # function that affects real callers will fail one of them in CI
+    # regardless of cargo-mutants.
+    "src/xml/cli\\.rs:.*parse_reassemble_args",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
