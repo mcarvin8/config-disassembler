@@ -273,15 +273,25 @@ fn render_jsonc_property(key: &str, value_text: &str) -> Result<String> {
 
 fn render_jsonc_array_element(value_text: &str) -> String {
     let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
+    jsonc_segment_with_comma(&indent_lines(value_text))
+}
+
+/// Indent each line of `text` by two spaces and rejoin with `\n`, with no
+/// leading or trailing newline. Extracted so the loop's guard
+/// (`if idx > 0 { push('\n') }`) is observable in tests: the caller in
+/// `render_jsonc_array_element` always pipes the result through
+/// `jsonc_segment_with_comma`, which strips outer `\r`/`\n` and would
+/// otherwise mask a leading-newline regression.
+fn indent_lines(text: &str) -> String {
     let mut out = String::new();
-    for (idx, line) in value_text.lines().enumerate() {
+    for (idx, line) in text.lines().enumerate() {
         if idx > 0 {
             out.push('\n');
         }
         out.push_str("  ");
         out.push_str(line);
     }
-    jsonc_segment_with_comma(&out)
+    out
 }
 
 fn render_jsonc_object<'a>(segments: impl IntoIterator<Item = &'a String>) -> String {
@@ -310,15 +320,26 @@ fn jsonc_segment_with_comma(segment: &str) -> String {
         return segment.to_string();
     }
 
-    let last_line_start = segment.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-    let last_line = &segment[last_line_start..];
-    if let Some(comment_start) = line_comment_start(last_line) {
+    let last = last_line(segment);
+    let last_line_start = segment.len() - last.len();
+    if let Some(comment_start) = line_comment_start(last) {
         let comment_start = last_line_start + comment_start;
         let (before_comment, comment) = segment.split_at(comment_start);
         return format!("{},{}", before_comment.trim_end(), comment);
     }
 
     format!("{segment},")
+}
+
+/// Slice the substring after the final `\n`, or the entire input if there
+/// is no newline. Pulled out so callers can stay free of explicit
+/// `idx + 1` byte arithmetic -- a `+ 1` -> `* 1` mutant on that
+/// expression was provably equivalent to the original (the resulting
+/// off-by-one in `last_line_start` is exactly compensated by `\n` not
+/// toggling `line_comment_start`'s in-string state), which made the
+/// surviving mutant impossible to kill without contorting tests.
+fn last_line(s: &str) -> &str {
+    s.rsplit('\n').next().unwrap_or(s)
 }
 
 fn line_comment_start(line: &str) -> Option<usize> {
@@ -477,14 +498,60 @@ mod tests {
     #[test]
     fn render_jsonc_array_element_first_line_has_no_leading_newline() {
         // The `if idx > 0 { push('\n') }` guard would push a leading newline
-        // for the first line if mutated to `>=`.
+        // for the first line if mutated to `>=`. Note: this assertion alone
+        // is insufficient -- the downstream `jsonc_segment_with_comma` call
+        // trims outer newlines, so a `>=` mutant in the loop would still
+        // produce output that doesn't start with `\n` *here*. The
+        // `indent_lines_*` tests below pin the guard directly without the
+        // trim wash.
         let rendered = render_jsonc_array_element("{\n  \"a\": 1\n}");
         assert!(
             !rendered.starts_with('\n'),
             "first line should not be prefixed with newline: {rendered:?}"
         );
-        // Subsequent lines still get newline separators.
         assert!(rendered.contains("\n"));
+    }
+
+    #[test]
+    fn indent_lines_single_line_has_no_newline() {
+        // Pins `if idx > 0` in `indent_lines`: with `>= 0` the output would
+        // be "\n  a" instead of "  a".
+        assert_eq!(indent_lines("a"), "  a");
+    }
+
+    #[test]
+    fn indent_lines_multi_line_separator_only_between_lines() {
+        // Pins both `if idx > 0` and the underlying iteration: a `>= 0`
+        // mutant would produce "\n  a\n  b"; a `> 1` mutant would produce
+        // "  a  b" (missing the inter-line separator).
+        assert_eq!(indent_lines("a\nb"), "  a\n  b");
+    }
+
+    #[test]
+    fn render_jsonc_array_element_strips_surrounding_newlines() {
+        // Pins the `|c| c == '\r' || c == '\n'` predicate in the outer
+        // `trim_matches`. Mutating `||` to `&&` makes the closure always
+        // false, so the leading/trailing newlines would survive and the
+        // output would contain an empty first line ("  \n  hello,") instead
+        // of the expected "  hello,".
+        assert_eq!(render_jsonc_array_element("\nhello\n"), "  hello,");
+        assert_eq!(render_jsonc_array_element("\r\nhello\r\n"), "  hello,");
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_inserts_comma_before_trailing_comment_on_multi_line() {
+        // Pins `last_line_start = idx + 1` on the `rfind('\n').map(|idx|
+        // idx + 1)` path. Mutating `+ 1` to `- 1` would back the slice up
+        // by two bytes, putting an unbalanced `"` at the start of
+        // `last_line`. That flips `line_comment_start` into in-string mode
+        // for the rest of the slice, it returns None, and we fall through
+        // to `format!("{segment},")` -- the comma ends up *after* the
+        // comment instead of before it.
+        let input = "  \"a\": \"x\"\n  \"b\": 2 // trail";
+        assert_eq!(
+            jsonc_segment_with_comma(input),
+            "  \"a\": \"x\"\n  \"b\": 2,// trail"
+        );
     }
 
     #[test]
