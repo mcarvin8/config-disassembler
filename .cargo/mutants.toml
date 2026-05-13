@@ -41,6 +41,19 @@ exclude_re = [
     # cosmetic.
     "replace Format::display_name",
     "replace Format::supported_format_list",
+    # `src/xml/cli.rs:178:15: replace += with *= in parse_disassemble_args`
+    # is observationally equivalent. On the only branch that reaches
+    # this `i += 1` (`else if path.is_none() { path = Some(arg.as_str());
+    # i += 1; }`), mutating to `i *= 1` leaves `i` at its current value.
+    # The next iteration re-reads the same positional arg, now finds
+    # `path` already set, falls through to the `else { i += 1 }` arm
+    # and recovers. The function's only output -- the populated
+    # `DisassembleOpts` -- is unchanged for every input. The other
+    # `i += 1` occurrences in this function generate their own mutants
+    # at different `line:col`s and are killed by existing tests, so
+    # this regex is anchored to the exact location to avoid masking
+    # them.
+    "src/xml/cli\\.rs:178:15: replace \\+= with \\*=",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky

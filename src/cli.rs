@@ -331,3 +331,29 @@ fn format_list(formats: &[Format]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_reassemble_rejects_second_positional_argument() {
+        // Pins `_ if input_dir.is_none() => input_dir = Some(...)` against
+        // a `with true` mutant on the match guard. With the original guard,
+        // the second positional argument falls through to the `_ =>`
+        // catch-all and returns `Error::Usage("unexpected argument
+        // `dir2`")`. With the mutant the guard is always `true`, so `dir2`
+        // silently overwrites `input_dir` and the function then tries to
+        // reassemble a non-existent directory, returning a filesystem
+        // error variant instead (or `Ok(())` if the path happened to
+        // exist). Either way, the surfaced error is no longer
+        // `Error::Usage` with this exact prefix.
+        let args = vec!["dir1".to_string(), "dir2".to_string()];
+        let err = run_reassemble(Format::Json, args)
+            .expect_err("two positional dirs must be rejected as a usage error");
+        assert!(
+            matches!(&err, Error::Usage(msg) if msg.contains("unexpected argument `dir2`")),
+            "expected `Error::Usage` mentioning the second positional arg, got: {err:?}"
+        );
+    }
+}
