@@ -16,23 +16,31 @@ exclude_globs = [
 # documentation surfaces, not behavior: pinning them down would require
 # snapshot tests whose only purpose is to fail when the help text is edited,
 # which is the opposite of what we want. The wording is reviewed manually.
+#
+# IMPORTANT: cargo-mutants matches `exclude_re` against the *mutant name*
+# (e.g. `src/cli.rs:211:5: replace print_help with ()`), not the source
+# declaration line. So patterns must anchor on the `replace <name>` form,
+# never on `fn <name>`. Trait-impl mutants embed the impl header in the
+# mutant name (e.g. `<impl std::error::Error for Error>::source`), so the
+# `impl ...` patterns below match correctly.
 exclude_re = [
     "impl .*Debug for",
     "impl From<.*> for Error",
-    "fn source",
+    # `Error::source` impl (trait method on `std::error::Error`).
+    "<impl std::error::Error for Error>::source",
     # CLI help printers (config-disassembler top-level CLI).
-    "fn print_help",
-    "fn print_format_help",
-    "fn print_same_format_help",
-    "fn print_cross_format_help",
+    "replace print_help",
+    "replace print_format_help",
+    "replace print_same_format_help",
+    "replace print_cross_format_help",
     # Helper that joins format names for the `<fmt>` line in help output.
-    "fn format_list",
+    "replace format_list",
     # `Format::display_name` is the human-friendly format label used in
     # help text and error messages; `Format::supported_format_list` is the
     # human-readable comma-joined name list for error contexts. Both are
     # cosmetic.
-    "fn display_name",
-    "fn supported_format_list",
+    "replace Format::display_name",
+    "replace Format::supported_format_list",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
