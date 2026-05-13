@@ -78,6 +78,13 @@ jobs:
 
       - name: Run incremental mutation testing
         if: steps.diff.outputs.has_diff == 'true'
+        # `--in-place` works around cargo-mutants v27.0.0 issue #611
+        # (reflink copy preserves source mtime, tempfile reapers
+        # silently unlink the per-mutant scratch tree mid-run). See
+        # the matching note on the `full` job below for details. The
+        # incremental sweep is usually short enough to dodge the
+        # reaper, but the flag also makes the two jobs consistent and
+        # is harmless on the ephemeral runner.
         run: |
           set -euo pipefail
           # Fast path: only mutate the production lines that appear in the
@@ -86,7 +93,7 @@ jobs:
           # to mutating every changed Rust file so the new tests get a
           # chance to kill the mutants they were written to target.
           LOG=$(mktemp)
-          cargo mutants --no-shuffle --in-diff mutation.diff 2>&1 | tee "$LOG"
+          cargo mutants --no-shuffle --in-place --in-diff mutation.diff 2>&1 | tee "$LOG"
           if grep -q "No mutants to filter" "$LOG"; then
             if [ ! -s changed-rs.txt ]; then
               echo "::notice::No Rust source changes; nothing to mutate."
@@ -97,7 +104,7 @@ jobs:
             while IFS= read -r f; do
               FILE_ARGS+=("--file" "$f")
             done < changed-rs.txt
-            cargo mutants --no-shuffle "${FILE_ARGS[@]}"
+            cargo mutants --no-shuffle --in-place "${FILE_ARGS[@]}"
           fi
 
       - name: Upload mutation report
@@ -128,7 +135,24 @@ jobs:
           tool: cargo-mutants
 
       - name: Run full mutation testing
-        run: cargo mutants --no-shuffle
+        # `--in-place` works around cargo-mutants v27.0.0 issue
+        # https://github.com/sourcefrog/cargo-mutants/issues/611: the
+        # default per-mutant tempdir copy uses `reflink::reflink`, which
+        # preserves the source mtime. On macOS `dirhelper` and on Linux
+        # systemd-tmpfiles clean files in `/tmp` whose mtime is older
+        # than the configured threshold, silently unlinking the
+        # copied source files mid-run. The next mutant's
+        # `overwrite_file` then trips `ensure!(full_path.is_file(), ...)`
+        # and the worker dies with "is not a file". Two consecutive
+        # full sweeps on ubuntu-latest hit this deterministically on
+        # `src/xml/cli.rs` (post-revert of the `parse_reassemble_args`
+        # mutant). `--in-place` skips the copy entirely; the runner is
+        # ephemeral so the trade-off (mutating the actual source tree
+        # during the run) is purely a CI-side artifact. Revisit once
+        # cargo-mutants ships a release with the fix from PR
+        # https://github.com/sourcefrog/cargo-mutants/pull/613 (merged
+        # May 11 2026, not yet released as of v27.0.0).
+        run: cargo mutants --no-shuffle --in-place
 
       - name: Upload mutation report
         if: always()
