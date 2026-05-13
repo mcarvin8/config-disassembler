@@ -1,0 +1,19 @@
+src/cli.rs
+  s_1664b6b3f680a5::t_b291b75f499651 354-357,366-368,372-375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "e3bd7a4cf6d8d3bc05f5adf06cf85f0116045547",
+  "prompts": {},
+  "sessions": {
+    "s_1664b6b3f680a5": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "1ad8f5f0-d50b-4c4f-8d7d-13e9dfb13085",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin <90224411+mcarvin8@users.noreply.github.com>"
+    }
+  }
+}
