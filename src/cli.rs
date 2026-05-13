@@ -351,13 +351,10 @@ mod tests {
         let args = vec!["dir1".to_string(), "dir2".to_string()];
         let err = run_reassemble(Format::Json, args)
             .expect_err("two positional dirs must be rejected as a usage error");
-        match err {
-            Error::Usage(msg) => assert!(
-                msg.contains("unexpected argument `dir2`"),
-                "expected usage error to mention the second positional arg, got: {msg}"
-            ),
-            other => panic!("expected Error::Usage, got {other:?}"),
-        }
+        assert!(
+            matches!(&err, Error::Usage(msg) if msg.contains("unexpected argument `dir2`")),
+            "expected `Error::Usage` mentioning the second positional arg, got: {err:?}"
+        );
     }
 
     #[test]
@@ -366,17 +363,15 @@ mod tests {
         // branch is the one wired to assignment. If the guard were
         // inverted (a `!` insertion mutant), the first positional would
         // also fall through to the catch-all and we'd see a usage error
-        // here too. The reassemble call itself will fail because
-        // "missing-dir" does not exist, but the error variant must not
-        // be `Error::Usage("unexpected argument ...")`.
+        // here. The reassemble call itself will fail because
+        // "missing-dir" does not exist, but the error must not be
+        // `Error::Usage("unexpected argument ...")`.
         let args = vec!["missing-dir".to_string()];
         let err = run_reassemble(Format::Json, args)
             .expect_err("non-existent input dir must surface a reassemble error");
-        if let Error::Usage(msg) = &err {
-            assert!(
-                !msg.contains("unexpected argument"),
-                "first positional should not be flagged as unexpected: {msg}"
-            );
-        }
+        assert!(
+            !matches!(&err, Error::Usage(msg) if msg.contains("unexpected argument")),
+            "first positional should not be flagged as an unexpected argument: {err:?}"
+        );
     }
 }
