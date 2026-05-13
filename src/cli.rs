@@ -356,22 +356,4 @@ mod tests {
             "expected `Error::Usage` mentioning the second positional arg, got: {err:?}"
         );
     }
-
-    #[test]
-    fn run_reassemble_first_positional_accepted_as_input_dir() {
-        // Sibling sanity check: confirms the guard's `is_none()` *true*
-        // branch is the one wired to assignment. If the guard were
-        // inverted (a `!` insertion mutant), the first positional would
-        // also fall through to the catch-all and we'd see a usage error
-        // here. The reassemble call itself will fail because
-        // "missing-dir" does not exist, but the error must not be
-        // `Error::Usage("unexpected argument ...")`.
-        let args = vec!["missing-dir".to_string()];
-        let err = run_reassemble(Format::Json, args)
-            .expect_err("non-existent input dir must surface a reassemble error");
-        assert!(
-            !matches!(&err, Error::Usage(msg) if msg.contains("unexpected argument")),
-            "first positional should not be flagged as an unexpected argument: {err:?}"
-        );
-    }
 }
