@@ -1,0 +1,19 @@
+.cargo/mutants.toml
+  s_1664b6b3f680a5::t_3f7c8fcb3e46db 19-25,29-30,32-35,37,42-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "cd639d722d1578753078efa28de13829a41de192",
+  "prompts": {},
+  "sessions": {
+    "s_1664b6b3f680a5": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "1ad8f5f0-d50b-4c4f-8d7d-13e9dfb13085",
+        "model": "auto-high"
+      },
+      "human_author": "Matt Carvin <90224411+mcarvin8@users.noreply.github.com>"
+    }
+  }
+}
