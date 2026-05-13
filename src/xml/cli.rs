@@ -97,6 +97,18 @@ pub fn parse_multi_level_specs(spec: &str) -> Vec<MultiLevelRule> {
 }
 
 /// Parse disassemble args: `<path> [options]`.
+///
+/// Iteration is driven by `args.iter()` rather than a manual `let mut i =
+/// 0; while i < args.len()` cursor so that every option handler advances
+/// the cursor by consuming the iterator. The previous index-based loop
+/// scattered ~22 `i += 1` expressions across the body; every `+= -> -=`
+/// or `+= -> *=` mutation on those lines produces an infinite loop (the
+/// outer `while` never terminates because `i` either wraps around on
+/// usize underflow or stays put), which `cargo-mutants` can only
+/// classify as `timeout`. That added ~36 timeouts and ~36 minutes of
+/// wall-clock to every full sweep with no actual signal. The iterator
+/// form removes those mutation sites entirely; behavior is unchanged
+/// and covered by the existing `parse_disassemble_args_*` tests.
 pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
     let mut path = None;
     let mut unique_id_elements = None;
@@ -108,77 +120,58 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
     let mut multi_level = None;
     let mut split_tags = None;
 
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         if arg == "--postpurge" {
             post_purge = true;
-            i += 1;
         } else if arg == "--prepurge" {
             pre_purge = true;
-            i += 1;
         } else if let Some(rest) = arg.strip_prefix("--unique-id-elements=") {
             unique_id_elements = Some(rest);
-            i += 1;
         } else if arg == "--unique-id-elements" {
-            i += 1;
-            if i < args.len() {
-                unique_id_elements = Some(args[i].as_str());
-                i += 1;
+            if let Some(value) = iter.next() {
+                unique_id_elements = Some(value.as_str());
             }
         } else if let Some(rest) = arg.strip_prefix("--ignore-path=") {
             ignore_path = Some(rest);
-            i += 1;
         } else if arg == "--ignore-path" {
-            i += 1;
-            if i < args.len() {
-                ignore_path = Some(args[i].as_str());
-                i += 1;
+            if let Some(value) = iter.next() {
+                ignore_path = Some(value.as_str());
             }
         } else if let Some(rest) = arg.strip_prefix("--format=") {
             format = rest;
-            i += 1;
         } else if arg == "--format" {
-            i += 1;
-            if i < args.len() {
-                format = args[i].as_str();
-                i += 1;
+            if let Some(value) = iter.next() {
+                format = value.as_str();
             }
         } else if let Some(rest) = arg.strip_prefix("--strategy=") {
             strategy = Some(rest);
-            i += 1;
         } else if arg == "--strategy" {
-            i += 1;
-            if i < args.len() {
-                strategy = Some(args[i].as_str());
-                i += 1;
+            if let Some(value) = iter.next() {
+                strategy = Some(value.as_str());
             }
         } else if let Some(rest) = arg.strip_prefix("--multi-level=") {
             multi_level = Some(rest.to_string());
-            i += 1;
         } else if arg == "--multi-level" {
-            i += 1;
-            if i < args.len() {
-                multi_level = Some(args[i].clone());
-                i += 1;
+            if let Some(value) = iter.next() {
+                multi_level = Some(value.clone());
             }
         } else if let Some(rest) = arg.strip_prefix("--split-tags=") {
             split_tags = Some(rest.to_string());
-            i += 1;
         } else if arg == "--split-tags" || arg == "-p" {
-            i += 1;
-            if i < args.len() {
-                split_tags = Some(args[i].clone());
-                i += 1;
+            if let Some(value) = iter.next() {
+                split_tags = Some(value.clone());
             }
         } else if arg.starts_with("--") {
-            i += 1;
+            // Unknown long flag: silently skipped (matches the legacy
+            // index-based parser, whose tests pin this behavior via
+            // `parse_disassemble_args_unknown_long_flag_is_skipped`).
         } else if path.is_none() {
             path = Some(arg.as_str());
-            i += 1;
-        } else {
-            i += 1;
         }
+        // Else: extra positional argument, dropped silently to match the
+        // legacy parser (covered by
+        // `parse_disassemble_args_trailing_extra_positional_ignored`).
     }
 
     DisassembleOpts {
