@@ -552,15 +552,26 @@ fn jsonc_segment_with_comma(segment: &str) -> String {
         return segment.to_string();
     }
 
-    let last_line_start = segment.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
-    let last_line = &segment[last_line_start..];
-    if let Some(comment_start) = line_comment_start(last_line) {
+    let last = last_line(segment);
+    let last_line_start = segment.len() - last.len();
+    if let Some(comment_start) = line_comment_start(last) {
         let comment_start = last_line_start + comment_start;
         let (before_comment, comment) = segment.split_at(comment_start);
         return format!("{},{}", before_comment.trim_end(), comment);
     }
 
     format!("{segment},")
+}
+
+/// Slice the substring after the final `\n`, or the entire input if there
+/// is no newline. Pulled out so callers can stay free of explicit
+/// `idx + 1` byte arithmetic -- a `+ 1` -> `* 1` mutant on that
+/// expression was provably equivalent to the original (the resulting
+/// off-by-one in `last_line_start` is exactly compensated by `\n` not
+/// toggling `line_comment_start`'s in-string state), which made the
+/// surviving mutant impossible to kill without contorting tests.
+fn last_line(s: &str) -> &str {
+    s.rsplit('\n').next().unwrap_or(s)
 }
 
 fn line_comment_start(line: &str) -> Option<usize> {
@@ -678,6 +689,22 @@ mod tests {
         assert_eq!(
             jsonc_segment_with_comma(r#"  "name": "demo" // keep this comment"#),
             r#"  "name": "demo",// keep this comment"#
+        );
+    }
+
+    #[test]
+    fn jsonc_segment_with_comma_inserts_comma_before_trailing_comment_on_multi_line() {
+        // Pins `last_line_start = idx + 1` on the `rfind('\n').map(|idx|
+        // idx + 1)` path. Mutating `+ 1` to `- 1` would back the slice up
+        // by two bytes, putting an unbalanced `"` at the start of
+        // `last_line`. That flips `line_comment_start` into in-string mode
+        // for the rest of the slice, it returns None, and we fall through
+        // to `format!("{segment},")` -- the comma ends up *after* the
+        // comment instead of before it.
+        let input = "  \"a\": \"x\"\n  \"b\": 2 // trail";
+        assert_eq!(
+            jsonc_segment_with_comma(input),
+            "  \"a\": \"x\"\n  \"b\": 2,// trail"
         );
     }
 
