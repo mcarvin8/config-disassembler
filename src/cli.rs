@@ -331,3 +331,52 @@ fn format_list(formats: &[Format]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_reassemble_rejects_second_positional_argument() {
+        // Pins `_ if input_dir.is_none() => input_dir = Some(...)` against
+        // a `with true` mutant on the match guard. With the original guard,
+        // the second positional argument falls through to the `_ =>`
+        // catch-all and returns `Error::Usage("unexpected argument
+        // `dir2`")`. With the mutant the guard is always `true`, so `dir2`
+        // silently overwrites `input_dir` and the function then tries to
+        // reassemble a non-existent directory, returning a filesystem
+        // error variant instead (or `Ok(())` if the path happened to
+        // exist). Either way, the surfaced error is no longer
+        // `Error::Usage` with this exact prefix.
+        let args = vec!["dir1".to_string(), "dir2".to_string()];
+        let err = run_reassemble(Format::Json, args)
+            .expect_err("two positional dirs must be rejected as a usage error");
+        match err {
+            Error::Usage(msg) => assert!(
+                msg.contains("unexpected argument `dir2`"),
+                "expected usage error to mention the second positional arg, got: {msg}"
+            ),
+            other => panic!("expected Error::Usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_reassemble_first_positional_accepted_as_input_dir() {
+        // Sibling sanity check: confirms the guard's `is_none()` *true*
+        // branch is the one wired to assignment. If the guard were
+        // inverted (a `!` insertion mutant), the first positional would
+        // also fall through to the catch-all and we'd see a usage error
+        // here too. The reassemble call itself will fail because
+        // "missing-dir" does not exist, but the error variant must not
+        // be `Error::Usage("unexpected argument ...")`.
+        let args = vec!["missing-dir".to_string()];
+        let err = run_reassemble(Format::Json, args)
+            .expect_err("non-existent input dir must surface a reassemble error");
+        if let Error::Usage(msg) = &err {
+            assert!(
+                !msg.contains("unexpected argument"),
+                "first positional should not be flagged as unexpected: {msg}"
+            );
+        }
+    }
+}
