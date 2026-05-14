@@ -225,9 +225,31 @@ pub fn print_usage() {
     eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml)");
 }
 
+/// True when `args` only contains the program name (or is empty).
+/// Pure helper extracted from `run` so the `args.len() < 2` guard
+/// can be exercised at every boundary without spawning a process.
+fn should_print_usage(args_len: usize) -> bool {
+    args_len < 2
+}
+
+/// True when the user supplied a `--multi-level` spec that didn't
+/// parse into any rules. Pure helper extracted from `run_disassemble`
+/// so both legs of `spec.is_some() && parsed.is_empty()` are testable.
+fn multi_level_spec_failed_to_parse(spec_present: bool, parsed_empty: bool) -> bool {
+    spec_present && parsed_empty
+}
+
+/// True when the strategy is `grouped-by-tag` and decompose-spec
+/// parsing should run. Extracting this guard avoids paying the cost
+/// of parsing `--split-tags` (and triggering its destructive
+/// behaviours under mutation testing) for any other strategy.
+fn should_parse_decompose_rules(strategy: &str) -> bool {
+    strategy == "grouped-by-tag"
+}
+
 /// Run the CLI with the given args. `args[0]` is expected to be the program name.
 pub async fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if args.len() < 2 {
+    if should_print_usage(args.len()) {
         print_usage();
         return Ok(());
     }
@@ -253,10 +275,10 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
         .as_deref()
         .map(parse_multi_level_specs)
         .unwrap_or_default();
-    if opts.multi_level.is_some() && multi_level_rules.is_empty() {
+    if multi_level_spec_failed_to_parse(opts.multi_level.is_some(), multi_level_rules.is_empty()) {
         eprintln!("Invalid --multi-level spec; use file_pattern:root_to_strip:unique_id_elements (multiple rules separated by ';')");
     }
-    let decompose_rules: Vec<DecomposeRule> = if strategy == "grouped-by-tag" {
+    let decompose_rules: Vec<DecomposeRule> = if should_parse_decompose_rules(strategy) {
         opts.split_tags
             .as_ref()
             .map(|s| parse_decompose_spec(s))
@@ -708,5 +730,38 @@ mod tests {
         ])
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn should_print_usage_only_for_fewer_than_two_args() {
+        // Pins each `<` mutant: `<=` would also trigger on len=2,
+        // `==` would miss len=0, `>` would invert the polarity.
+        assert!(should_print_usage(0));
+        assert!(should_print_usage(1));
+        assert!(!should_print_usage(2));
+        assert!(!should_print_usage(3));
+    }
+
+    #[test]
+    fn multi_level_spec_failed_to_parse_requires_both_conditions() {
+        // The warning must fire only when a spec was *provided* and
+        // parsing returned no rules — every other quadrant is silent.
+        assert!(multi_level_spec_failed_to_parse(true, true));
+        assert!(!multi_level_spec_failed_to_parse(true, false));
+        assert!(!multi_level_spec_failed_to_parse(false, true));
+        assert!(!multi_level_spec_failed_to_parse(false, false));
+    }
+
+    #[test]
+    fn should_parse_decompose_rules_only_for_grouped_by_tag() {
+        // Decompose rules are exclusive to `grouped-by-tag`. Mutating
+        // the original `==` to `!=` would forward decompose specs to
+        // the `unique-id` strategy and trigger downstream work that
+        // times out under cargo-mutants — testing the helper directly
+        // pins the operator without involving the async pipeline.
+        assert!(should_parse_decompose_rules("grouped-by-tag"));
+        assert!(!should_parse_decompose_rules("unique-id"));
+        assert!(!should_parse_decompose_rules(""));
+        assert!(!should_parse_decompose_rules("Grouped-By-Tag"));
     }
 }
