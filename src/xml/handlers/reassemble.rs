@@ -29,6 +29,34 @@ fn strip_xmlns_from_value(v: Value) -> Value {
     }
 }
 
+/// When recursing into a nested multi-level rule's `path_segment`, the
+/// deeper-level recursion needs the *sibling* rules — every rule
+/// except the one we just matched — so a sub-directory that happens
+/// to share its parent's `path_segment` doesn't re-enter the same
+/// rule. Returns the cloned slice with the matched segment filtered
+/// out. Pure helper extracted from
+/// `reassemble_multi_level_segment_inner`.
+fn deeper_candidate_rules(
+    all_rules: &[MultiLevelRule],
+    exclude_path_segment: &str,
+) -> Vec<MultiLevelRule> {
+    all_rules
+        .iter()
+        .filter(|r| r.path_segment != exclude_path_segment)
+        .cloned()
+        .collect()
+}
+
+/// True when the current directory is the disassembly root for any
+/// of the supplied multi-level rules. Each rule stores the base path
+/// it was disassembled from; if `dir_path` matches one, the caller is
+/// allowed to match that rule's child segments. Pure helper extracted
+/// from `process_files_in_directory` so the `dir_path == base`
+/// equality is testable without a temporary directory tree.
+fn is_at_base_path(dir_path: &str, base_segments: &[(String, String, bool)]) -> bool {
+    base_segments.iter().any(|(base, _, _)| dir_path == base)
+}
+
 type ProcessDirFuture<'a> = Pin<
     Box<
         dyn Future<Output = Result<Vec<XmlElement>, Box<dyn std::error::Error + Send + Sync>>>
@@ -182,11 +210,7 @@ impl ReassembleXmlFileHandler {
                 // Pass everything *except* the rule we just matched as deeper candidates.
                 // Sibling rules remain candidates further down the tree without re-entering
                 // the same rule on a sub-dir that happens to share its name.
-                let deeper: Vec<MultiLevelRule> = nested_rules
-                    .iter()
-                    .filter(|r| r.path_segment != nested_rule.path_segment)
-                    .cloned()
-                    .collect();
+                let deeper = deeper_candidate_rules(nested_rules, &nested_rule.path_segment);
                 self.reassemble_multi_level_segment(&sub_path, nested_rule, &deeper)
                     .await?;
                 handled.insert(sub_entry.file_name());
@@ -304,7 +328,7 @@ impl ReassembleXmlFileHandler {
             // the base_path stored on that rule. Each rule shares the same base_path in
             // the current implementation, but tracking them per-entry keeps the door open
             // for future per-rule base_paths without another signature change.
-            let is_base = base_segments.iter().any(|(base, _, _)| dir_path == *base);
+            let is_base = is_at_base_path(&dir_path, &base_segments);
 
             for entry in entries {
                 let path = entry.path();
@@ -613,5 +637,64 @@ mod tests {
         assert!(obj.contains_key("?xml"));
         let root = obj.get("Root").and_then(|r| r.as_object()).unwrap();
         assert!(root.get("seg").and_then(|v| v.as_array()).is_some());
+    }
+
+    fn rule_with_segment(segment: &str) -> MultiLevelRule {
+        MultiLevelRule {
+            file_pattern: String::new(),
+            root_to_strip: String::new(),
+            unique_id_elements: String::new(),
+            path_segment: segment.to_string(),
+            wrap_root_element: String::new(),
+            wrap_xmlns: String::new(),
+        }
+    }
+
+    #[test]
+    fn deeper_candidate_rules_excludes_the_matched_segment() {
+        // The matched rule must be filtered out, otherwise the
+        // recursion would re-enter that rule when a child directory
+        // happens to share its `path_segment`.
+        let rules = vec![rule_with_segment("seg_a"), rule_with_segment("seg_b")];
+        let deeper = deeper_candidate_rules(&rules, "seg_a");
+        assert_eq!(deeper.len(), 1);
+        assert_eq!(deeper[0].path_segment, "seg_b");
+    }
+
+    #[test]
+    fn deeper_candidate_rules_keeps_all_when_no_segment_matches() {
+        // When `exclude_path_segment` doesn't correspond to any rule
+        // the input is forwarded unchanged. Pins the `!= -> ==` mutant
+        // which would otherwise return an empty vec here.
+        let rules = vec![rule_with_segment("seg_a"), rule_with_segment("seg_b")];
+        let deeper = deeper_candidate_rules(&rules, "missing");
+        assert_eq!(deeper.len(), 2);
+    }
+
+    #[test]
+    fn deeper_candidate_rules_returns_empty_for_empty_input() {
+        let deeper: Vec<MultiLevelRule> = deeper_candidate_rules(&[], "anything");
+        assert!(deeper.is_empty());
+    }
+
+    #[test]
+    fn is_at_base_path_true_when_dir_matches_any_segment() {
+        let segs = vec![
+            ("/base/other".to_string(), "seg1".to_string(), false),
+            ("/base/here".to_string(), "seg2".to_string(), false),
+        ];
+        assert!(is_at_base_path("/base/here", &segs));
+    }
+
+    #[test]
+    fn is_at_base_path_false_when_dir_matches_nothing() {
+        let segs = vec![("/base/a".to_string(), "seg".to_string(), false)];
+        assert!(!is_at_base_path("/base/b", &segs));
+    }
+
+    #[test]
+    fn is_at_base_path_false_for_empty_segments() {
+        let segs: Vec<(String, String, bool)> = Vec::new();
+        assert!(!is_at_base_path("/anywhere", &segs));
     }
 }
