@@ -254,6 +254,46 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
+/// Derive the file-name stem for a split-mode write. Falls back to the
+/// array index when the configured field is missing or sanitizes to an
+/// empty string, so we never emit dot-prefixed files like `.foo-meta.xml`.
+fn split_mode_filename_stem(item: &Value, field: &str, idx: usize) -> String {
+    get_field_value(item, field)
+        .as_deref()
+        .map(sanitize_filename)
+        .filter(|s: &String| !s.is_empty())
+        .unwrap_or_else(|| idx.to_string())
+}
+
+/// Derive the grouping key for a group-mode write. Strips any `.suffix`
+/// from the field value, sanitizes it, and falls back to "unknown" when
+/// the field is missing or sanitizes to empty.
+fn group_mode_key_stem(item: &Value, field: &str) -> String {
+    get_field_value(item, field)
+        .as_deref()
+        .map(group_key_from_field_value)
+        .map(sanitize_filename)
+        .filter(|s: &String| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Detect the "only leaf elements" short-circuit case: the input file
+/// contains at least one leaf child of the root and *no* nested children.
+/// In that case there's nothing to actually disassemble — we just log
+/// and return Ok. The explicit `leaf_count > 0` term matters because
+/// for an *empty* root (no children at all) we still want to proceed to
+/// write the key-order manifest and honour `post_purge`.
+fn is_leaves_only(has_nested_elements: bool, leaf_count: usize) -> bool {
+    !has_nested_elements && leaf_count > 0
+}
+
+/// Whether to write the per-file leaf bundle. False for nested-only
+/// roots (no leaf children) so we don't spam an empty stub file alongside
+/// the real nested output.
+fn should_write_leaf_file(leaf_count: usize) -> bool {
+    leaf_count > 0
+}
+
 async fn write_nested_groups(
     nested_groups: &XmlElementArrayMap,
     strategy: &str,
@@ -282,11 +322,7 @@ async fn write_nested_groups(
         if let Some(r) = rule {
             if r.mode == "split" {
                 for (idx, item) in arr.iter().enumerate() {
-                    let name = get_field_value(item, &r.field)
-                        .as_deref()
-                        .map(sanitize_filename)
-                        .filter(|s: &String| !s.is_empty())
-                        .unwrap_or_else(|| idx.to_string());
+                    let name = split_mode_filename_stem(item, &r.field, idx);
                     let file_name = format!("{}.{}-meta.{}", name, tag, options.format);
                     let _ =
                         build_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
@@ -308,12 +344,7 @@ async fn write_nested_groups(
             } else if r.mode == "group" {
                 let mut by_key: HashMap<String, Vec<Value>> = HashMap::new();
                 for item in arr {
-                    let key = get_field_value(item, &r.field)
-                        .as_deref()
-                        .map(group_key_from_field_value)
-                        .map(sanitize_filename)
-                        .filter(|s: &String| !s.is_empty())
-                        .unwrap_or_else(|| "unknown".to_string());
+                    let key = group_mode_key_stem(item, &r.field);
                     by_key.entry(key).or_default().push(item.clone());
                 }
                 // Sort keys for deterministic cross-platform output order
@@ -432,7 +463,7 @@ pub async fn build_disassembled_files_unified(
     )
     .await;
 
-    if !has_nested_elements && leaf_count > 0 {
+    if is_leaves_only(has_nested_elements, leaf_count) {
         log::error!(
             "The XML file {} only has leaf elements. This file will not be disassembled.",
             &file_path
@@ -456,7 +487,7 @@ pub async fn build_disassembled_files_unified(
     let json = serde_json::to_string(&key_order).unwrap_or_else(|_| "[]".to_string());
     let _ = fs::write(key_order_path, json).await;
 
-    if leaf_count > 0 {
+    if should_write_leaf_file(leaf_count) {
         let final_leaf_content = if strategy == "grouped-by-tag" {
             order_xml_element_keys(&leaf_content, &key_order)
         } else {
@@ -715,6 +746,86 @@ mod tests {
         );
         assert_eq!(b.len(), 8);
         assert_ne!(a, b, "distinct content must hash distinctly");
+    }
+
+    #[test]
+    fn split_mode_filename_stem_uses_field_value_when_non_empty() {
+        let item = json!({ "fullName": { "#text": "MyObject" } });
+        assert_eq!(split_mode_filename_stem(&item, "fullName", 0), "MyObject");
+    }
+
+    #[test]
+    fn split_mode_filename_stem_falls_back_to_index_when_field_missing() {
+        let item = json!({ "other": "x" });
+        assert_eq!(split_mode_filename_stem(&item, "fullName", 7), "7");
+    }
+
+    #[test]
+    fn split_mode_filename_stem_falls_back_to_index_when_field_empty_string() {
+        // `sanitize_filename("")` returns `""`. The `!s.is_empty()` filter
+        // must drop it so the caller falls back to the numeric index;
+        // otherwise we'd write dot-prefixed garbage like `.tag-meta.xml`.
+        let item = json!({ "fullName": { "#text": "" } });
+        assert_eq!(split_mode_filename_stem(&item, "fullName", 3), "3");
+    }
+
+    #[test]
+    fn group_mode_key_stem_uses_prefix_before_dot_when_present() {
+        let item = json!({ "fullName": "Account.Name" });
+        assert_eq!(group_mode_key_stem(&item, "fullName"), "Account");
+    }
+
+    #[test]
+    fn group_mode_key_stem_falls_back_to_unknown_when_field_missing() {
+        let item = json!({ "other": "x" });
+        assert_eq!(group_mode_key_stem(&item, "fullName"), "unknown");
+    }
+
+    #[test]
+    fn group_mode_key_stem_falls_back_to_unknown_when_field_empty_string() {
+        // Mirror of the split-mode empty-string test: the `!s.is_empty()`
+        // guard must drop empty sanitized values so we fall back to the
+        // "unknown" bucket, not write an empty group key.
+        let item = json!({ "fullName": { "#text": "" } });
+        assert_eq!(group_mode_key_stem(&item, "fullName"), "unknown");
+    }
+
+    #[test]
+    fn is_leaves_only_true_only_for_leaves_only_root() {
+        assert!(is_leaves_only(false, 1));
+        assert!(is_leaves_only(false, 100));
+    }
+
+    #[test]
+    fn is_leaves_only_false_for_empty_root() {
+        // `has_nested=false && leaf_count=0` is *empty root*, not
+        // *leaves-only*. The unified build must NOT short-circuit here;
+        // it should still write the key-order manifest and honour
+        // post_purge. A `>=` mutant on `leaf_count > 0` would flip this
+        // to true and silently drop those side effects.
+        assert!(!is_leaves_only(false, 0));
+    }
+
+    #[test]
+    fn is_leaves_only_false_when_nested_elements_present() {
+        // Nested elements present => disassembly is meaningful, never
+        // a "leaves-only" short-circuit case.
+        assert!(!is_leaves_only(true, 0));
+        assert!(!is_leaves_only(true, 5));
+    }
+
+    #[test]
+    fn should_write_leaf_file_false_when_no_leaves() {
+        // Nested-only roots must not produce an empty `{base_name}.xml`.
+        // A `>=` mutant on `leaf_count > 0` would flip this to true and
+        // write a stub leaf bundle next to the real nested output.
+        assert!(!should_write_leaf_file(0));
+    }
+
+    #[test]
+    fn should_write_leaf_file_true_when_leaves_present() {
+        assert!(should_write_leaf_file(1));
+        assert!(should_write_leaf_file(100));
     }
 
     #[tokio::test]

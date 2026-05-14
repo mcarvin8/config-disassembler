@@ -140,6 +140,28 @@ exclude_re = [
     # function that affects real callers will fail one of them in CI
     # regardless of cargo-mutants.
     "src/xml/cli\\.rs:.*parse_reassemble_args",
+    # `build_disassembled_files_unified` chooses between an explicit
+    # `order_xml_element_keys(&leaf_content, &key_order)` (grouped-by-tag)
+    # and a raw `Value::Object(leaf_content.clone())` (every other strategy)
+    # for the leaf bundle's content. Flipping `if strategy == "grouped-by-tag"`
+    # to `!=` is observationally equivalent because:
+    #
+    #   1. `serde_json::Map` is built with `preserve_order` in this crate,
+    #      so the map iterates in insertion order.
+    #   2. `leaf_content` is populated by the outer key loop in
+    #      `disassemble_element_keys`, which iterates `key_order` and
+    #      inserts each leaf key in that exact order. Its keys are a
+    #      strict subset of `key_order` in `key_order` order.
+    #   3. `order_xml_element_keys(content, key_order)` walks `key_order`
+    #      and copies any matching key from `content` into a fresh map.
+    #      Given (2), the resulting map has the same keys in the same
+    #      order as `leaf_content.clone()`.
+    #
+    # The two branches therefore produce structurally identical JSON for
+    # every realistic input. The explicit reorder is kept as defensive
+    # code in case the insertion-order invariant is ever broken upstream,
+    # so we exclude this one mutant rather than delete the call.
+    "src/xml/builders/build_disassembled_files\\.rs:.*: replace == with != in build_disassembled_files_unified",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
