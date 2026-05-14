@@ -23,7 +23,12 @@ jobs:
           persist-credentials: false
       - &install-rust
         name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          # release-plz uses its own published artifacts; no per-job
+          # Cargo build cache to bother with here.
+          cache: false
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
