@@ -106,6 +106,45 @@ mod tests {
     }
 
     #[test]
+    fn strips_whitespace_only_cdata_node() {
+        // Whitespace-only #cdata (without a sibling preservation trigger) should be dropped,
+        // mirroring the existing #text behavior. Guards is_empty_text_node's #cdata branch.
+        let input = json!([{ "#cdata": "   " }, { "#text": "keep me" }]);
+        let result = strip_whitespace_text_nodes(&input);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0].get("#text").and_then(|v| v.as_str()),
+            Some("keep me")
+        );
+    }
+
+    #[test]
+    fn strips_whitespace_only_text_tail_node() {
+        // Whitespace-only #text-tail without a #comment sibling should be stripped.
+        // Guards both is_empty_text_node's #text-tail branch and the line-32 guard in clean_object.
+        let input = json!([{ "#text-tail": "   " }, { "#text": "keep me" }]);
+        let result = strip_whitespace_text_nodes(&input);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0].get("#text").and_then(|v| v.as_str()),
+            Some("keep me")
+        );
+    }
+
+    #[test]
+    fn preserves_whitespace_text_tail_when_element_has_comment() {
+        // Mirror of preserves_empty_text_when_element_has_cdata for #text-tail + #comment.
+        // Documents the line-32 guard that keeps whitespace #text-tail alive next to comments.
+        let input = json!({ "#comment": "note", "#text-tail": "   " });
+        let result = strip_whitespace_text_nodes(&input);
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.get("#comment").and_then(|v| v.as_str()), Some("note"));
+        assert_eq!(obj.get("#text-tail").and_then(|v| v.as_str()), Some("   "));
+    }
+
+    #[test]
     fn preserves_null_cdata_comment_and_text_tail_keys() {
         // Special keys #cdata, #comment, #text-tail are kept even when value is null (insert branch)
         let input = json!({
