@@ -204,7 +204,18 @@ mod tests {
         let a = json!({ "Root": { "a": "1" } });
         let b = json!({ "Root": { "b": "2" } });
         let merged = merge_xml_elements(&[a, b]).unwrap();
-        assert!(merged.get("?xml").is_some());
+        // Pin the exact shape of `default_xml_declaration`: a `Default::default()`
+        // substitution would replace it with `Value::Null` and the assertions on
+        // `is_some()` alone would still pass.
+        let decl = merged
+            .get("?xml")
+            .and_then(|v| v.as_object())
+            .expect("default ?xml declaration must be an object, not Null");
+        assert_eq!(decl.get("@version").and_then(|v| v.as_str()), Some("1.0"));
+        assert_eq!(
+            decl.get("@encoding").and_then(|v| v.as_str()),
+            Some("UTF-8")
+        );
         let root = merged.get("Root").and_then(|v| v.as_object()).unwrap();
         assert_eq!(root.get("a").and_then(|v| v.as_str()), Some("1"));
         assert_eq!(root.get("b").and_then(|v| v.as_str()), Some("2"));
