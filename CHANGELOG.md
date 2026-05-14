@@ -6,6 +6,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/mcarvin8/config-disassembler/compare/v0.5.1...v0.5.2) - 2026-05-14
+
+### Fixed
+
+- *(mutants)* anchor exclude_re on mutant-name format (`replace <fn>`) ([#37](https://github.com/mcarvin8/config-disassembler/pull/37))
+
+### Other
+
+- *(mutants)* exclude three loop-bound infinite-loop hazards ([#53](https://github.com/mcarvin8/config-disassembler/pull/53))
+- *(mutants)* extract pure helpers from reassemble/cli ([#52](https://github.com/mcarvin8/config-disassembler/pull/52))
+- *(mutants)* extract pure helpers from disassemble/multi_level ([#51](https://github.com/mcarvin8/config-disassembler/pull/51))
+- *(builders)* cover decl/fields/leaf-count guards + exclude equivalent strategy branch ([#50](https://github.com/mcarvin8/config-disassembler/pull/50))
+- *(build-xml-string)* cover Null/comment/tail/sibling indent + drop dead has_children ([#49](https://github.com/mcarvin8/config-disassembler/pull/49))
+- disable Swatinem/rust-cache cache-bin to fix macOS flake ([#48](https://github.com/mcarvin8/config-disassembler/pull/48))
+- *(strip-whitespace)* cover #cdata and #text-tail whitespace stripping ([#47](https://github.com/mcarvin8/config-disassembler/pull/47))
+- replace dtolnay/rust-toolchain with actions-rust-lang/setup-rust-toolchain ([#46](https://github.com/mcarvin8/config-disassembler/pull/46))
+- *(mutants)* exclude five cosmetic / equivalent mutants surfaced by full sweep ([#45](https://github.com/mcarvin8/config-disassembler/pull/45))
+- *(mutants)* skip all parse_reassemble_args mutants (broaden exclude) ([#44](https://github.com/mcarvin8/config-disassembler/pull/44))
+- *(mutants)* exclude destructive (None, *, true) parse_reassemble_args mutants ([#43](https://github.com/mcarvin8/config-disassembler/pull/43))
+- *(mutants)* install cargo-mutants from upstream main (post-#613) ([#42](https://github.com/mcarvin8/config-disassembler/pull/42))
+- *(mutants)* add --in-place to dodge cargo-mutants v27.0.0 #611 tmp-tree bug ([#41](https://github.com/mcarvin8/config-disassembler/pull/41))
+- *(xml/cli)* use iterator-based loop in parse_disassemble_args ([#40](https://github.com/mcarvin8/config-disassembler/pull/40))
+- *(cli)* kill run_reassemble guard mutant + exclude one equivalent ([#39](https://github.com/mcarvin8/config-disassembler/pull/39))
+- *(jsonc)* kill 5 surviving JSONC arithmetic / guard mutants ([#38](https://github.com/mcarvin8/config-disassembler/pull/38))
+- update Node.js binding reference in README
+- *(mutants)* fall back to --file when --in-diff finds no mutants ([#36](https://github.com/mcarvin8/config-disassembler/pull/36))
+- *(mutants)* skip help-text mutants and cover xml_cmd shim ([#35](https://github.com/mcarvin8/config-disassembler/pull/35))
+- *(jsonc)* kill mutation-survivors in jsonc + helper paths ([#34](https://github.com/mcarvin8/config-disassembler/pull/34))
+- *(xml/cli)* cover separated-form arg parsing edge cases ([#33](https://github.com/mcarvin8/config-disassembler/pull/33))
+- add cargo-mutants mutation testing ([#31](https://github.com/mcarvin8/config-disassembler/pull/31))
+
 ## [0.5.1](https://github.com/mcarvin8/config-disassembler/compare/v0.5.0...v0.5.1) - 2026-05-08
 
 ### Fixed
