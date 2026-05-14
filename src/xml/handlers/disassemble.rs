@@ -44,6 +44,64 @@ impl DisassembleXmlFileHandler {
         file_path.to_lowercase().ends_with(".xml")
     }
 
+    /// True when a directory entry is both a regular file and an `.xml`.
+    /// Pure helper extracted from `handle_directory` so the
+    /// `is_file && is_xml_file` predicate can be exercised without a
+    /// real filesystem entry.
+    fn is_processable_xml_entry(is_file: bool, file_name: &str) -> bool {
+        is_file && Self::is_xml_file(file_name)
+    }
+
+    /// True when the unified-build output directory should be purged
+    /// before re-disassembling. Both the flag *and* the existence check
+    /// must hold; `pre_purge=true` against a missing directory is a
+    /// no-op rather than an error.
+    fn should_pre_purge_output(pre_purge: bool, output_exists: bool) -> bool {
+        pre_purge && output_exists
+    }
+
+    /// True when a file inside the disassembly tree should be
+    /// considered by a multi-level rule: it must be `.xml` and either
+    /// its bare name or its full path must contain the rule's pattern.
+    fn file_matches_multi_level_rule(file_name: &str, full_path: &str, file_pattern: &str) -> bool {
+        file_name.ends_with(".xml")
+            && (file_name.contains(file_pattern) || full_path.contains(file_pattern))
+    }
+
+    /// True when the parsed XML document has the multi-level rule's
+    /// `root_to_strip` either as its root element or as a direct child
+    /// of its root element.
+    fn has_element_to_strip(parsed: &serde_json::Value, root_to_strip: &str) -> bool {
+        parsed
+            .as_object()
+            .and_then(|o| {
+                let root_key = o.keys().find(|k| *k != "?xml")?;
+                let root_val = o.get(root_key)?.as_object()?;
+                Some(root_key == root_to_strip || root_val.contains_key(root_to_strip))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Two multi-level rules share an "identity" — i.e. should be
+    /// deduplicated in `.multi_level.json` — when both their
+    /// `file_pattern` and their `root_to_strip` match. The other
+    /// fields (`unique_id_elements`, `path_segment`, …) are derived
+    /// per-file and may legitimately drift.
+    fn rules_have_same_identity(a: &MultiLevelRule, b: &MultiLevelRule) -> bool {
+        a.file_pattern == b.file_pattern && a.root_to_strip == b.root_to_strip
+    }
+
+    /// First non-`?xml` key of the parsed document, used as the
+    /// `wrap_root_element` for a multi-level rule. Falls back to
+    /// `fallback` when the parsed value is not an object or contains
+    /// only the declaration.
+    fn root_element_name_from_parsed(parsed: &serde_json::Value, fallback: &str) -> String {
+        parsed
+            .as_object()
+            .and_then(|o| o.keys().find(|k| *k != "?xml").cloned())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
     fn is_ignored(&self, path: &str) -> bool {
         self.ign
             .as_ref()
@@ -206,7 +264,7 @@ impl DisassembleXmlFileHandler {
                 .to_string_lossy();
             let relative_sub = Self::posix_path(&relative_sub);
 
-            if !(sub_path.is_file() && Self::is_xml_file(&sub_file_path)) {
+            if !Self::is_processable_xml_entry(sub_path.is_file(), &sub_file_path) {
                 continue;
             }
             if self.is_ignored(&relative_sub) {
@@ -252,7 +310,7 @@ impl DisassembleXmlFileHandler {
         let base_name = Self::output_dir_basename(file_name);
         let output_path = Path::new(dir_path).join(base_name);
 
-        if pre_purge && output_path.exists() {
+        if Self::should_pre_purge_output(pre_purge, output_path.exists()) {
             fs::remove_dir_all(&output_path).await.ok();
         }
 
@@ -313,10 +371,11 @@ impl DisassembleXmlFileHandler {
                 {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let path_str_check = path.to_string_lossy();
-                    if !name.ends_with(".xml")
-                        || (!name.contains(&rule.file_pattern)
-                            && !path_str_check.contains(&rule.file_pattern))
-                    {
+                    if !Self::file_matches_multi_level_rule(
+                        name,
+                        &path_str_check,
+                        &rule.file_pattern,
+                    ) {
                         continue;
                     }
 
@@ -324,18 +383,7 @@ impl DisassembleXmlFileHandler {
                         Some(p) => p,
                         None => continue,
                     };
-                    let has_element_to_strip = parsed
-                        .as_object()
-                        .and_then(|o| {
-                            let root_key = o.keys().find(|k| *k != "?xml")?;
-                            let root_val = o.get(root_key)?.as_object()?;
-                            Some(
-                                root_key == &rule.root_to_strip
-                                    || root_val.contains_key(&rule.root_to_strip),
-                            )
-                        })
-                        .unwrap_or(false);
-                    if !has_element_to_strip {
+                    if !Self::has_element_to_strip(&parsed, &rule.root_to_strip) {
                         continue;
                     }
 
@@ -372,15 +420,16 @@ impl DisassembleXmlFileHandler {
                     // Find an existing entry for this rule by (file_pattern, root_to_strip).
                     // Multiple rules may co-exist in `.multi_level.json` (one per logical
                     // segment); per-rule deduplication keeps each one a singleton.
-                    let existing_idx = config.rules.iter().position(|r| {
-                        r.file_pattern == rule.file_pattern && r.root_to_strip == rule.root_to_strip
-                    });
+                    let existing_idx = config
+                        .rules
+                        .iter()
+                        .position(|r| Self::rules_have_same_identity(r, rule));
                     match existing_idx {
                         None => {
-                            let wrap_root = parsed
-                                .as_object()
-                                .and_then(|o| o.keys().find(|k| *k != "?xml").cloned())
-                                .unwrap_or_else(|| rule.wrap_root_element.clone());
+                            let wrap_root = Self::root_element_name_from_parsed(
+                                &parsed,
+                                &rule.wrap_root_element,
+                            );
                             let path_segment = if rule.path_segment.is_empty() {
                                 path_segment_from_file_pattern(&rule.file_pattern)
                             } else {
@@ -515,6 +564,181 @@ mod tests {
         assert_eq!(
             DisassembleXmlFileHandler::output_dir_basename("Case.LogACall.quickAction-meta"),
             "Case.LogACall"
+        );
+    }
+
+    #[test]
+    fn is_processable_xml_entry_true_only_for_regular_xml_files() {
+        // Pin both the `is_file && is_xml_file` conjunction and the
+        // outer `!` at the call site. All four quadrants of
+        // (is_file, is_xml) are covered.
+        assert!(DisassembleXmlFileHandler::is_processable_xml_entry(
+            true, "foo.xml"
+        ));
+        assert!(!DisassembleXmlFileHandler::is_processable_xml_entry(
+            false, "foo.xml"
+        ));
+        assert!(!DisassembleXmlFileHandler::is_processable_xml_entry(
+            true, "foo.txt"
+        ));
+        assert!(!DisassembleXmlFileHandler::is_processable_xml_entry(
+            false, "foo.txt"
+        ));
+    }
+
+    #[test]
+    fn should_pre_purge_output_requires_both_flag_and_existing_dir() {
+        // `pre_purge=true` alone must not delete a missing directory
+        // (that's a benign no-op, not an error); an existing directory
+        // alone must not be deleted unless the caller asked for purge.
+        assert!(DisassembleXmlFileHandler::should_pre_purge_output(
+            true, true
+        ));
+        assert!(!DisassembleXmlFileHandler::should_pre_purge_output(
+            true, false
+        ));
+        assert!(!DisassembleXmlFileHandler::should_pre_purge_output(
+            false, true
+        ));
+        assert!(!DisassembleXmlFileHandler::should_pre_purge_output(
+            false, false
+        ));
+    }
+
+    #[test]
+    fn file_matches_multi_level_rule_requires_xml_extension() {
+        // Non-`.xml` files are skipped regardless of pattern membership.
+        assert!(!DisassembleXmlFileHandler::file_matches_multi_level_rule(
+            "Foo.txt",
+            "/dir/Foo.txt",
+            "Foo"
+        ));
+    }
+
+    #[test]
+    fn file_matches_multi_level_rule_when_filename_contains_pattern() {
+        assert!(DisassembleXmlFileHandler::file_matches_multi_level_rule(
+            "MyPattern.xml",
+            "/dir/MyPattern.xml",
+            "MyPattern"
+        ));
+    }
+
+    #[test]
+    fn file_matches_multi_level_rule_when_only_full_path_contains_pattern() {
+        // The pattern may live in a parent directory name even if the
+        // bare file name is something generic like `meta.xml`.
+        assert!(DisassembleXmlFileHandler::file_matches_multi_level_rule(
+            "child.xml",
+            "/parentPattern/child.xml",
+            "parentPattern"
+        ));
+    }
+
+    #[test]
+    fn file_matches_multi_level_rule_false_when_pattern_absent_everywhere() {
+        assert!(!DisassembleXmlFileHandler::file_matches_multi_level_rule(
+            "Foo.xml",
+            "/dir/Foo.xml",
+            "MissingPattern"
+        ));
+    }
+
+    #[test]
+    fn has_element_to_strip_when_root_key_matches() {
+        let parsed = serde_json::json!({"Foo": {"a": "b"}});
+        assert!(DisassembleXmlFileHandler::has_element_to_strip(
+            &parsed, "Foo"
+        ));
+    }
+
+    #[test]
+    fn has_element_to_strip_when_root_contains_target_child() {
+        let parsed = serde_json::json!({"Foo": {"Bar": {"a": "b"}}});
+        assert!(DisassembleXmlFileHandler::has_element_to_strip(
+            &parsed, "Bar"
+        ));
+    }
+
+    #[test]
+    fn has_element_to_strip_false_when_target_absent() {
+        let parsed = serde_json::json!({"Foo": {"a": "b"}});
+        assert!(!DisassembleXmlFileHandler::has_element_to_strip(
+            &parsed, "Missing"
+        ));
+    }
+
+    #[test]
+    fn has_element_to_strip_false_for_non_object_or_decl_only() {
+        assert!(!DisassembleXmlFileHandler::has_element_to_strip(
+            &serde_json::json!("primitive"),
+            "Foo"
+        ));
+        assert!(!DisassembleXmlFileHandler::has_element_to_strip(
+            &serde_json::json!({"?xml": {}}),
+            "Foo"
+        ));
+    }
+
+    fn rule(pattern: &str, root: &str) -> MultiLevelRule {
+        MultiLevelRule {
+            file_pattern: pattern.to_string(),
+            root_to_strip: root.to_string(),
+            unique_id_elements: String::new(),
+            path_segment: String::new(),
+            wrap_root_element: String::new(),
+            wrap_xmlns: String::new(),
+        }
+    }
+
+    #[test]
+    fn rules_share_identity_when_pattern_and_root_match() {
+        assert!(DisassembleXmlFileHandler::rules_have_same_identity(
+            &rule("p", "R"),
+            &rule("p", "R"),
+        ));
+    }
+
+    #[test]
+    fn rules_differ_when_file_pattern_differs() {
+        assert!(!DisassembleXmlFileHandler::rules_have_same_identity(
+            &rule("p1", "R"),
+            &rule("p2", "R"),
+        ));
+    }
+
+    #[test]
+    fn rules_differ_when_root_to_strip_differs() {
+        assert!(!DisassembleXmlFileHandler::rules_have_same_identity(
+            &rule("p", "R1"),
+            &rule("p", "R2"),
+        ));
+    }
+
+    #[test]
+    fn root_element_name_finds_first_non_declaration_key() {
+        let parsed = serde_json::json!({"?xml": {}, "MyRoot": {"a": "b"}});
+        assert_eq!(
+            DisassembleXmlFileHandler::root_element_name_from_parsed(&parsed, "fallback"),
+            "MyRoot"
+        );
+    }
+
+    #[test]
+    fn root_element_name_falls_back_when_only_declaration_present() {
+        let parsed = serde_json::json!({"?xml": {}});
+        assert_eq!(
+            DisassembleXmlFileHandler::root_element_name_from_parsed(&parsed, "FallbackRoot"),
+            "FallbackRoot"
+        );
+    }
+
+    #[test]
+    fn root_element_name_falls_back_for_non_object() {
+        let parsed = serde_json::json!("primitive");
+        assert_eq!(
+            DisassembleXmlFileHandler::root_element_name_from_parsed(&parsed, "Fb"),
+            "Fb"
         );
     }
 
