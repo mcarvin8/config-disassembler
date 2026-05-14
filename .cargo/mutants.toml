@@ -162,6 +162,32 @@ exclude_re = [
     # code in case the insertion-order invariant is ever broken upstream,
     # so we exclude this one mutant rather than delete the call.
     "src/xml/builders/build_disassembled_files\\.rs:.*: replace == with != in build_disassembled_files_unified",
+    # Infinite-loop hazards on loop-bound predicates. Each of the
+    # mutants below collapses the loop's exit condition into one that
+    # the loop body can never satisfy, hanging the test under
+    # mutation rather than producing observably-wrong output:
+    #
+    #   * `leading_comment_start` (`src/disassemble.rs:509` and
+    #     `src/reassemble.rs:231`): `while start > 0`. Replacing `>`
+    #     with `==` makes the loop run forever whenever `start == 0`,
+    #     because the body re-derives `previous_line_start == 0` and
+    #     leaves `start` at 0. There's no way to "kill" this mutant
+    #     without a test that explicitly bounds wall-clock time;
+    #     cargo-mutants already detects it via timeout but reports
+    #     it under exit code 3, failing CI even though every other
+    #     mutant on these functions is caught.
+    #   * `digit_width` (`src/disassemble.rs:619`): `while n >= 10`.
+    #     Replacing `>=` with `<` makes the loop run forever for any
+    #     `n < 10`, because the body's `n /= 10` keeps `n` at 0
+    #     forever. Same shape, same outcome: pure infinite-loop
+    #     hazard with no observable correct-behaviour test.
+    #
+    # All other mutants on `leading_comment_start` and `digit_width`
+    # remain enabled and are caught by the existing JSON
+    # disassemble/reassemble unit tests.
+    "src/disassemble\\.rs:509:17: replace > with == in leading_comment_start",
+    "src/disassemble\\.rs:619:13: replace >= with < in digit_width",
+    "src/reassemble\\.rs:231:17: replace > with == in leading_comment_start",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
