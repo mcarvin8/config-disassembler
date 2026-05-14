@@ -57,11 +57,6 @@ fn write_element<W: std::io::Write>(
                 })
                 .collect();
 
-            let has_children = child_elements.iter().any(|(_, v)| {
-                v.is_object()
-                    || (v.is_array() && v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
-            });
-
             let attrs: Vec<(String, String)> = attrs
                 .iter()
                 .map(|(k, v)| (attr_name(k), value_to_string(v)))
@@ -73,7 +68,7 @@ fn write_element<W: std::io::Write>(
             }
             writer.write_event(Event::Start(start))?;
 
-            if has_children || !child_elements.is_empty() {
+            if !child_elements.is_empty() {
                 writer.write_event(Event::Text(BytesText::new(
                     format!("\n{}", child_indent).as_str(),
                 )))?;
@@ -340,6 +335,70 @@ mod tests {
         let out = build_xml_string(&el);
         assert!(out.contains("<empty>"));
         assert!(out.contains("</empty>"));
+        // value_to_string maps Value::Null -> "" explicitly; without that
+        // explicit arm it would fall through to serde_json::to_string and
+        // emit the literal `null`, so guard against that regression.
+        assert!(
+            !out.contains("null"),
+            "Value::Null child should render as empty content, not the string \"null\": {out}"
+        );
+        assert!(out.contains("<empty></empty>"));
+    }
+
+    #[test]
+    fn build_xml_string_primitive_siblings_have_inter_element_indent() {
+        // Two primitive sibling children: between the non-last `<a>` and the
+        // last `<b>` the writer should emit a newline+indent. The `!is_last`
+        // guard on the close-tag indent is otherwise unobservable from
+        // single-sibling or array-only fixtures.
+        let el = json!({ "root": { "a": 1, "b": 2 } });
+        let out = build_xml_string(&el);
+        assert!(
+            out.contains("<a>1</a>\n    <b>2</b>"),
+            "expected `<a>1</a>` to be followed by newline + 4-space indent then `<b>2</b>`, got:\n{out}"
+        );
+        // And the last sibling should NOT have a trailing inter-sibling indent
+        // before `</root>` (only the closing-tag-level indent).
+        assert!(
+            out.contains("<b>2</b>\n</root>"),
+            "expected `<b>2</b>` to be followed directly by the root close tag, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn build_xml_string_comment_only_leaf() {
+        // Comment-only leaf isolates the `!comment_content.is_empty()` leg of
+        // the leaf-content guard. Without it the comment branch is never
+        // entered and the comment vanishes from the output.
+        let el = json!({
+            "?xml": { "@version": "1.0" },
+            "root": { "#comment": " just a comment " }
+        });
+        let out = build_xml_string(&el);
+        assert!(out.contains("<!--"), "expected comment open in: {out}");
+        assert!(
+            out.contains(" just a comment "),
+            "expected comment text preserved verbatim in: {out}"
+        );
+        assert!(out.contains("-->"));
+    }
+
+    #[test]
+    fn build_xml_string_text_tail_only_leaf() {
+        // Text-tail-only leaf isolates both the `||` joiner and the
+        // `!text_tail_content.is_empty()` check on the leaf-content guard.
+        // Without either, the text-tail content is silently dropped.
+        let el = json!({
+            "?xml": { "@version": "1.0" },
+            "root": { "#text-tail": "tail-only-content" }
+        });
+        let out = build_xml_string(&el);
+        assert!(
+            out.contains("tail-only-content"),
+            "expected text-tail content rendered between root tags, got:\n{out}"
+        );
+        assert!(out.contains("<root>"));
+        assert!(out.contains("</root>"));
     }
 
     #[test]
