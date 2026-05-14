@@ -28,11 +28,19 @@ exclude_re = [
     "impl From<.*> for Error",
     # `Error::source` impl (trait method on `std::error::Error`).
     "<impl std::error::Error for Error>::source",
-    # CLI help printers (config-disassembler top-level CLI).
+    # CLI help printers (config-disassembler top-level CLI and the
+    # xml-disassembler binary). All emit human-readable usage text to
+    # stderr and have no other observable behavior; pinning them down
+    # would require capture-stderr snapshot tests whose only purpose
+    # is to fail when the help wording is edited, which is the exact
+    # opposite of what we want. `print_usage` was the last help
+    # printer not yet excluded; the full-sweep run 25823260907
+    # flagged its `replace print_usage with ()` mutant as missed.
     "replace print_help",
     "replace print_format_help",
     "replace print_same_format_help",
     "replace print_cross_format_help",
+    "replace print_usage",
     # Helper that joins format names for the `<fmt>` line in help output.
     "replace format_list",
     # `Format::display_name` is the human-friendly format label used in
@@ -41,6 +49,27 @@ exclude_re = [
     # cosmetic.
     "replace Format::display_name",
     "replace Format::supported_format_list",
+    # `value_to_string` and `attr_value_to_string` both have explicit
+    # `Value::Number` / `Value::Bool` match arms whose only purpose is to
+    # short-circuit the trailing `_ => serde_json::to_string(v)
+    # .unwrap_or_default()` fallback. For both Number and Bool the
+    # fallback is byte-identical to the explicit arm:
+    #   * `serde_json::to_string(&Value::Number(42.into()))` -> `"42"`
+    #     (same as `Number::to_string()`).
+    #   * `serde_json::to_string(&Value::Bool(true))` -> `"true"`
+    #     (same as `bool::to_string()`).
+    # Deleting these match arms is therefore an equivalent mutation --
+    # output is unchanged for every realistic JSON number / bool.
+    # The `Value::Null` arm is *not* equivalent (it returns `""` vs the
+    # serde fallback's `"null"`) and stays mutable; the
+    # `value_to_string` Null mutant is killed by the strengthened
+    # `build_xml_string_null_child_value` test (see PR 3 of the
+    # follow-up cleanup) and `attr_value_to_string` Null is killed by
+    # the existing `attr_value_null_converted_to_empty_string` test.
+    "src/xml/builders/build_xml_string\\.rs:.*delete match arm Value::Number",
+    "src/xml/builders/build_xml_string\\.rs:.*delete match arm Value::Bool",
+    "src/xml/builders/extract_root_attributes\\.rs:.*delete match arm Value::Number",
+    "src/xml/builders/extract_root_attributes\\.rs:.*delete match arm Value::Bool",
     # Every mutant on `parse_reassemble_args` -- equivalent to a
     # function-level `#[mutants::skip]`, but expressed here so we
     # don't have to add the `mutants` crate as a dependency just for
