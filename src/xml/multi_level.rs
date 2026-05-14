@@ -87,6 +87,35 @@ pub async fn save_multi_level_config(
     Ok(())
 }
 
+/// True when the root element's only non-attribute child has the
+/// inner-wrapper name we're looking for. Pure helper extracted from
+/// `ensure_segment_files_structure` so the
+/// `non_attr_keys.len() == 1 && non_attr_keys[0] == inner_wrapper`
+/// conjunction can be exercised in isolation.
+fn has_single_inner_wrapper(
+    root_val: &serde_json::Map<String, serde_json::Value>,
+    inner_wrapper: &str,
+) -> bool {
+    let non_attr_keys: Vec<&String> = root_val.keys().filter(|k| *k != "@xmlns").collect();
+    non_attr_keys.len() == 1 && non_attr_keys[0].as_str() == inner_wrapper
+}
+
+/// True when an already-disassembled segment file is shaped as
+/// `<document_root>…<inner_wrapper>X</inner_wrapper></document_root>`
+/// and we should unwrap the inner content (`X`) before re-wrapping
+/// with a fresh xmlns. The else branch in
+/// `ensure_segment_files_structure` keeps the existing root_val
+/// intact, which produces the *double-wrapped* output
+/// `<document_root>…<inner_wrapper><inner_wrapper>X</inner_wrapper>…</inner_wrapper></document_root>`
+/// — never what we want for a "thin" wrapper file.
+fn should_unwrap_inner_segment(
+    current_root_key: &str,
+    document_root: &str,
+    single_inner: bool,
+) -> bool {
+    current_root_key == document_root && single_inner
+}
+
 /// Ensure all XML files in a segment directory have structure:
 /// document_root (with xmlns) > inner_wrapper (no xmlns) > content.
 /// Used after inner-level reassembly for multi-level (e.g. LoyaltyProgramSetup > programProcesses).
@@ -148,34 +177,33 @@ pub async fn ensure_segment_files_structure(
             serde_json::Value::Object(d)
         });
 
-        let non_attr_keys: Vec<&String> = root_val.keys().filter(|k| *k != "@xmlns").collect();
-        let single_inner = non_attr_keys.len() == 1 && non_attr_keys[0].as_str() == inner_wrapper;
-        let inner_content: serde_json::Value = if current_root_key == document_root && single_inner
-        {
-            let inner_obj = root_val
-                .get(inner_wrapper)
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_else(Map::new);
-            let mut inner_clean = Map::new();
-            for (k, v) in &inner_obj {
-                if k != "@xmlns" {
-                    inner_clean.insert(k.clone(), v.clone());
+        let single_inner = has_single_inner_wrapper(&root_val, inner_wrapper);
+        let inner_content: serde_json::Value =
+            if should_unwrap_inner_segment(&current_root_key, document_root, single_inner) {
+                let inner_obj = root_val
+                    .get(inner_wrapper)
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_else(Map::new);
+                let mut inner_clean = Map::new();
+                for (k, v) in &inner_obj {
+                    if k != "@xmlns" {
+                        inner_clean.insert(k.clone(), v.clone());
+                    }
                 }
-            }
-            serde_json::Value::Object(inner_clean)
-        } else {
-            // The inner wrapper must not carry an `xmlns` attribute (only the document
-            // root keeps it). Strip it from the cloned content so nested-rule wrapping
-            // doesn't emit `<inner_wrapper xmlns="...">` siblings.
-            let mut inner_clean = Map::new();
-            for (k, v) in &root_val {
-                if k != "@xmlns" {
-                    inner_clean.insert(k.clone(), v.clone());
+                serde_json::Value::Object(inner_clean)
+            } else {
+                // The inner wrapper must not carry an `xmlns` attribute (only the document
+                // root keeps it). Strip it from the cloned content so nested-rule wrapping
+                // doesn't emit `<inner_wrapper xmlns="...">` siblings.
+                let mut inner_clean = Map::new();
+                for (k, v) in &root_val {
+                    if k != "@xmlns" {
+                        inner_clean.insert(k.clone(), v.clone());
+                    }
                 }
-            }
-            serde_json::Value::Object(inner_clean)
-        };
+                serde_json::Value::Object(inner_clean)
+            };
 
         let already_correct = current_root_key == document_root
             && root_val.get("@xmlns").is_some()
@@ -384,5 +412,74 @@ mod tests {
         ensure_segment_files_structure(dir.path(), "Root", "programProcesses", "")
             .await
             .unwrap();
+    }
+
+    fn map_from(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        for (k, v) in pairs {
+            m.insert((*k).to_string(), v.clone());
+        }
+        m
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_true_for_single_matching_child() {
+        let m = map_from(&[("inner", json!({"a": 1}))]);
+        assert!(has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_true_when_only_attribute_is_xmlns_sibling() {
+        // The `@xmlns` filter on `non_attr_keys` must be honoured so an
+        // xmlns-carrying root still counts as a "thin" wrapper when its
+        // single non-attribute child matches.
+        let m = map_from(&[
+            ("@xmlns", json!("http://example.com")),
+            ("inner", json!({"a": 1})),
+        ]);
+        assert!(has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_false_when_multiple_non_attribute_children() {
+        let m = map_from(&[("inner", json!({})), ("other", json!({}))]);
+        assert!(!has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_false_when_only_child_name_differs() {
+        let m = map_from(&[("notInner", json!({"a": 1}))]);
+        assert!(!has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_false_when_empty() {
+        let m = serde_json::Map::new();
+        assert!(!has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn should_unwrap_inner_segment_true_when_root_matches_and_single_inner() {
+        // Document root matches and the file already has the thin
+        // `<doc_root>…<inner_wrapper>…</inner_wrapper></doc_root>` shape.
+        // Returning true triggers the inner-content unwrap so we don't
+        // emit a double-wrapped file on the next write.
+        assert!(should_unwrap_inner_segment("Doc", "Doc", true));
+    }
+
+    #[test]
+    fn should_unwrap_inner_segment_false_when_current_root_differs() {
+        // A nested segment file whose current root is the inner
+        // wrapper itself (not the document root) must NOT be unwrapped —
+        // its existing content already lives one level below the inner
+        // wrapper that we'll re-add.
+        assert!(!should_unwrap_inner_segment("Other", "Doc", true));
+    }
+
+    #[test]
+    fn should_unwrap_inner_segment_false_when_not_single_inner() {
+        // Even when the document root matches, a file with multiple
+        // non-attribute children is not the thin-wrapper case.
+        assert!(!should_unwrap_inner_segment("Doc", "Doc", false));
     }
 }
