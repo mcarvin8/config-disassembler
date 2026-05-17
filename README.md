@@ -331,28 +331,3 @@ use config_disassembler::format::Format;
 ## Contribution
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Maintainer setup: mutation-score badge
-
-The mutation-score badge in the README is rendered by `img.shields.io/endpoint`
-pointing at a public gist that the `Mutation Testing` workflow updates at the
-end of every `workflow_dispatch` full run from `main`. One-time setup:
-
-1. **Create a public gist** at <https://gist.github.com/> containing a single
-   file called `mutants-badge.json` with placeholder content like
-   `{"schemaVersion": 1, "label": "mutants", "message": "pending", "color": "lightgrey"}`.
-   Copy the gist ID from the URL (the hex string after your username).
-2. **Add a fine-grained PAT** with read+write access to gists at
-   <https://github.com/settings/tokens?type=beta>. Save it as a repository
-   secret named `GIST_TOKEN`.
-3. **Add a repository variable** named `MUTANTS_BADGE_GIST_ID` set to the
-   gist ID from step 1.
-4. **Replace the README placeholder** so the badge URL points at your gist:
-   - `MCARVIN8_REPLACE_ME` &rarr; your GitHub username (the gist owner).
-   - `MUTANTS_BADGE_GIST_ID_REPLACE_ME` &rarr; the gist ID from step 1.
-5. Trigger the `Mutation Testing` workflow with the `full` input set to
-   `true`. The score updates on the gist as soon as the run completes.
-
-Until step 2 / 3 are in place the `Publish mutation score badge` step in the
-workflow simply skips itself; the score still appears in the run's job
-summary, so nothing breaks while the badge is being wired up.
