@@ -156,3 +156,94 @@ jobs:
           name: mutants-report-full
           path: mutants.out
           if-no-files-found: ignore
+
+      # Compute the mutation score from `outcomes.json` for the badge.
+      # Score is `(caught + timeout) / (caught + missed + timeout)`:
+      #   * `caught` and `timeout` are both "detected" semantically --
+      #     the test suite signalled the mutant, either by failing or
+      #     by hanging long enough to hit the per-mutant deadline.
+      #   * `unviable` mutants don't compile and aren't real test
+      #     misses, so they're excluded from the denominator.
+      #   * Mutants matching `.cargo/mutants.toml` exclusions never
+      #     reach the run at all, so they don't appear here either.
+      # We surface the score to the job summary regardless of badge
+      # configuration so it's always visible from the run page.
+      - name: Compute mutation score
+        id: score
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f mutants.out/outcomes.json ]; then
+            echo "::notice::No mutants.out/outcomes.json -- skipping badge update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CAUGHT=$(jq '.caught // 0' mutants.out/outcomes.json)
+          MISSED=$(jq '.missed // 0' mutants.out/outcomes.json)
+          TIMEOUT=$(jq '.timeout // 0' mutants.out/outcomes.json)
+          UNVIABLE=$(jq '.unviable // 0' mutants.out/outcomes.json)
+          DENOM=$(( CAUGHT + MISSED + TIMEOUT ))
+          KILLED=$(( CAUGHT + TIMEOUT ))
+          if [ "$DENOM" -eq 0 ]; then
+            PCT_RAW="0.00"
+            MESSAGE="N/A"
+            COLOR="lightgrey"
+          else
+            PCT_RAW=$(awk -v k="$KILLED" -v d="$DENOM" 'BEGIN { printf "%.2f", k/d*100 }')
+            # Trim trailing ".00" so a perfect score reads "100%" not "100.00%".
+            PCT_TRIMMED="${PCT_RAW%.00}"
+            MESSAGE="${PCT_TRIMMED}%"
+            INT=${PCT_RAW%.*}
+            if [ "$INT" -ge 100 ]; then COLOR=brightgreen
+            elif [ "$INT" -ge 95 ]; then COLOR=green
+            elif [ "$INT" -ge 90 ]; then COLOR=yellowgreen
+            elif [ "$INT" -ge 80 ]; then COLOR=yellow
+            elif [ "$INT" -ge 70 ]; then COLOR=orange
+            else COLOR=red
+            fi
+          fi
+          {
+            echo "## Mutation score"
+            echo ""
+            echo "**${MESSAGE}** (${KILLED} killed / ${DENOM} viable; ${UNVIABLE} unviable)"
+            echo ""
+            echo "| Outcome | Count |"
+            echo "| --- | ---: |"
+            echo "| Caught | ${CAUGHT} |"
+            echo "| Timeout (counted as caught) | ${TIMEOUT} |"
+            echo "| **Missed** | **${MISSED}** |"
+            echo "| Unviable (excluded from score) | ${UNVIABLE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "message=$MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "color=$COLOR" >> "$GITHUB_OUTPUT"
+          echo "Mutation score: $MESSAGE ($COLOR) -- killed=$KILLED denom=$DENOM"
+
+      # Publish the score to a public gist so `img.shields.io/endpoint`
+      # can render it as a badge in the README. The step gracefully
+      # no-ops until the maintainer has:
+      #
+      #   1. Created a public gist containing a placeholder
+      #      `mutants-badge.json` (any JSON literal works).
+      #   2. Stored the gist ID in the `MUTANTS_BADGE_GIST_ID` repo
+      #      variable.
+      #   3. Stored a fine-grained PAT with `gist` write access in the
+      #      `GIST_TOKEN` repo secret.
+      #
+      # Until those three are in place the conditional below is false
+      # and the step is skipped without failing the workflow. Only
+      # publishes on `main` so a `workflow_dispatch` from a feature
+      # branch can't poison the public badge.
+      - name: Publish mutation score badge
+        if: |
+          always()
+          && steps.score.outputs.skip != 'true'
+          && github.ref == 'refs/heads/main'
+          && vars.MUTANTS_BADGE_GIST_ID != ''
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          gistID: ${{ vars.MUTANTS_BADGE_GIST_ID }}
+          filename: mutants-badge.json
+          label: mutants
+          message: ${{ steps.score.outputs.message }}
+          color: ${{ steps.score.outputs.color }}

@@ -4,6 +4,7 @@
 [![Docs.rs](https://docs.rs/config-disassembler/badge.svg)](https://docs.rs/config-disassembler)
 [![CI](https://github.com/mcarvin8/config-disassembler/workflows/CI/badge.svg)](https://github.com/mcarvin8/config-disassembler/actions)
 [![codecov](https://codecov.io/gh/mcarvin8/config-disassembler/graph/badge.svg?token=XZYXBXGENK)](https://codecov.io/gh/mcarvin8/config-disassembler)
+[![Mutation score](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/mcarvin8/aafbb17a2728e06732803dfc9a1d7978/raw/mutants-badge.json)](https://github.com/mcarvin8/config-disassembler/actions/workflows/mutation.yml)
 
 Disassemble configuration files into smaller, version-control–friendly pieces and reassemble the original on demand. Supported formats:
 
