@@ -241,7 +241,7 @@ jobs:
           && vars.MUTANTS_BADGE_GIST_ID != ''
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
-          auth: ${{ secrets.GIST_TOKEN }}
+          auth: ${{ secrets.RELEASE_PLZ_TOKEN }}
           gistID: ${{ vars.MUTANTS_BADGE_GIST_ID }}
           filename: mutants-badge.json
           label: mutants
