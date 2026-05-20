@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/mcarvin8/config-disassembler/compare/v0.5.2...v0.5.3) - 2026-05-20
+
+### Other
+
+- create formats.md
+- create xml.md
+- simplify readme
+- *(mutation)* publish mutation score to a shields.io endpoint badge ([#54](https://github.com/mcarvin8/config-disassembler/pull/54))
+
 ## [0.5.2](https://github.com/mcarvin8/config-disassembler/compare/v0.5.1...v0.5.2) - 2026-05-14
 
 ### Fixed
