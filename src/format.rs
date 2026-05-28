@@ -216,25 +216,24 @@ impl Format {
             return Ok(());
         }
 
-        if let Some(name) = self
+        // Every cross-family edge involves at least one isolated format (TOML or INI);
+        // FormatFamily::JsonValue returns None, but two JsonValue formats share the
+        // same family and would have returned Ok above.
+        let name = self
             .family()
             .isolated_format_name()
             .or_else(|| output.family().isolated_format_name())
-        {
-            return match operation {
-                ConversionOperation::Convert => Err(Error::Invalid(format!(
-                    "{name} can only be converted to and from {name}; got input={self}, output={output}"
-                ))),
-                ConversionOperation::Reassemble => Err(Error::Invalid(format!(
-                    "{name} can only be reassembled to and from {name}; the disassembled \
-                     directory was written in {self} but reassembly target is {output}"
-                ))),
-            };
-        }
+            .expect("cross-family conversion must involve at least one isolated format");
 
-        Err(Error::Invalid(format!(
-            "conversion from {self} to {output} is not supported"
-        )))
+        match operation {
+            ConversionOperation::Convert => Err(Error::Invalid(format!(
+                "{name} can only be converted to and from {name}; got input={self}, output={output}"
+            ))),
+            ConversionOperation::Reassemble => Err(Error::Invalid(format!(
+                "{name} can only be reassembled to and from {name}; the disassembled \
+                 directory was written in {self} but reassembly target is {output}"
+            ))),
+        }
     }
 
     /// Best-effort detection of a format from a file path's extension.
@@ -659,6 +658,15 @@ mod tests {
         let err = Format::Toml.serialize(&v).unwrap_err();
         assert!(err.to_string().contains("null"), "got: {err}");
         assert!(err.to_string().contains("items[1]"), "got: {err}");
+    }
+
+    #[test]
+    fn toml_rejects_null_at_empty_string_key() {
+        // An empty-string key causes find_null_path to return Some(""),
+        // exercising the `if path.is_empty() { "<root>" }` branch.
+        let v: Value = serde_json::json!({ "": null });
+        let err = Format::Toml.serialize(&v).unwrap_err();
+        assert!(err.to_string().contains("<root>"), "got: {err}");
     }
 
     #[test]
