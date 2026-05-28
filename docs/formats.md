@@ -1,14 +1,12 @@
 # Format Behavior
 
-This document describes how `config-disassembler` handles each supported configuration format, including cross-format conversions, metadata behavior, and format-specific limitations.
+Describes how `config-disassembler` handles each format: conversions, splitting behavior, metadata, and format-specific limits.
 
 ---
 
-# Supported formats
-
 ## Cross-format formats
 
-The following formats can be freely converted between each other:
+These formats convert freely between each other:
 
 - JSON
 - JSON5
@@ -28,11 +26,7 @@ config-disassembler json reassemble config \
   --output-format json
 ```
 
-These conversions preserve parsed values and structure.
-
-Format-specific syntax may not survive conversion.
-
-Examples:
+Conversions preserve parsed values and structure. Format-specific syntax may not survive:
 
 - JSONC comments are lost when rebuilding as JSON
 - YAML anchors are resolved during parsing
@@ -40,202 +34,21 @@ Examples:
 
 ---
 
-# XML
-
-XML can be split into:
-
-- XML
-- JSON
-- JSON5
-- YAML
-
-…but reassembly always produces XML.
-
-XML behavior and advanced splitting strategies are documented separately in:
-
-- [xml.md](xml.md)
-
----
-
-# TOML
-
-TOML is intentionally isolated:
-
-- TOML ↔ TOML only
-
-Cross-format conversions are not supported.
-
-Example:
-
-```text
-TOML can only be converted to and from TOML; got input=json, output=toml
-```
-
-## Why TOML is isolated
-
-TOML has structural constraints that do not map cleanly to JSON-style formats.
-
-### No null values
-
-TOML has no `null` equivalent.
-
-Example:
-
-```json
-{
-  "value": null
-}
-```
-
-Cannot be represented in TOML without inventing custom semantics.
-
----
-
-### Root must be a table
-
-TOML documents cannot use arrays as the root value.
-
-Valid JSON:
-
-```json
-[
-  { "name": "a" },
-  { "name": "b" }
-]
-```
-
-Invalid TOML.
-
----
-
-### Ordering constraints
-
-TOML requires bare keys to appear before tables in the same scope.
-
-This JSON:
-
-```json
-{
-  "section": {
-    "enabled": true
-  },
-  "name": "example"
-}
-```
-
-Would need to reorder keys during TOML serialization.
-
-Because reassembly aims to preserve deterministic structure, TOML conversions are restricted to TOML-only workflows.
-
----
-
-## TOML disassembly behavior
-
-To ensure every split file remains a valid TOML document, each shard is wrapped using its parent key.
-
-Example:
-
-```toml
-[dependencies]
-serde = "1"
-tokio = "1"
-```
-
-Rather than writing a bare mapping fragment.
-
-Arrays are similarly wrapped using TOML table-array syntax.
-
-Example:
-
-```toml
-[[servers]]
-name = "api"
-```
-
-Reassembly automatically unwraps these structures.
-
----
-
-# INI
-
-INI is also intentionally isolated:
-
-- INI ↔ INI only
-
-Cross-format conversions are not supported.
-
-Example:
-
-```text
-INI can only be converted to and from INI; got input=json, output=ini
-```
-
-## Why INI is isolated
-
-INI cannot reliably represent modern structured data formats.
-
-Typical INI limitations include:
-
-- values are strings
-- no native arrays
-- shallow nesting only
-- inconsistent parser behavior across ecosystems
-
-Example:
-
-```ini
-[settings]
-enabled=true
-```
-
-This does not distinguish between:
-
-- boolean `true`
-- string `"true"`
-
-Nested JSON-style structures also cannot be represented without inventing custom encoding rules.
-
----
-
-## INI disassembly behavior
-
-Like TOML, INI split files are wrapped using their parent section name.
-
-Example:
-
-```ini
-[database]
-host=localhost
-port=5432
-```
-
-Reassembly unwraps sections automatically.
-
----
-
-# Root splitting behavior
+## Root splitting behavior
 
 Disassembly behavior depends on the root document type.
 
----
+### Object roots
 
-## Object roots
-
-For object-style roots:
-
-- nested objects and arrays become separate files
-- scalar values remain in `_main.<ext>`
+- Nested objects and arrays become separate files
+- Scalar values remain in `_main.<ext>`
 
 Example input:
 
 ```json
 {
-  "database": {
-    "host": "localhost"
-  },
-  "features": {
-    "beta": true
-  },
+  "database": { "host": "localhost" },
+  "features": { "beta": true },
   "version": 1
 }
 ```
@@ -250,25 +63,15 @@ config/
 └── .config-disassembler.json
 ```
 
-Where `_main.json` contains:
+`_main.json` contains:
 
 ```json
-{
-  "version": 1
-}
+{ "version": 1 }
 ```
 
----
+### Array roots
 
-## Array roots
-
-For array-style roots:
-
-- each array item becomes its own file
-
-By default, files use zero-padded numeric indexes.
-
-Example:
+Each array item becomes its own file, named by zero-padded index:
 
 ```text
 0000.json
@@ -276,17 +79,10 @@ Example:
 0002.json
 ```
 
----
-
-## Unique IDs for arrays
-
-Use `--unique-id <field>` to name array items using a field value.
-
-Example:
+Use `--unique-id <field>` to name items by a field value instead:
 
 ```bash
-config-disassembler json disassemble users.json \
-  --unique-id id
+config-disassembler json disassemble users.json --unique-id id
 ```
 
 Result:
@@ -298,68 +94,93 @@ users/
 └── 1003.json
 ```
 
-This is supported for:
-
-- JSON
-- JSON5
-- JSONC
-- YAML
-- TOON
-
-It is not applicable to TOML or INI.
+Supported for JSON, JSON5, JSONC, YAML, TOON. Not applicable to TOML or INI.
 
 ---
 
-# Metadata sidecar
+## Metadata sidecar
 
-Every disassembly writes a metadata file:
+Every disassembly writes `.config-disassembler.json` alongside the split files.
 
-```text
-.config-disassembler.json
-```
+Stores information required for deterministic reassembly:
 
-This stores information required for deterministic reassembly.
+- original filename and root type
+- source and output format
+- original key and array ordering
 
-Typical metadata includes:
-
-- original filename
-- root type
-- source format
-- output format
-- original key ordering
-- array ordering
-
-Example:
-
-```json
-{
-  "source_format": "json",
-  "output_format": "yaml",
-  "root_type": "object"
-}
-```
-
-Users normally do not need to edit this file manually.
-
-Removing it may prevent correct reassembly.
+Do not edit or remove this file. Missing it may prevent correct reassembly.
 
 ---
 
-# JSONC behavior
+## XML
 
-JSONC supports:
+XML splits into XML, JSON, JSON5, or YAML — but reassembly always produces XML.
 
-- comments
-- trailing commas
+See [xml.md](xml.md) for strategies, split tags, and multi-level disassembly.
 
-When JSONC is:
+---
 
-- disassembled as JSONC
-- reassembled as JSONC
+## TOML
 
-…comments and trailing commas are preserved where possible.
+TOML is isolated: **TOML ↔ TOML only**.
 
-Example:
+Cross-format conversion is not supported because:
+
+- No `null` equivalent
+- Root must be a table (arrays as root are invalid TOML)
+- Key ordering constraints (bare keys must precede tables in the same scope)
+
+### TOML disassembly behavior
+
+Each split file is wrapped using its parent key so the file remains valid TOML:
+
+```toml
+[dependencies]
+serde = "1"
+tokio = "1"
+```
+
+Arrays use TOML table-array syntax:
+
+```toml
+[[servers]]
+name = "api"
+```
+
+Reassembly automatically unwraps these structures.
+
+---
+
+## INI
+
+INI is isolated: **INI ↔ INI only**.
+
+Cross-format conversion is not supported because:
+
+- All values are strings — no booleans, numbers, or `null`
+- No native arrays
+- Shallow nesting only
+- Inconsistent parser behavior across ecosystems
+
+### INI disassembly behavior
+
+Split files are wrapped using their parent section name:
+
+```ini
+[database]
+host=localhost
+port=5432
+```
+
+Reassembly unwraps sections automatically.
+
+---
+
+## JSONC behavior
+
+JSONC supports comments and trailing commas.
+
+When disassembled and reassembled as JSONC, these are preserved where possible:
 
 ```jsonc
 {
@@ -368,99 +189,41 @@ Example:
 }
 ```
 
-When converting JSONC into another format, only parsed values are preserved.
-
-Comments and JSONC-specific syntax are discarded.
+Cross-format conversions discard comments and JSONC-specific syntax.
 
 ---
 
-# YAML behavior
+## YAML behavior
 
-YAML parsing preserves parsed values and structure.
-
-YAML-specific features such as:
-
-- anchors
-- aliases
-- tags
-- comments
-
-may not survive cross-format conversions.
-
-Example:
-
-```yaml
-defaults: &defaults
-  enabled: true
-
-service:
-  <<: *defaults
-```
+YAML-specific features — anchors, aliases, tags, comments — may not survive cross-format conversions.
 
 Anchors are resolved during parsing and are not reconstructed during reassembly.
 
 ---
 
-# JSON5 behavior
+## JSON5 behavior
 
-JSON5 supports:
-
-- comments
-- trailing commas
-- unquoted keys
-- single-quoted strings
-
-Example:
-
-```json5
-{
-  server: 'localhost',
-}
-```
-
-These features are preserved when rebuilding as JSON5.
+JSON5 features (comments, trailing commas, unquoted keys, single-quoted strings) are preserved when rebuilding as JSON5.
 
 Cross-format conversions preserve values but normalize syntax.
 
 ---
 
-# TOON behavior
+## TOON behavior
 
-TOON behaves similarly to JSON/YAML-style structured formats.
-
-It supports:
-
-- object roots
-- array roots
-- nested structures
-
-Cross-format conversions are fully supported between:
-
-- JSON
-- JSON5
-- JSONC
-- YAML
-- TOON
+TOON behaves like JSON/YAML-style formats. Supports object roots, array roots, and nested structures. Cross-format conversions fully supported within the JSON/YAML/TOON family.
 
 ---
 
-# Directory disassembly
+## Directory disassembly
 
-All non-XML formats support directory input.
-
-Example:
+All non-XML formats support directory input:
 
 ```bash
 config-disassembler yaml disassemble envs/
 ```
 
-Behavior:
-
-- recursively walks the directory
-- disassembles matching files in place
-- creates sibling output directories
-
-Example:
+Recursively walks the directory, disassembles matching files in place, and creates sibling output directories:
 
 ```text
 envs/
@@ -472,18 +235,16 @@ envs/
 
 ---
 
-# Ignore files
+## Ignore files
 
-Directory traversal supports `.gitignore`-style filtering using `.cdignore`.
-
-Example:
+Directory traversal supports `.gitignore`-style filtering via `.cdignore`:
 
 ```text
 **/generated/
 **/secret.yaml
 ```
 
-Custom paths may be supplied using:
+Supply a custom path:
 
 ```bash
 --ignore-path custom.ignore
@@ -491,54 +252,30 @@ Custom paths may be supplied using:
 
 ---
 
-# Purge behavior
+## Purge behavior
 
-## `--prepurge`
+### `--prepurge`
 
-Deletes existing output before writing.
-
-Useful for:
-
-- clean rebuilds
-- CI pipelines
-
-Example:
+Deletes existing output before writing. Useful for clean rebuilds and CI pipelines:
 
 ```bash
-config-disassembler json disassemble config.json \
-  --prepurge
+config-disassembler json disassemble config.json --prepurge
 ```
 
----
+### `--postpurge`
 
-## `--postpurge`
-
-Deletes the input after successful completion.
-
-Examples:
+Deletes the input after successful completion:
 
 ```bash
-config-disassembler json disassemble config.json \
-  --postpurge
-```
-
-```bash
-config-disassembler json reassemble config \
-  --postpurge
+config-disassembler json disassemble config.json --postpurge
+config-disassembler json reassemble config --postpurge
 ```
 
 Use with care.
 
 ---
 
-# Logging
-
-Logging uses:
-
-- `log`
-- `env_logger`
-
-Enable verbose output:
+## Logging
 
 ```bash
 RUST_LOG=debug config-disassembler json disassemble config.json
@@ -546,29 +283,8 @@ RUST_LOG=debug config-disassembler json disassemble config.json
 
 ---
 
-# Deterministic reassembly
+## Deterministic reassembly
 
-Reassembly preserves:
+Reassembly preserves original ordering, root structure, nested hierarchy, and split-file relationships.
 
-- original ordering
-- root structure
-- nested hierarchy
-- split-file relationships
-
-The goal is deterministic round-tripping between:
-
-1. original source
-2. disassembled representation
-3. rebuilt output
-
-Exact formatting may differ depending on the serializer used by the target format.
-
-Examples:
-
-- indentation
-- quote style
-- trailing commas
-- whitespace
-- comment placement
-
-Structural equivalence is preserved even when formatting changes.
+Exact formatting may differ (indentation, quote style, whitespace) depending on the serializer. Structural equivalence is always preserved.

@@ -1,6 +1,6 @@
 # XML Support
 
-The `xml` subcommand splits large XML files into smaller, version-control–friendly pieces and reassembles them back into the original XML.
+The `xml` subcommand splits large XML files into smaller pieces and reassembles them back into the original XML.
 
 ```bash
 config-disassembler xml disassemble <path> [options]
@@ -8,16 +8,13 @@ config-disassembler xml reassemble  <path> [extension] [--postpurge]
 config-disassembler xml parse       <path>
 ```
 
-`<path>` may be either:
-
-- a single XML file
-- a directory containing XML files
+`<path>` may be a single XML file or a directory containing XML files.
 
 ---
 
-# Basic usage
+## Basic usage
 
-## Disassemble
+### Disassemble
 
 ```bash
 config-disassembler xml disassemble flow.xml
@@ -33,15 +30,25 @@ flow/
 └── flow-meta.xml
 ```
 
-## Reassemble
+### Reassemble
 
 ```bash
 config-disassembler xml reassemble flow
 ```
 
+### Parse
+
+`parse` inspects how the disassembler reads an XML file without writing any output. Use it to preview the internal representation before choosing a strategy or to diagnose unexpected splits.
+
+```bash
+config-disassembler xml parse flow.xml
+```
+
+Prints the parsed structure to stdout. Useful for verifying attribute and CDATA handling before committing to a disassembly run.
+
 ---
 
-# Disassemble options
+## Disassemble options
 
 | Option | Description | Default |
 |---|---|---|
@@ -56,7 +63,7 @@ config-disassembler xml reassemble flow
 
 ---
 
-# Reassemble options
+## Reassemble options
 
 | Option | Description | Default |
 |---|---|---|
@@ -65,9 +72,9 @@ config-disassembler xml reassemble flow
 
 ---
 
-# Disassembly strategies
+## Disassembly strategies
 
-## unique-id (default)
+### unique-id (default)
 
 Each nested XML element is written to its own file using a unique identifier.
 
@@ -76,11 +83,7 @@ config-disassembler xml disassemble flow.xml \
   --unique-id-elements name,id
 ```
 
-Best for:
-
-- fine-grained diffs
-- version control
-- large metadata files
+Best for fine-grained diffs, version control, and large metadata files.
 
 Example:
 
@@ -93,19 +96,15 @@ flow/
 └── flow-meta.xml
 ```
 
-If no unique identifier is found, filenames fall back to an 8-character SHA-256 hash.
-
-Example:
+If no unique identifier is found, filenames fall back to an 8-character SHA-256 hash:
 
 ```text
 419e0199.flow-meta.xml
 ```
 
-## Compound unique IDs
+#### Compound unique IDs
 
-Unique ID candidates may combine multiple fields using `+`.
-
-Example:
+Combine multiple fields with `+`:
 
 ```bash
 config-disassembler xml disassemble profile.xml \
@@ -113,50 +112,17 @@ config-disassembler xml disassemble profile.xml \
   "actionName+pageOrSobjectType+formFactor+profile"
 ```
 
-Resolved values are joined with `__`.
-
-Example filename:
+Resolved values are joined with `__`:
 
 ```text
 View__Account__Large__Admin.profileActionOverrides-meta.xml
 ```
 
-This is useful when no single field uniquely identifies sibling elements.
+Useful when no single field uniquely identifies sibling elements.
 
 ---
 
-# Filename safety
-
-Resolved filenames are automatically sanitized for cross-platform compatibility.
-
-The disassembler:
-
-- replaces path separators and reserved characters with `_`
-- removes invalid trailing characters
-- detects sibling filename collisions
-- falls back to SHA-based filenames when collisions occur
-
-This guarantees:
-
-- deterministic output
-- no silent overwrites
-- identical layouts across Windows, macOS, and Linux
-
-Example:
-
-```text
-TrustFile Transaction Sync/Import Complete
-```
-
-Becomes:
-
-```text
-TrustFile Transaction Sync_Import Complete.flow-meta.xml
-```
-
----
-
-## grouped-by-tag
+### grouped-by-tag
 
 Groups nested elements with the same tag into shared files.
 
@@ -165,11 +131,7 @@ config-disassembler xml disassemble flow.xml \
   --strategy grouped-by-tag
 ```
 
-Best for:
-
-- fewer files
-- simpler layouts
-- quick inspection
+Best for fewer files, simpler layouts, and quick inspection.
 
 Example:
 
@@ -185,15 +147,9 @@ Reassembly preserves the original structure and ordering.
 
 ---
 
-# Split tags
+## Split tags
 
 With `grouped-by-tag`, specific nested tags can be split or grouped into subdirectories.
-
-Useful for:
-
-- Salesforce permission sets
-- large nested collections
-- object-based metadata
 
 Rule format:
 
@@ -201,13 +157,11 @@ Rule format:
 tag:mode:field
 ```
 
-Or:
+Or with a path:
 
 ```text
 tag:path:mode:field
 ```
-
-Where:
 
 - `mode=split` → one file per item
 - `mode=group` → one file per grouped field value
@@ -235,11 +189,100 @@ Reassembly automatically merges split directories back into the original XML.
 
 ---
 
-# Multi-level disassembly
+## Output formats
 
-Multi-level disassembly further splits specific output files after the initial disassembly pass.
+XML can be split into:
 
-Useful for deeply nested metadata structures.
+- XML
+- JSON
+- JSON5
+- YAML
+
+```bash
+config-disassembler xml disassemble flow.xml --format yaml
+config-disassembler xml disassemble flow.xml --format json5
+```
+
+Regardless of split format, reassembly always produces XML.
+
+---
+
+## XML parser behavior
+
+Parsing uses `quick-xml`. Supported features:
+
+- CDATA preservation
+- comment preservation
+- attribute preservation
+
+Attributes use `@` prefixes:
+
+```xml
+<root version="1.0">
+```
+
+Becomes:
+
+```json
+{ "@version": "1.0" }
+```
+
+CDATA is represented using `#cdata`.
+
+---
+
+## Filename safety
+
+Resolved filenames are automatically sanitized for cross-platform compatibility:
+
+- Path separators and reserved characters are replaced with `_`
+- Invalid trailing characters are removed
+- Sibling filename collisions are detected; SHA-based fallback is used when they occur
+
+Guarantees deterministic, collision-free output across Windows, macOS, and Linux.
+
+Example:
+
+```text
+TrustFile Transaction Sync/Import Complete
+```
+
+Becomes:
+
+```text
+TrustFile Transaction Sync_Import Complete.flow-meta.xml
+```
+
+---
+
+## Ignore files
+
+Directory disassembly supports `.gitignore`-style filtering via `.cdignore`:
+
+```text
+**/generated/
+**/secret.xml
+```
+
+```bash
+config-disassembler xml disassemble metadata/
+```
+
+For backward compatibility, `.xmldisassemblerignore` is also recognized when `.cdignore` is absent.
+
+---
+
+## Logging
+
+```bash
+RUST_LOG=debug config-disassembler xml disassemble flow.xml
+```
+
+---
+
+## Multi-level disassembly
+
+Multi-level disassembly further splits specific output files after the initial disassembly pass. Useful for deeply nested metadata structures.
 
 Rule format:
 
@@ -259,24 +302,16 @@ config-disassembler xml disassemble \
 
 This:
 
-1. disassembles the top-level XML
-2. matches files containing `programProcesses`
-3. unwraps the `programProcesses` root
-4. disassembles nested items again using:
-   - `parameterName`
-   - `ruleName`
+1. Disassembles the top-level XML
+2. Matches files containing `programProcesses`
+3. Unwraps the `programProcesses` root
+4. Disassembles nested items again using `parameterName` and `ruleName`
 
-A `.multi_level.json` file is written automatically so reassembly can reconstruct the original hierarchy.
+A `.multi_level.json` file is written automatically so reassembly can reconstruct the original hierarchy. No additional flags are required during reassembly.
 
-No additional flags are required during reassembly.
+### Multiple rules
 
----
-
-## Multiple multi-level rules
-
-Multiple rules may be separated with `;`.
-
-Example:
+Separate rules with `;`:
 
 ```bash
 config-disassembler xml disassemble Sample.multi-meta.xml \
@@ -285,112 +320,16 @@ config-disassembler xml disassemble Sample.multi-meta.xml \
   "sectionA:sectionA:id;sectionB:sectionB:name"
 ```
 
-Whitespace is trimmed automatically.
+Whitespace is trimmed. Empty trailing rules are ignored.
 
-Empty trailing rules are ignored.
+### Reassembly caveat
 
----
-
-# Ignore files
-
-Directory disassembly supports `.gitignore`-style filtering using `.cdignore`.
-
-Example:
-
-```text
-**/generated/
-**/secret.xml
-```
-
-Usage:
-
-```bash
-config-disassembler xml disassemble metadata/
-```
-
-For backward compatibility, `.xmldisassemblerignore` is also recognized when `.cdignore` is absent.
-
----
-
-# Output formats
-
-XML can be split into:
-
-- XML
-- JSON
-- JSON5
-- YAML
-
-Examples:
-
-```bash
-config-disassembler xml disassemble flow.xml --format yaml
-```
-
-```bash
-config-disassembler xml disassemble flow.xml --format json5
-```
-
-Regardless of split format, reassembly always produces XML.
-
----
-
-# XML parser behavior
-
-Parsing uses `quick-xml`.
-
-Supported features include:
-
-- CDATA preservation
-- comment preservation
-- attribute preservation
-
-Attributes are represented using `@` prefixes.
-
-Example:
-
-```xml
-<root version="1.0">
-```
-
-Becomes:
-
-```json
-{
-  "@version": "1.0"
-}
-```
-
-CDATA is represented using `#cdata`.
-
----
-
-# Logging
-
-Logging uses the `log` crate with `env_logger`.
-
-Enable verbose output:
-
-```bash
-RUST_LOG=debug config-disassembler xml disassemble flow.xml
-```
-
----
-
-# Reassembly caveat
-
-Multi-level reassembly removes intermediate directories during reconstruction, even without `--postpurge`.
-
-This is necessary so higher-level reassembly can merge rebuilt XML files correctly.
+Multi-level reassembly removes intermediate directories during reconstruction, even without `--postpurge`. This is necessary so higher-level reassembly can merge rebuilt XML files correctly.
 
 Use version control if you need to preserve intermediate disassembly trees.
 
 ---
 
-# Examples
+## Examples
 
-See:
-
-- [examples.md](examples.md)
-
-For complete before/after layouts and real-world metadata examples.
+See [examples.md](examples.md) for complete before/after layouts and real-world metadata examples.

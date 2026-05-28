@@ -29,23 +29,39 @@ cargo install config-disassembler
 
 ### JSON
 
-```bash
-# Split config.json into ./config/
-config-disassembler json disassemble config.json
+Create `config.json`:
 
-# Rebuild config.json
-config-disassembler json reassemble config
+```json
+{
+  "database": { "host": "localhost", "port": 5432 },
+  "features": { "beta": true },
+  "version": 1
+}
+```
+
+Split it:
+
+```bash
+config-disassembler json disassemble config.json
 ```
 
 Result:
 
 ```text
 config/
-├── database.json
-├── features.json
-├── users.json
-└── .config-disassembler.json
+├── .config-disassembler.json
+├── _main.json          ← scalars (version)
+├── database.json       ← nested object
+└── features.json       ← nested object
 ```
+
+Rebuild:
+
+```bash
+config-disassembler json reassemble config
+```
+
+Output matches the original `config.json`.
 
 ### XML
 
@@ -175,37 +191,7 @@ config-disassembler yaml disassemble envs/
 
 ## XML strategies
 
-### unique-id (default)
-
-Each nested XML element is written to its own file using a unique identifier.
-
-```bash
-config-disassembler xml disassemble flow.xml \
-  --unique-id-elements name,id
-```
-
-Best for:
-
-- fine-grained diffs
-- version control
-- large metadata files
-
-### grouped-by-tag
-
-Groups nested elements by tag into shared files.
-
-```bash
-config-disassembler xml disassemble flow.xml \
-  --strategy grouped-by-tag
-```
-
-Best for:
-
-- fewer files
-- quick inspection
-- simpler layouts
-
-See [docs/xml.md](docs/xml.md) for advanced XML configuration.
+See [docs/xml.md](docs/xml.md) for splitting strategies, split tags, and multi-level disassembly.
 
 ## Library usage
 

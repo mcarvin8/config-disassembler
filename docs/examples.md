@@ -3,6 +3,33 @@
 This page shows common disassembly layouts using small file-tree diagrams. The
 examples focus on how files are split on disk and how to reassemble them.
 
+## Try it now
+
+Copy this file as `config.json` and use it to follow any example on this page:
+
+```json
+{
+  "name": "demo",
+  "enabled": true,
+  "settings": {
+    "retry": 3,
+    "timeout_ms": 5000
+  },
+  "tags": ["alpha", "beta"]
+}
+```
+
+Run the complete round-trip:
+
+```bash
+config-disassembler json disassemble config.json
+config-disassembler json reassemble config
+```
+
+The reassembled file matches the original structure. That's it.
+
+---
+
 ## JSON Object
 
 Input `config.json`:
