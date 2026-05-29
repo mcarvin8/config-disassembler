@@ -509,4 +509,53 @@ mod tests {
         // non-attribute children is not the thin-wrapper case.
         assert!(!should_unwrap_inner_segment("Doc", "Doc", false));
     }
+
+    #[tokio::test]
+    async fn ensure_segment_files_structure_else_branch_when_root_differs_from_document_root() {
+        // When current_root_key != document_root, should_unwrap_inner_segment returns false
+        // and the `else` branch (lines 195-206) copies root_val directly.
+        let dir = tempfile::tempdir().unwrap();
+        // File has root "Item" but we call with document_root "Root".
+        let xml = r#"<Item><child>x</child></Item>"#;
+        let path = dir.path().join("item.xml");
+        tokio::fs::write(&path, xml).await.unwrap();
+        ensure_segment_files_structure(
+            dir.path(),
+            "Root", // document_root differs from "Item"
+            "child",
+            "http://example.com",
+        )
+        .await
+        .unwrap();
+        let out = tokio::fs::read_to_string(&path).await.unwrap();
+        // Rewritten with "Root" as document root
+        assert!(out.contains("<Root"), "expected Root element: {out}");
+        assert!(
+            out.contains("http://example.com"),
+            "expected xmlns attribute: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_segment_files_structure_else_branch_multiple_children() {
+        // single_inner=false (multiple children) → should_unwrap_inner_segment=false → else branch.
+        let dir = tempfile::tempdir().unwrap();
+        // File has root "Root" but with TWO non-attr children → single_inner=false.
+        let xml = r#"<Root><a>1</a><b>2</b></Root>"#;
+        let path = dir.path().join("multi.xml");
+        tokio::fs::write(&path, xml).await.unwrap();
+        ensure_segment_files_structure(
+            dir.path(),
+            "Root",
+            "inner", // inner_wrapper not present in root_val
+            "http://example.com",
+        )
+        .await
+        .unwrap();
+        let out = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            out.contains("<Root"),
+            "Root element must be in output: {out}"
+        );
+    }
 }

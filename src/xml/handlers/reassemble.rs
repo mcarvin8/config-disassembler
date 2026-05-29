@@ -652,6 +652,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_segment_as_array_with_xml_decl_preserves_it() {
+        // XML file WITH a `<?xml ?>` declaration: `decl_opt` is Some → line 438
+        // `top.insert("?xml", decl)` is executed (the `if let Some(decl)` branch).
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            tmp.path().join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><seg><x>1</x></seg></Root>"#,
+        )
+        .await
+        .unwrap();
+        let out = h
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .await
+            .unwrap()
+            .unwrap();
+        let obj = out.as_object().unwrap();
+        let decl = obj
+            .get("?xml")
+            .and_then(|v| v.as_object())
+            .expect("?xml declaration must be preserved from source");
+        assert_eq!(decl.get("@version").and_then(|v| v.as_str()), Some("1.0"));
+        assert_eq!(
+            decl.get("@encoding").and_then(|v| v.as_str()),
+            Some("UTF-8")
+        );
+    }
+
+    #[tokio::test]
     async fn collect_segment_as_array_without_extract_inner_wraps_root() {
         let h = ReassembleXmlFileHandler::new();
         let tmp = tempfile::tempdir().unwrap();
