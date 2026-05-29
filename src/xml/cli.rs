@@ -783,4 +783,23 @@ mod tests {
         assert!(!should_parse_decompose_rules(""));
         assert!(!should_parse_decompose_rules("Grouped-By-Tag"));
     }
+
+    #[tokio::test]
+    async fn run_disassemble_with_valid_multi_level_spec_passes_rules_slice() {
+        // A syntactically valid --multi-level spec causes multi_level_rules_ref to be
+        // Some(slice) (line 299 in run_disassemble), covering that branch.
+        let dir = tempfile::tempdir().unwrap();
+        let xml_path = dir.path().join("sample.xml");
+        let xml =
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><child><name>a</name></child></Root>"#;
+        std::fs::write(&xml_path, xml).unwrap();
+        run(vec![
+            sv("xml-disassembler"),
+            sv("disassemble"),
+            xml_path.to_string_lossy().to_string(),
+            sv("--multi-level=child:Root:name"),
+        ])
+        .await
+        .unwrap();
+    }
 }

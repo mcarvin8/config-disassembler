@@ -696,6 +696,14 @@ mod tests {
     }
 
     #[test]
+    fn match_candidate_at_direct_empty_fields_returns_none() {
+        // Exercises the `if parts.is_empty() { return None; }` defensive guard.
+        // An empty fields slice causes the for-loop to do nothing, leaving parts empty.
+        let el = json!({ "name": "foo" });
+        assert_eq!(match_candidate_at_direct(&el, &[]), None);
+    }
+
+    #[test]
     fn parse_unique_id_element_hash_fallback_is_unaffected_by_sanitizer() {
         // Hash fallback returns 8 hex chars, all of which are safe; the
         // sanitizer must be a no-op here.

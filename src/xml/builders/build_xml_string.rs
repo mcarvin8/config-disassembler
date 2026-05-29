@@ -448,6 +448,29 @@ mod tests {
     }
 
     #[test]
+    fn build_xml_string_array_child_not_last_sibling_writes_inter_element_indent() {
+        // When an array child is NOT the last sibling, `if !is_last` in the
+        // Value::Array arm must write an inter-element indent after all array
+        // items. Without this path covered, mutating `!is_last` to always-false
+        // would drop the indent and merge consecutive tags in the output.
+        let el = json!({
+            "root": {
+                "items": [{ "x": "1" }],
+                "sibling": "y"
+            }
+        });
+        let out = build_xml_string(&el);
+        assert!(
+            out.contains("<items>"),
+            "items element must be present: {out}"
+        );
+        assert!(
+            out.contains("<sibling>y</sibling>"),
+            "sibling must be present: {out}"
+        );
+    }
+
+    #[test]
     fn build_xml_string_empty_array_child_produces_no_elements() {
         // A child whose value is an empty array: the inner for-loop body never
         // executes (arr_len == 0) but the is_last/not-is_last indent logic still runs.

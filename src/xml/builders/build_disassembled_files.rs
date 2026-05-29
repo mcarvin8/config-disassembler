@@ -829,6 +829,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_nested_groups_unknown_mode_calls_fallback() {
+        // A DecomposeRule whose mode is neither "split" nor "group" must fall through
+        // to `fallback_write_one_file`, which writes one combined file for the tag.
+        use crate::xml::types::DecomposeRule;
+        let dir = tempfile::tempdir().unwrap();
+        let mut nested_groups = XmlElementArrayMap::new();
+        nested_groups
+            .entry("myTag".to_string())
+            .or_default()
+            .push(serde_json::json!({"child": "val"}));
+
+        let decompose_rules = [DecomposeRule {
+            tag: "myTag".to_string(),
+            path_segment: "myTag".to_string(),
+            mode: "other_mode".to_string(), // neither "split" nor "group"
+            field: "child".to_string(),
+        }];
+        let opts = WriteNestedOptions {
+            disassembled_path: dir.path().to_str().unwrap(),
+            root_element_name: "Root",
+            root_attributes: serde_json::Value::Object(serde_json::Map::new()),
+            xml_declaration: None,
+            format: "xml",
+            decompose_rules: Some(&decompose_rules),
+        };
+        write_nested_groups(&nested_groups, "grouped-by-tag", &opts).await;
+        // fallback writes one file named "{tag}.{format}"
+        assert!(
+            dir.path().join("myTag.xml").exists(),
+            "fallback file must be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_nested_groups_no_rule_for_tag_calls_fallback() {
+        // A tag with no matching DecomposeRule also calls `fallback_write_one_file`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut nested_groups = XmlElementArrayMap::new();
+        nested_groups
+            .entry("unknownTag".to_string())
+            .or_default()
+            .push(serde_json::json!({"x": "1"}));
+
+        let opts = WriteNestedOptions {
+            disassembled_path: dir.path().to_str().unwrap(),
+            root_element_name: "Root",
+            root_attributes: serde_json::Value::Object(serde_json::Map::new()),
+            xml_declaration: None,
+            format: "xml",
+            decompose_rules: None, // no rules at all
+        };
+        write_nested_groups(&nested_groups, "grouped-by-tag", &opts).await;
+        assert!(
+            dir.path().join("unknownTag.xml").exists(),
+            "fallback file must be written"
+        );
+    }
+
+    #[tokio::test]
     async fn unified_build_returns_ok_when_source_unreadable() {
         // Missing source file: unified build should short-circuit with Ok(()).
         let dir = tempfile::tempdir().unwrap();

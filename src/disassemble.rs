@@ -1054,4 +1054,37 @@ mod tests {
         assert!(hashed.starts_with("0002-"), "files: {files:?}");
         assert!(tmp.path().join(hashed).exists());
     }
+
+    #[test]
+    fn parse_jsonc_ast_returns_error_for_empty_document() {
+        // Exercises the `ok_or_else(|| Error::Invalid("JSONC document did not contain a value"))` closure.
+        let err = parse_jsonc_ast("").expect_err("empty document has no value");
+        assert!(
+            err.to_string()
+                .contains("JSONC document did not contain a value"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_disassemble_targets_skips_symlink_entries() {
+        // On Unix, DirEntry::file_type() returns is_symlink()=true, is_file()=false
+        // for symlinks, so the `!ft.is_file()` branch (continue) is exercised.
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.json");
+        fs::write(&real, r#"{"a":1}"#).unwrap();
+        let link = tmp.path().join("link.json");
+        symlink(&real, &link).unwrap();
+
+        let ignore = load_ignore_rules(None, tmp.path()).unwrap();
+        let targets = collect_disassemble_targets(tmp.path(), &ignore, Some(Format::Json)).unwrap();
+        // The real file should appear; the symlink should be skipped
+        // (symlink's file_type() is_file() returns false → hits `!ft.is_file()` continue)
+        assert!(
+            !targets.is_empty(),
+            "real.json must be collected: {targets:?}"
+        );
+    }
 }

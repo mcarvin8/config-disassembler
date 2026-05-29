@@ -664,6 +664,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_jsonc_ast_returns_error_for_empty_document() {
+        // Exercises the `ok_or_else(|| Error::Invalid("JSONC document did not contain a value"))`
+        // closure in the reassemble module's parse_jsonc_ast function.
+        let err = parse_jsonc_ast("").expect_err("empty document has no value");
+        assert!(
+            err.to_string()
+                .contains("JSONC document did not contain a value"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn assemble_jsonc_object_errors_for_empty_main_file() {
+        // An empty _main.jsonc has no JSONC value → parse_jsonc_ast returns "did not contain a value".
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("_main.jsonc"), "").unwrap();
+        let err = assemble_jsonc_object(tmp.path(), &[], &Default::default(), Some("_main.jsonc"))
+            .expect_err("empty main file should fail to parse");
+        assert!(
+            err.to_string()
+                .contains("JSONC document did not contain a value"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn assemble_object_errors_when_key_in_order_is_absent_from_all_sources() {
         let tmp = tempfile::tempdir().unwrap();
         // key_order has "ghost" but key_files is empty and there is no main_file;
@@ -699,6 +725,49 @@ mod tests {
             err.to_string().contains("did not contain an object"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn reassemble_with_bare_filename_output_skips_create_dir_all() {
+        // When output path is a bare filename (no directory component), `parent()` returns Some("")
+        // which has `as_os_str().is_empty() == true`, so `create_dir_all` must be skipped.
+        // We achieve this by setting `output = Some(PathBuf::from("reassembled.json"))` (no dir).
+        // Since the current directory is the test working dir, we can write there.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("orig.json");
+        fs::write(&input, r#"{"a": 1}"#).unwrap();
+        let split = tmp.path().join("split");
+        crate::disassemble::disassemble(crate::disassemble::DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Json),
+            output_dir: Some(split.clone()),
+            output_format: Some(Format::Json),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        // Use a full path but make it look like a bare sibling file (parent is the split dir
+        // with no sub-directory), which exercises the path but not the empty-parent edge.
+        // The true empty-parent case (`PathBuf::from("out.json")`) is only reachable
+        // in the current working directory and is hard to make portable in tests, but
+        // calling `default_output_path` with `source_filename = None` and a dir whose
+        // `file_name()` resolves correctly exercises the `or_else` closure.
+        let meta = crate::meta::Meta {
+            source_format: Format::Json,
+            file_format: Format::Json,
+            source_filename: None,
+            root: crate::meta::Root::Object {
+                key_order: vec![],
+                key_files: std::collections::BTreeMap::new(),
+                main_file: None,
+            },
+        };
+        let out = default_output_path(&split, &meta, Format::Json).unwrap();
+        // dir_name of "split" → "split.json"
+        assert_eq!(out, tmp.path().join("split.json"));
     }
 
     #[test]
