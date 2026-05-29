@@ -97,6 +97,15 @@ mod tests {
     }
 
     #[test]
+    fn read_returns_error_on_malformed_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(META_FILENAME), "{ not valid json }").unwrap();
+        let err = Meta::read(tmp.path()).unwrap_err();
+        // serde_json parse failure propagates as Error::Json
+        assert!(err.to_string().contains("json"), "got: {err}");
+    }
+
+    #[test]
     fn read_returns_invalid_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let err = Meta::read(tmp.path()).unwrap_err();

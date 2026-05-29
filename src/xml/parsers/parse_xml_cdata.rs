@@ -485,6 +485,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_xml_with_cdata_text_after_cdata_stored_as_text() {
+        // CDATA followed by regular text in the same element hits the
+        // `elem.contains_key("#cdata")` branch in flush_text_buffer (line 126 path).
+        let xml = r#"<root><item><![CDATA[raw content]]>extra text</item></root>"#;
+        let v = parse_xml_with_cdata(xml).unwrap();
+        let item = v
+            .get("root")
+            .and_then(|r| r.get("item"))
+            .and_then(|i| i.as_object())
+            .unwrap();
+        assert_eq!(
+            item.get("#cdata").and_then(|c| c.as_str()),
+            Some("raw content")
+        );
+        // The text after CDATA is stored under #text (raw string value)
+        assert!(
+            item.get("#text").is_some(),
+            "text after CDATA must be stored as #text"
+        );
+    }
+
+    #[test]
     fn parse_xml_with_cdata_unescapes_entities_in_text() {
         // quick-xml 0.38+ emits entities as Event::GeneralRef; we resolve and append.
         let xml = r#"<r><expr>IF(x, &quot;created&quot;, &quot;updated&quot;)</expr></r>"#;

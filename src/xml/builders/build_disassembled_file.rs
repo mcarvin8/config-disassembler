@@ -129,6 +129,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_disassembled_file_derives_name_from_unique_id_when_no_output_name() {
+        // wrap_key Some, is_grouped_array=false, content is object →
+        // file_name = "{id}.{wrap_key}-meta.{format}" (the `format!` branch)
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_str().unwrap();
+        let mut opts = opts_base(path);
+        opts.output_file_name = None;
+        opts.wrap_key = Some("action");
+        opts.is_grouped_array = false;
+        opts.content = serde_json::json!({ "name": { "#text": "MyAction" } });
+        opts.unique_id_elements = Some("name");
+        opts.precomputed_unique_id = None; // triggers parse_unique_id_element
+        build_disassembled_file(opts).await.unwrap();
+        // File name should contain "action-meta"
+        let mut found = false;
+        for entry in std::fs::read_dir(temp.path()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            if name.contains("action-meta") {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected a file with 'action-meta' in name");
+    }
+
+    #[tokio::test]
     async fn build_disassembled_file_file_name_output_when_wrap_key_no_output_name_grouped_array() {
         // wrap_key Some, is_grouped_array true → file_name = "output"
         let temp = tempfile::tempdir().unwrap();

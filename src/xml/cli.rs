@@ -711,6 +711,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_disassemble_with_grouped_by_tag_no_split_tags_uses_empty_decompose_rules() {
+        // grouped-by-tag with no --split-tags: decompose_rules falls back to Vec::new()
+        // via `unwrap_or_default()` and decompose_rules_ref becomes None.
+        let dir = tempfile::tempdir().unwrap();
+        let xml_path = dir.path().join("sample.xml");
+        let xml =
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><a><n>1</n></a><b><n>2</n></b></Root>"#;
+        std::fs::write(&xml_path, xml).unwrap();
+        run(vec![
+            sv("xml-disassembler"),
+            sv("disassemble"),
+            xml_path.to_string_lossy().to_string(),
+            sv("--strategy=grouped-by-tag"),
+        ])
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn run_disassemble_with_grouped_by_tag_split_tags_runs() {
         let dir = tempfile::tempdir().unwrap();
         let xml_path = dir.path().join("perms.xml");

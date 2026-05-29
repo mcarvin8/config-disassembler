@@ -122,6 +122,24 @@ mod tests {
     }
 
     #[test]
+    fn extract_xml_declaration_from_raw_version_only_no_encoding_no_standalone() {
+        // Exercises the false branches of both the encoding and standalone
+        // `if let Some(cap)` checks inside extract_xml_declaration_from_raw.
+        let xml = r#"<?xml version="1.0"?><root/>"#;
+        let decl = extract_xml_declaration_from_raw(xml).unwrap();
+        let obj = decl.as_object().unwrap();
+        assert_eq!(obj.get("@version").and_then(|v| v.as_str()), Some("1.0"));
+        assert!(
+            obj.get("@encoding").is_none(),
+            "encoding must be absent when not in source"
+        );
+        assert!(
+            obj.get("@standalone").is_none(),
+            "standalone must be absent when not in source"
+        );
+    }
+
+    #[test]
     fn parse_xml_from_str_invalid_xml_returns_none() {
         let result = parse_xml_from_str("<<", "test.xml");
         assert!(result.is_none());

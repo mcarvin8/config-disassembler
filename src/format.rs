@@ -717,6 +717,36 @@ mod tests {
     }
 
     #[test]
+    fn ensure_can_convert_to_reassemble_variant_error_messages() {
+        // Reassemble errors mention "reassembled" in the message, distinguishing
+        // them from Convert errors. Both TOML and INI must use the Reassemble path.
+        let err = Format::Toml
+            .ensure_can_convert_to(Format::Json, ConversionOperation::Reassemble)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("TOML can only be reassembled"),
+            "got: {err}"
+        );
+
+        let err = Format::Ini
+            .ensure_can_convert_to(Format::Json, ConversionOperation::Reassemble)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("INI can only be reassembled"),
+            "got: {err}"
+        );
+
+        // Cross-family with Json as self and Toml as output
+        let err = Format::Json
+            .ensure_can_convert_to(Format::Toml, ConversionOperation::Reassemble)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("TOML can only be reassembled"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn conversion_rules_reject_cross_family_edges() {
         assert!(Format::Json
             .ensure_can_convert_to(Format::Yaml, ConversionOperation::Convert)

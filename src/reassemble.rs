@@ -664,6 +664,44 @@ mod tests {
     }
 
     #[test]
+    fn assemble_object_errors_when_key_in_order_is_absent_from_all_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        // key_order has "ghost" but key_files is empty and there is no main_file;
+        // assemble_object must return a clear error rather than silently skipping.
+        let err = assemble_object(
+            tmp.path(),
+            &["ghost".to_string()],
+            &std::collections::BTreeMap::new(),
+            None,
+            Format::Json,
+        )
+        .expect_err("should error on unresolvable key");
+        assert!(
+            err.to_string().contains("metadata references key `ghost`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn assemble_object_main_file_not_object_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Write a main file whose content is an array, not an object
+        fs::write(tmp.path().join("_main.json"), "[1, 2, 3]\n").unwrap();
+        let err = assemble_object(
+            tmp.path(),
+            &[],
+            &std::collections::BTreeMap::new(),
+            Some("_main.json"),
+            Format::Json,
+        )
+        .expect_err("should error when main file is not an object");
+        assert!(
+            err.to_string().contains("did not contain an object"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn assemble_jsonc_object_errors_when_main_file_is_not_object() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("_main.jsonc"), "[]\n").unwrap();
