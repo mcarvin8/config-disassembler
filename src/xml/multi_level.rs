@@ -331,6 +331,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_segment_files_structure_empty_xmlns_omits_xmlns_attribute() {
+        // When xmlns is an empty string the `if !xmlns.is_empty()` branch must
+        // NOT insert `@xmlns`, so the rewritten file has no xmlns attribute.
+        let dir = tempfile::tempdir().unwrap();
+        let xml = r#"<?xml version="1.0"?><Root><inner><x>1</x></inner></Root>"#;
+        let path = dir.path().join("seg.xml");
+        tokio::fs::write(&path, xml).await.unwrap();
+        ensure_segment_files_structure(
+            dir.path(),
+            "Root",
+            "inner",
+            "", // empty xmlns
+        )
+        .await
+        .unwrap();
+        let out = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            !out.contains("xmlns"),
+            "empty xmlns must not emit an xmlns attribute: {out}"
+        );
+        assert!(
+            out.contains("<inner>"),
+            "inner wrapper must be present: {out}"
+        );
+    }
+
+    #[tokio::test]
     async fn ensure_segment_files_structure_adds_xmlns_and_rewrites() {
         let dir = tempfile::tempdir().unwrap();
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>

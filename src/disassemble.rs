@@ -983,6 +983,49 @@ mod tests {
     }
 
     #[test]
+    fn for_file_creates_options_with_all_defaults() {
+        let input = PathBuf::from("config.json");
+        let opts = DisassembleOptions::for_file(input.clone());
+        assert_eq!(opts.input, input);
+        assert!(opts.input_format.is_none());
+        assert!(opts.output_dir.is_none());
+        assert!(opts.output_format.is_none());
+        assert!(opts.unique_id.is_none());
+        assert!(!opts.pre_purge);
+        assert!(!opts.post_purge);
+        assert!(opts.ignore_path.is_none());
+    }
+
+    #[test]
+    fn unique_filename_for_key_hashes_when_sanitized_is_empty() {
+        use std::collections::BTreeSet;
+        // "..." sanitizes to "" after trimming all dots → falls back to hash_string
+        let result = unique_filename_for_key("...", Format::Json, &BTreeSet::new());
+        assert!(result.ends_with(".json"), "got: {result}");
+        let base = result.trim_end_matches(".json");
+        assert!(
+            !base.is_empty(),
+            "base should be a hash, not empty: {result}"
+        );
+        assert!(
+            base.chars().all(|c| c.is_ascii_hexdigit()),
+            "base should be hex: {base}"
+        );
+    }
+
+    #[test]
+    fn unique_filename_for_key_appends_hash_when_name_already_in_used_set() {
+        use std::collections::BTreeSet;
+        let mut used = BTreeSet::new();
+        used.insert("mykey.json".to_string());
+        // "mykey" sanitizes to "mykey", but "mykey.json" is already taken
+        let result = unique_filename_for_key("mykey", Format::Json, &used);
+        assert!(result.starts_with("mykey-"), "got: {result}");
+        assert!(result.ends_with(".json"), "got: {result}");
+        assert_ne!(result, "mykey.json");
+    }
+
+    #[test]
     fn write_jsonc_array_root_hashes_when_unique_id_collides_with_index_name() {
         let text = r#"[
   {

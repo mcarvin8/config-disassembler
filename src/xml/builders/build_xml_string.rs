@@ -448,6 +448,36 @@ mod tests {
     }
 
     #[test]
+    fn build_xml_string_empty_array_child_produces_no_elements() {
+        // A child whose value is an empty array: the inner for-loop body never
+        // executes (arr_len == 0) but the is_last/not-is_last indent logic still runs.
+        let el = json!({ "root": { "items": [] } });
+        let out = build_xml_string(&el);
+        // No <items> tags should appear since there are no items
+        assert!(
+            !out.contains("<items>"),
+            "no elements for empty array: {out}"
+        );
+        assert!(
+            out.contains("<root>"),
+            "root element must be present: {out}"
+        );
+    }
+
+    #[test]
+    fn build_xml_string_attribute_value_array_uses_serde_fallback() {
+        // An attribute value that is an Array hits value_to_string's `_` arm.
+        let el = json!({
+            "root": { "@tags": ["a", "b"], "child": "v" }
+        });
+        let out = build_xml_string(&el);
+        assert!(
+            out.contains("child"),
+            "child element must be present: {out}"
+        );
+    }
+
+    #[test]
     fn build_xml_string_attribute_value_object_uses_serde_fallback() {
         // Attribute value that is Object hits value_to_string _ branch (serde_json::to_string)
         let el = json!({
