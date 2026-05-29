@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/mcarvin8/config-disassembler/compare/v0.5.3...v0.5.4) - 2026-05-29
+
+### Other
+
+- *(coverage)* round 2 — target remaining 77 missed lines ([#59](https://github.com/mcarvin8/config-disassembler/pull/59))
+- *(coverage)* add 15 targeted tests to close remaining coverage gaps ([#58](https://github.com/mcarvin8/config-disassembler/pull/58))
+- *(format)* cover remaining 1% — empty-key null and dead-code path ([#57](https://github.com/mcarvin8/config-disassembler/pull/57))
+- streamline docs for new user onboarding
+
 ## [0.5.3](https://github.com/mcarvin8/config-disassembler/compare/v0.5.2...v0.5.3) - 2026-05-20
 
 ### Other
