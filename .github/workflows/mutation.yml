@@ -239,7 +239,7 @@ jobs:
           && steps.score.outputs.skip != 'true'
           && github.ref == 'refs/heads/main'
           && vars.MUTANTS_BADGE_GIST_ID != ''
-        uses: schneegans/dynamic-badges-action@v1.7.0
+        uses: schneegans/dynamic-badges-action@v1.8.0
         with:
           auth: ${{ secrets.RELEASE_PLZ_TOKEN }}
           gistID: ${{ vars.MUTANTS_BADGE_GIST_ID }}
