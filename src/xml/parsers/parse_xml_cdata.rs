@@ -9,6 +9,7 @@
 use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use serde_json::{Map, Number, Value};
 
 /// Append raw entity reference to buffer (e.g. "quot" -> "&quot;").
@@ -160,7 +161,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 for a in e.attributes().flatten() {
                     let key = format!("@{}", String::from_utf8_lossy(a.key.as_ref()));
                     let val = a
-                        .decode_and_unescape_value(reader.decoder())
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
                 }
@@ -189,7 +190,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 for a in e.attributes().flatten() {
                     let key = format!("@{}", String::from_utf8_lossy(a.key.as_ref()));
                     let val = a
-                        .decode_and_unescape_value(reader.decoder())
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
                 }
