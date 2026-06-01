@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/mcarvin8/config-disassembler/compare/v0.5.3...v0.5.4) - 2026-06-01
+
+### Other
+
+- *(deps)* bump quick-xml from 0.39.2 to 0.40.1 ([#67](https://github.com/mcarvin8/config-disassembler/pull/67))
+- *(deps)* bump tokio from 1.52.1 to 1.52.3 ([#65](https://github.com/mcarvin8/config-disassembler/pull/65))
+- *(deps)* bump jsonc-parser from 0.32.3 to 0.32.4 ([#66](https://github.com/mcarvin8/config-disassembler/pull/66))
+- *(deps)* bump log from 0.4.29 to 0.4.30 ([#63](https://github.com/mcarvin8/config-disassembler/pull/63))
+- *(deps)* bump serde_json from 1.0.149 to 1.0.150 ([#62](https://github.com/mcarvin8/config-disassembler/pull/62))
+- *(deps)* bump toon-format from 0.4.5 to 0.5.0 ([#64](https://github.com/mcarvin8/config-disassembler/pull/64))
+- *(deps)* bump schneegans/dynamic-badges-action from 1.7.0 to 1.8.0 ([#61](https://github.com/mcarvin8/config-disassembler/pull/61))
+- *(deps)* bump actions/upload-artifact from 4 to 7 ([#60](https://github.com/mcarvin8/config-disassembler/pull/60))
+- *(coverage)* round 2 — target remaining 77 missed lines ([#59](https://github.com/mcarvin8/config-disassembler/pull/59))
+- *(coverage)* add 15 targeted tests to close remaining coverage gaps ([#58](https://github.com/mcarvin8/config-disassembler/pull/58))
+- *(format)* cover remaining 1% — empty-key null and dead-code path ([#57](https://github.com/mcarvin8/config-disassembler/pull/57))
+- streamline docs for new user onboarding
+
 ## [0.5.3](https://github.com/mcarvin8/config-disassembler/compare/v0.5.2...v0.5.3) - 2026-05-20
 
 ### Other
