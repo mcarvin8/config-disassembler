@@ -120,13 +120,14 @@ fn disassemble_file(opts: DisassembleOptions) -> Result<PathBuf> {
         .map(|s| s.to_string());
 
     if input_format == Format::Jsonc && output_format == Format::Jsonc {
-        let root =
+        let (root, indent) =
             write_jsonc_root_preserving(&opts.input, &output_dir, opts.unique_id.as_deref())?;
         let meta = Meta {
             source_format: input_format,
             file_format: output_format,
             source_filename,
             root,
+            indent: Some(indent),
         };
         meta.write(&output_dir)?;
 
@@ -156,6 +157,7 @@ fn disassemble_file(opts: DisassembleOptions) -> Result<PathBuf> {
         file_format: output_format,
         source_filename,
         root,
+        indent: None,
     };
     meta.write(&output_dir)?;
 
@@ -360,22 +362,49 @@ fn write_array_root(
     Ok(Root::Array { files })
 }
 
-fn write_jsonc_root_preserving(input: &Path, dir: &Path, unique_id: Option<&str>) -> Result<Root> {
+fn write_jsonc_root_preserving(
+    input: &Path,
+    dir: &Path,
+    unique_id: Option<&str>,
+) -> Result<(Root, String)> {
     let text = fs::read_to_string(input)?;
+    let indent = detect_jsonc_indent(&text);
     let ast = parse_jsonc_ast(&text)?;
     let value = Format::Jsonc.parse(&text)?;
 
-    match (ast, value) {
+    let root = match (ast, value) {
         (ast::Value::Object(object), Value::Object(_)) => {
-            write_jsonc_object_root(dir, &text, object)
+            write_jsonc_object_root(dir, &text, object)?
         }
         (ast::Value::Array(array), Value::Array(items)) => {
-            write_jsonc_array_root(dir, &text, array, &items, unique_id)
+            write_jsonc_array_root(dir, &text, array, &items, unique_id)?
         }
-        _ => Err(Error::Invalid(
-            "top-level value must be an object or array to disassemble".into(),
-        )),
-    }
+        _ => {
+            return Err(Error::Invalid(
+                "top-level value must be an object or array to disassemble".into(),
+            ))
+        }
+    };
+    Ok((root, indent))
+}
+
+/// Detect the indentation unit from a JSONC document by finding the leading
+/// whitespace of the first indented line.  Falls back to two spaces if the
+/// document has no indented lines (e.g. minified JSON).
+fn detect_jsonc_indent(text: &str) -> String {
+    text.lines()
+        .find_map(|line| {
+            let ws: String = line
+                .chars()
+                .take_while(|c| c.is_ascii_whitespace())
+                .collect();
+            if ws.is_empty() {
+                None
+            } else {
+                Some(ws)
+            }
+        })
+        .unwrap_or_else(|| "  ".to_string())
 }
 
 fn write_jsonc_object_root(dir: &Path, text: &str, object: ast::Object<'_>) -> Result<Root> {
@@ -784,6 +813,19 @@ mod tests {
         assert!(!input.exists());
         assert!(dir.join("settings.jsonc").exists());
         assert!(dir.join(MAIN_BASENAME).with_extension("jsonc").exists());
+    }
+
+    #[test]
+    fn detect_jsonc_indent_returns_first_indented_lines_leading_whitespace() {
+        assert_eq!(detect_jsonc_indent("{\n  \"a\": 1\n}"), "  ");
+        assert_eq!(detect_jsonc_indent("{\n    \"a\": 1\n}"), "    ");
+        assert_eq!(detect_jsonc_indent("{\n\t\"a\": 1\n}"), "\t");
+    }
+
+    #[test]
+    fn detect_jsonc_indent_falls_back_to_two_spaces_for_minified_input() {
+        assert_eq!(detect_jsonc_indent("{\"a\":1}"), "  ");
+        assert_eq!(detect_jsonc_indent(""), "  ");
     }
 
     #[test]

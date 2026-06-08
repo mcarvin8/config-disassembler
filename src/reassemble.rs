@@ -131,13 +131,14 @@ fn assemble_array(dir: &Path, files: &[String], file_format: Format) -> Result<V
 }
 
 fn assemble_jsonc_preserving(dir: &Path, meta: &Meta) -> Result<String> {
+    let indent = meta.indent.as_deref().unwrap_or("  ");
     match &meta.root {
         Root::Object {
             key_order,
             key_files,
             main_file,
-        } => assemble_jsonc_object(dir, key_order, key_files, main_file.as_deref()),
-        Root::Array { files } => assemble_jsonc_array(dir, files),
+        } => assemble_jsonc_object(dir, key_order, key_files, main_file.as_deref(), indent),
+        Root::Array { files } => assemble_jsonc_array(dir, files, indent),
     }
 }
 
@@ -146,6 +147,7 @@ fn assemble_jsonc_object(
     key_order: &[String],
     key_files: &std::collections::BTreeMap<String, String>,
     main_file: Option<&str>,
+    indent: &str,
 ) -> Result<String> {
     let main_properties = match main_file {
         Some(name) => {
@@ -167,7 +169,7 @@ fn assemble_jsonc_object(
             let path = dir.join(filename);
             let text = fs::read_to_string(&path)?;
             Format::Jsonc.parse(&text)?;
-            segments.push(render_jsonc_property(key, &text)?);
+            segments.push(render_jsonc_property(key, &text, indent)?);
         } else if let Some(property) = main_properties.iter().find(|property| &property.key == key)
         {
             segments.push(property.segment.clone());
@@ -181,13 +183,13 @@ fn assemble_jsonc_object(
     Ok(render_jsonc_object(segments.iter()))
 }
 
-fn assemble_jsonc_array(dir: &Path, files: &[String]) -> Result<String> {
+fn assemble_jsonc_array(dir: &Path, files: &[String], indent: &str) -> Result<String> {
     let mut segments = Vec::with_capacity(files.len());
     for name in files {
         let path = dir.join(name);
         let text = fs::read_to_string(&path)?;
         Format::Jsonc.parse(&text)?;
-        segments.push(render_jsonc_array_element(&text));
+        segments.push(render_jsonc_array_element(&text, indent));
     }
     Ok(render_jsonc_array(segments.iter()))
 }
@@ -258,7 +260,7 @@ fn line_end(text: &str, pos: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-fn render_jsonc_property(key: &str, file_text: &str) -> Result<String> {
+fn render_jsonc_property(key: &str, file_text: &str, indent: &str) -> Result<String> {
     let key = serde_json::to_string(key)?;
     let text = file_text.trim_matches(|c| c == '\r' || c == '\n');
     let mut lines = text.lines().peekable();
@@ -282,7 +284,7 @@ fn render_jsonc_property(key: &str, file_text: &str) -> Result<String> {
         }
     }
     let first = lines.next().unwrap_or("");
-    let mut out = format!("{comment_prefix}  {key}: {first}");
+    let mut out = format!("{comment_prefix}{indent}{key}: {first}");
     for line in lines {
         out.push('\n');
         out.push_str(line);
@@ -290,24 +292,24 @@ fn render_jsonc_property(key: &str, file_text: &str) -> Result<String> {
     Ok(jsonc_segment_with_comma(&out))
 }
 
-fn render_jsonc_array_element(value_text: &str) -> String {
+fn render_jsonc_array_element(value_text: &str, indent: &str) -> String {
     let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
-    jsonc_segment_with_comma(&indent_lines(value_text))
+    jsonc_segment_with_comma(&indent_lines(value_text, indent))
 }
 
-/// Indent each line of `text` by two spaces and rejoin with `\n`, with no
+/// Indent each line of `text` by `indent` and rejoin with `\n`, with no
 /// leading or trailing newline. Extracted so the loop's guard
 /// (`if idx > 0 { push('\n') }`) is observable in tests: the caller in
 /// `render_jsonc_array_element` always pipes the result through
 /// `jsonc_segment_with_comma`, which strips outer `\r`/`\n` and would
 /// otherwise mask a leading-newline regression.
-fn indent_lines(text: &str) -> String {
+fn indent_lines(text: &str, indent: &str) -> String {
     let mut out = String::new();
     for (idx, line) in text.lines().enumerate() {
         if idx > 0 {
             out.push('\n');
         }
-        out.push_str("  ");
+        out.push_str(indent);
         out.push_str(line);
     }
     out
@@ -505,7 +507,7 @@ mod tests {
         // The `trim_matches(|c| c == '\r' || c == '\n')` collapses CRLF wrapping
         // around the value. Mutating `||` to `&&` would leave the wrapping in
         // place because no single character is both \r AND \n.
-        let rendered = render_jsonc_property("name", "\r\n\"demo\"\r\n").unwrap();
+        let rendered = render_jsonc_property("name", "\r\n\"demo\"\r\n", "  ").unwrap();
         assert!(
             !rendered.contains('\r'),
             "expected CR stripped: {rendered:?}"
@@ -521,7 +523,7 @@ mod tests {
         // Without entering the loop body (push_str + push('\n') + next()), the
         // comment would be silently dropped.
         let file_text = "// configures the database\n{\n  \"host\": \"localhost\"\n}\n";
-        let rendered = render_jsonc_property("database", file_text).unwrap();
+        let rendered = render_jsonc_property("database", file_text, "  ").unwrap();
         assert!(
             rendered.starts_with("// configures the database\n"),
             "leading comment must precede the key: {rendered:?}"
@@ -539,7 +541,7 @@ mod tests {
         // no-op. A lone `\r` before the opening brace then stays in `first` and
         // surfaces in the output as `\r{`, which is not caught by
         // jsonc_segment_with_comma's edge-stripping (the `\r` is interior).
-        let rendered = render_jsonc_property("db", "\r{\n  \"host\": \"x\"\n}\n").unwrap();
+        let rendered = render_jsonc_property("db", "\r{\n  \"host\": \"x\"\n}\n", "  ").unwrap();
         assert!(
             !rendered.contains('\r'),
             "lone CR before value must be stripped: {rendered:?}"
@@ -564,7 +566,7 @@ mod tests {
         // In both cases `rendered.starts_with(...)` fails because the comment is no
         // longer in the correct position.
         let file_text = "/* block comment\n * middle line\n */\n{\n  \"host\": \"db\"\n}\n";
-        let rendered = render_jsonc_property("database", file_text).unwrap();
+        let rendered = render_jsonc_property("database", file_text, "  ").unwrap();
         assert!(
             rendered.starts_with("/* block comment\n * middle line\n */\n"),
             "full block comment must precede the key: {rendered:?}"
@@ -581,7 +583,7 @@ mod tests {
         // produce output that doesn't start with `\n` *here*. The
         // `indent_lines_*` tests below pin the guard directly without the
         // trim wash.
-        let rendered = render_jsonc_array_element("{\n  \"a\": 1\n}");
+        let rendered = render_jsonc_array_element("{\n  \"a\": 1\n}", "  ");
         assert!(
             !rendered.starts_with('\n'),
             "first line should not be prefixed with newline: {rendered:?}"
@@ -593,7 +595,7 @@ mod tests {
     fn indent_lines_single_line_has_no_newline() {
         // Pins `if idx > 0` in `indent_lines`: with `>= 0` the output would
         // be "\n  a" instead of "  a".
-        assert_eq!(indent_lines("a"), "  a");
+        assert_eq!(indent_lines("a", "  "), "  a");
     }
 
     #[test]
@@ -601,7 +603,7 @@ mod tests {
         // Pins both `if idx > 0` and the underlying iteration: a `>= 0`
         // mutant would produce "\n  a\n  b"; a `> 1` mutant would produce
         // "  a  b" (missing the inter-line separator).
-        assert_eq!(indent_lines("a\nb"), "  a\n  b");
+        assert_eq!(indent_lines("a\nb", "  "), "  a\n  b");
     }
 
     #[test]
@@ -611,8 +613,34 @@ mod tests {
         // false, so the leading/trailing newlines would survive and the
         // output would contain an empty first line ("  \n  hello,") instead
         // of the expected "  hello,".
-        assert_eq!(render_jsonc_array_element("\nhello\n"), "  hello,");
-        assert_eq!(render_jsonc_array_element("\r\nhello\r\n"), "  hello,");
+        assert_eq!(render_jsonc_array_element("\nhello\n", "  "), "  hello,");
+        assert_eq!(
+            render_jsonc_array_element("\r\nhello\r\n", "  "),
+            "  hello,"
+        );
+    }
+
+    #[test]
+    fn render_jsonc_property_uses_provided_indent() {
+        // Verifies that the indent parameter is used verbatim; a hardcoded
+        // "  " would fail for 4-space or tab-indented sources.
+        let rendered = render_jsonc_property("db", "{\n  \"host\": \"x\"\n}\n", "    ").unwrap();
+        assert!(
+            rendered.starts_with("    \"db\": {"),
+            "4-space indent must be used: {rendered:?}"
+        );
+
+        let rendered_tab = render_jsonc_property("db", "{\n  \"host\": \"x\"\n}\n", "\t").unwrap();
+        assert!(
+            rendered_tab.starts_with("\t\"db\": {"),
+            "tab indent must be used: {rendered_tab:?}"
+        );
+    }
+
+    #[test]
+    fn render_jsonc_array_element_uses_provided_indent() {
+        assert_eq!(render_jsonc_array_element("\"x\"", "    "), "    \"x\",");
+        assert_eq!(render_jsonc_array_element("\"x\"", "\t"), "\t\"x\",");
     }
 
     #[test]
@@ -662,6 +690,7 @@ mod tests {
                 key_files: std::collections::BTreeMap::new(),
                 main_file: None,
             },
+            indent: None,
         };
         let out = default_output_path(&dir, &meta, Format::Yaml).unwrap();
         let expected = tmp.path().join("orig.yaml");
@@ -681,6 +710,7 @@ mod tests {
                 key_files: std::collections::BTreeMap::new(),
                 main_file: None,
             },
+            indent: None,
         };
         let out = default_output_path(&dir, &meta, Format::Json).unwrap();
         assert_eq!(out, tmp.path().join("settings.json"));
@@ -757,8 +787,14 @@ mod tests {
         // An empty _main.jsonc has no JSONC value → parse_jsonc_ast returns "did not contain a value".
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("_main.jsonc"), "").unwrap();
-        let err = assemble_jsonc_object(tmp.path(), &[], &Default::default(), Some("_main.jsonc"))
-            .expect_err("empty main file should fail to parse");
+        let err = assemble_jsonc_object(
+            tmp.path(),
+            &[],
+            &Default::default(),
+            Some("_main.jsonc"),
+            "  ",
+        )
+        .expect_err("empty main file should fail to parse");
         assert!(
             err.to_string()
                 .contains("JSONC document did not contain a value"),
@@ -841,6 +877,7 @@ mod tests {
                 key_files: std::collections::BTreeMap::new(),
                 main_file: None,
             },
+            indent: None,
         };
         let out = default_output_path(&split, &meta, Format::Json).unwrap();
         // dir_name of "split" → "split.json"
@@ -852,8 +889,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("_main.jsonc"), "[]\n").unwrap();
 
-        let err = assemble_jsonc_object(tmp.path(), &[], &Default::default(), Some("_main.jsonc"))
-            .expect_err("should reject non-object main file");
+        let err = assemble_jsonc_object(
+            tmp.path(),
+            &[],
+            &Default::default(),
+            Some("_main.jsonc"),
+            "  ",
+        )
+        .expect_err("should reject non-object main file");
 
         assert!(
             err.to_string().contains("did not contain an object"),
@@ -871,6 +914,7 @@ mod tests {
             &["missing".into()],
             &Default::default(),
             Some("_main.jsonc"),
+            "  ",
         )
         .expect_err("should reject missing scalar key");
 
