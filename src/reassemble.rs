@@ -533,6 +533,46 @@ mod tests {
     }
 
     #[test]
+    fn render_jsonc_property_strips_lone_cr_before_value() {
+        // Pins `|c| c == '\r' || c == '\n'` in trim_matches (the `||` at 263:53).
+        // With `&&` no character is both `\r` AND `\n`, so trim_matches becomes a
+        // no-op. A lone `\r` before the opening brace then stays in `first` and
+        // surfaces in the output as `\r{`, which is not caught by
+        // jsonc_segment_with_comma's edge-stripping (the `\r` is interior).
+        let rendered = render_jsonc_property("db", "\r{\n  \"host\": \"x\"\n}\n").unwrap();
+        assert!(
+            !rendered.contains('\r'),
+            "lone CR before value must be stripped: {rendered:?}"
+        );
+        assert!(rendered.contains("  \"db\": {"), "got: {rendered:?}");
+    }
+
+    #[test]
+    fn render_jsonc_property_preserves_block_comment_with_star_prefix_lines() {
+        // Pins `|| trimmed.starts_with('*')` (274:13) and `|| trimmed.ends_with("*/")`
+        // (275:13).
+        //
+        // Mutant 274: `||` → `&&` makes the arm `starts_with("/*") && starts_with('*')`,
+        // always false; the `/* block comment` opener AND ` * middle line` are both
+        // unrecognised, so the loop breaks immediately and the block comment ends up
+        // prepended to the value rather than in the prefix.
+        //
+        // Mutant 275: `||` → `&&` makes the arm `starts_with('*') && ends_with("*/")`;
+        // ` * middle line` fails (`ends_with("*/")` is false) so the loop breaks at
+        // the second line, dropping the rest of the comment from the prefix.
+        //
+        // In both cases `rendered.starts_with(...)` fails because the comment is no
+        // longer in the correct position.
+        let file_text = "/* block comment\n * middle line\n */\n{\n  \"host\": \"db\"\n}\n";
+        let rendered = render_jsonc_property("database", file_text).unwrap();
+        assert!(
+            rendered.starts_with("/* block comment\n * middle line\n */\n"),
+            "full block comment must precede the key: {rendered:?}"
+        );
+        assert!(rendered.contains("  \"database\": {"), "got: {rendered:?}");
+    }
+
+    #[test]
     fn render_jsonc_array_element_first_line_has_no_leading_newline() {
         // The `if idx > 0 { push('\n') }` guard would push a leading newline
         // for the first line if mutated to `>=`. Note: this assertion alone
