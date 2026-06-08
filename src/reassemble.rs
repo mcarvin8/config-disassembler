@@ -166,7 +166,7 @@ fn assemble_jsonc_object(
         if let Some(filename) = key_files.get(key) {
             let path = dir.join(filename);
             let text = fs::read_to_string(&path)?;
-            Format::Jsonc.load(&path)?;
+            Format::Jsonc.parse(&text)?;
             segments.push(render_jsonc_property(key, &text)?);
         } else if let Some(property) = main_properties.iter().find(|property| &property.key == key)
         {
@@ -186,7 +186,7 @@ fn assemble_jsonc_array(dir: &Path, files: &[String]) -> Result<String> {
     for name in files {
         let path = dir.join(name);
         let text = fs::read_to_string(&path)?;
-        Format::Jsonc.load(&path)?;
+        Format::Jsonc.parse(&text)?;
         segments.push(render_jsonc_array_element(&text));
     }
     Ok(render_jsonc_array(segments.iter()))
