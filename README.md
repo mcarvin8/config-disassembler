@@ -203,9 +203,7 @@ use config_disassembler::format::Format;
 
 ## Node.js bindings
 
-Node.js support is available via napi-rs bindings:
-
-- https://github.com/mcarvin8/config-disassembler-node
+Node.js support is available via napi-rs bindings: [config-disassembler-node](https://github.com/mcarvin8/config-disassembler-node)
 
 ## Documentation
 
