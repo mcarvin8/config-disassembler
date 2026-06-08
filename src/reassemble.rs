@@ -258,12 +258,31 @@ fn line_end(text: &str, pos: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-fn render_jsonc_property(key: &str, value_text: &str) -> Result<String> {
+fn render_jsonc_property(key: &str, file_text: &str) -> Result<String> {
     let key = serde_json::to_string(key)?;
-    let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
-    let mut lines = value_text.lines();
+    let text = file_text.trim_matches(|c| c == '\r' || c == '\n');
+    let mut lines = text.lines().peekable();
+    // Collect any leading comment lines stored at the top of the split
+    // file (written there by the disassembler to preserve comments on
+    // complex-value properties) and re-emit them before the key.
+    let mut comment_prefix = String::new();
+    while let Some(&line) = lines.peek() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.ends_with("*/")
+        {
+            comment_prefix.push_str(line);
+            comment_prefix.push('\n');
+            lines.next();
+        } else {
+            break;
+        }
+    }
     let first = lines.next().unwrap_or("");
-    let mut out = format!("  {key}: {first}");
+    let mut out = format!("{comment_prefix}  {key}: {first}");
     for line in lines {
         out.push('\n');
         out.push_str(line);
@@ -361,7 +380,7 @@ fn line_comment_start(line: &str) -> Option<usize> {
 
         if ch == '"' {
             in_string = true;
-        } else if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+        } else if ch == '/' && matches!(chars.peek(), Some((_, '/' | '*'))) {
             return Some(idx);
         }
     }
@@ -493,6 +512,64 @@ mod tests {
         );
         assert!(rendered.starts_with("  \"name\": \"demo\""));
         assert!(rendered.ends_with(','));
+    }
+
+    #[test]
+    fn render_jsonc_property_preserves_leading_comment_lines() {
+        // Exercises lines 276-280: comment lines at the top of the split file
+        // are accumulated into `comment_prefix` and emitted before the key.
+        // Without entering the loop body (push_str + push('\n') + next()), the
+        // comment would be silently dropped.
+        let file_text = "// configures the database\n{\n  \"host\": \"localhost\"\n}\n";
+        let rendered = render_jsonc_property("database", file_text).unwrap();
+        assert!(
+            rendered.starts_with("// configures the database\n"),
+            "leading comment must precede the key: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("  \"database\": {"),
+            "key-value line must follow the comment: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn render_jsonc_property_strips_lone_cr_before_value() {
+        // Pins `|c| c == '\r' || c == '\n'` in trim_matches (the `||` at 263:53).
+        // With `&&` no character is both `\r` AND `\n`, so trim_matches becomes a
+        // no-op. A lone `\r` before the opening brace then stays in `first` and
+        // surfaces in the output as `\r{`, which is not caught by
+        // jsonc_segment_with_comma's edge-stripping (the `\r` is interior).
+        let rendered = render_jsonc_property("db", "\r{\n  \"host\": \"x\"\n}\n").unwrap();
+        assert!(
+            !rendered.contains('\r'),
+            "lone CR before value must be stripped: {rendered:?}"
+        );
+        assert!(rendered.contains("  \"db\": {"), "got: {rendered:?}");
+    }
+
+    #[test]
+    fn render_jsonc_property_preserves_block_comment_with_star_prefix_lines() {
+        // Pins `|| trimmed.starts_with('*')` (274:13) and `|| trimmed.ends_with("*/")`
+        // (275:13).
+        //
+        // Mutant 274: `||` → `&&` makes the arm `starts_with("/*") && starts_with('*')`,
+        // always false; the `/* block comment` opener AND ` * middle line` are both
+        // unrecognised, so the loop breaks immediately and the block comment ends up
+        // prepended to the value rather than in the prefix.
+        //
+        // Mutant 275: `||` → `&&` makes the arm `starts_with('*') && ends_with("*/")`;
+        // ` * middle line` fails (`ends_with("*/")` is false) so the loop breaks at
+        // the second line, dropping the rest of the comment from the prefix.
+        //
+        // In both cases `rendered.starts_with(...)` fails because the comment is no
+        // longer in the correct position.
+        let file_text = "/* block comment\n * middle line\n */\n{\n  \"host\": \"db\"\n}\n";
+        let rendered = render_jsonc_property("database", file_text).unwrap();
+        assert!(
+            rendered.starts_with("/* block comment\n * middle line\n */\n"),
+            "full block comment must precede the key: {rendered:?}"
+        );
+        assert!(rendered.contains("  \"database\": {"), "got: {rendered:?}");
     }
 
     #[test]

@@ -47,9 +47,10 @@ pub struct DisassembleOptions {
     pub unique_id: Option<String>,
     /// If true, remove the contents of the output directory before writing.
     pub pre_purge: bool,
-    /// If true, delete the input file (or input directory) after
-    /// disassembling. For directory inputs the entire directory is
-    /// removed only if every file in it was successfully disassembled.
+    /// If true, delete the input file after disassembling. For single-file
+    /// inputs this removes the source file itself. For directory inputs each
+    /// source file is removed individually; the directory container is kept
+    /// because split output directories live inside it.
     pub post_purge: bool,
     /// Optional path to a `.gitignore`-style ignore file that filters
     /// which files are processed when `input` is a directory. Pass
@@ -187,10 +188,6 @@ fn disassemble_directory(opts: DisassembleOptions) -> Result<PathBuf> {
         // Each file's output goes into <stem>/ next to the file itself,
         // never into a shared --output-dir (we rejected that above).
         child_opts.output_dir = None;
-        // Per-file post_purge would only delete the file; we honor the
-        // user's intent by keeping post_purge here so each input file is
-        // removed if requested, then we remove the (now empty) input
-        // directory at the very end below.
         disassemble_file(child_opts)?;
     }
 
@@ -216,7 +213,13 @@ fn collect_disassemble_targets(
                 continue;
             }
             if ft.is_dir() {
-                stack.push(path);
+                // Skip subdirectories that are already disassembled outputs
+                // (identified by containing a metadata sidecar) so that a
+                // second directory-mode run does not re-disassemble the split
+                // files or corrupt the metadata.
+                if !path.join(crate::meta::META_FILENAME).exists() {
+                    stack.push(path);
+                }
                 continue;
             }
             if !ft.is_file() {
@@ -393,8 +396,12 @@ fn write_jsonc_object_root(dir: &Path, text: &str, object: ast::Object<'_>) -> R
         let filename = unique_filename_for_key(&property.key, Format::Jsonc, &used_names);
         used_names.insert(filename.clone());
         let path = dir.join(&filename);
-        let text = ensure_trailing_newline(&property.value_text);
-        fs::write(path, text)?;
+        let content = format!(
+            "{}{}",
+            property.leading_comment,
+            ensure_trailing_newline(&property.value_text)
+        );
+        fs::write(path, content)?;
         key_files.insert(property.key, filename);
     }
 
@@ -466,6 +473,10 @@ struct JsoncPropertySyntax {
     is_scalar: bool,
     segment: String,
     value_text: String,
+    /// Lines immediately before the property's key that are blank or
+    /// comment lines (captured so they can be prepended to the split
+    /// file, preserving comments on complex-value properties).
+    leading_comment: String,
 }
 
 fn jsonc_object_properties(
@@ -477,12 +488,15 @@ fn jsonc_object_properties(
         let key = property.name.clone().into_string();
         let property_range = property.range();
         let value_range = property.value.range();
+        let property_line_start = line_start(text, property_range.start);
+        let comment_start = leading_comment_start(text, property_line_start);
         properties.push(JsoncPropertySyntax {
             key,
             is_scalar: is_jsonc_ast_scalar(&property.value),
             segment: jsonc_property_segment(text, property_range.start, value_range.end)
                 .to_string(),
             value_text: property.value.text(text).trim().to_string(),
+            leading_comment: text[comment_start..property_line_start].to_string(),
         });
     }
     Ok(properties)
@@ -593,7 +607,7 @@ fn line_comment_start(line: &str) -> Option<usize> {
 
         if ch == '"' {
             in_string = true;
-        } else if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+        } else if ch == '/' && matches!(chars.peek(), Some((_, '/' | '*'))) {
             return Some(idx);
         }
     }
@@ -1085,6 +1099,42 @@ mod tests {
         assert!(
             !targets.is_empty(),
             "real.json must be collected: {targets:?}"
+        );
+    }
+
+    #[test]
+    fn collect_disassemble_targets_skips_subdirs_with_metadata_sidecar() {
+        // Exercises lines 220-223: subdirectories that contain a metadata
+        // sidecar are skipped (the `if` body is NOT entered for them), while
+        // ordinary subdirectories ARE pushed onto the stack.
+        // A missing `!` on line 220 would cause `stack.push` to be called only
+        // for split-output dirs and silently skip all plain subdirectories.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Plain subdirectory: its file must be collected.
+        let plain_sub = tmp.path().join("plain");
+        fs::create_dir_all(&plain_sub).unwrap();
+        let plain_file = plain_sub.join("config.json");
+        fs::write(&plain_file, r#"{"a": 1}"#).unwrap();
+
+        // Previously-disassembled subdirectory: contains a metadata sidecar.
+        // Files inside must NOT be collected.
+        let split_sub = tmp.path().join("app");
+        fs::create_dir_all(&split_sub).unwrap();
+        fs::write(split_sub.join(crate::meta::META_FILENAME), "{}").unwrap();
+        let split_file = split_sub.join("_main.json");
+        fs::write(&split_file, r#"{"a": 1}"#).unwrap();
+
+        let ignore = load_ignore_rules(None, tmp.path()).unwrap();
+        let targets = collect_disassemble_targets(tmp.path(), &ignore, Some(Format::Json)).unwrap();
+
+        assert!(
+            targets.contains(&plain_file),
+            "file in plain subdir must be collected: {targets:?}"
+        );
+        assert!(
+            !targets.contains(&split_file),
+            "file in split-output subdir must be skipped: {targets:?}"
         );
     }
 }
