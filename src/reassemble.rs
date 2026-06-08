@@ -258,12 +258,31 @@ fn line_end(text: &str, pos: usize) -> usize {
         .unwrap_or(text.len())
 }
 
-fn render_jsonc_property(key: &str, value_text: &str) -> Result<String> {
+fn render_jsonc_property(key: &str, file_text: &str) -> Result<String> {
     let key = serde_json::to_string(key)?;
-    let value_text = value_text.trim_matches(|c| c == '\r' || c == '\n');
-    let mut lines = value_text.lines();
+    let text = file_text.trim_matches(|c| c == '\r' || c == '\n');
+    let mut lines = text.lines().peekable();
+    // Collect any leading comment lines stored at the top of the split
+    // file (written there by the disassembler to preserve comments on
+    // complex-value properties) and re-emit them before the key.
+    let mut comment_prefix = String::new();
+    while let Some(&line) = lines.peek() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.ends_with("*/")
+        {
+            comment_prefix.push_str(line);
+            comment_prefix.push('\n');
+            lines.next();
+        } else {
+            break;
+        }
+    }
     let first = lines.next().unwrap_or("");
-    let mut out = format!("  {key}: {first}");
+    let mut out = format!("{comment_prefix}  {key}: {first}");
     for line in lines {
         out.push('\n');
         out.push_str(line);
@@ -361,7 +380,7 @@ fn line_comment_start(line: &str) -> Option<usize> {
 
         if ch == '"' {
             in_string = true;
-        } else if ch == '/' && matches!(chars.peek(), Some((_, '/'))) {
+        } else if ch == '/' && matches!(chars.peek(), Some((_, '/' | '*'))) {
             return Some(idx);
         }
     }
