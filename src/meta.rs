@@ -27,6 +27,12 @@ pub struct Meta {
     pub source_filename: Option<String>,
     /// Whether the document root was an object or an array.
     pub root: Root,
+    /// Indentation string used in the original JSONC source (e.g. `"  "`,
+    /// `"    "`, `"\t"`). Present only for JSONC→JSONC disassembly.
+    /// Absent in sidecars produced before this field was added; reassembly
+    /// falls back to two spaces in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent: Option<String>,
 }
 
 /// Description of the document root.
@@ -124,6 +130,7 @@ mod tests {
                 key_files: std::collections::BTreeMap::new(),
                 main_file: Some("_main.yaml".into()),
             },
+            indent: None,
         };
         meta.write(tmp.path()).unwrap();
         let back = Meta::read(tmp.path()).unwrap();
@@ -140,6 +147,7 @@ mod tests {
             root: Root::Array {
                 files: vec!["1.json5".into(), "2.json5".into()],
             },
+            indent: None,
         };
         meta.write(tmp.path()).unwrap();
         let back = Meta::read(tmp.path()).unwrap();
