@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/mcarvin8/config-disassembler/compare/v0.5.4...v0.6.0) - 2026-06-08
+
+### Fixed
+
+- preserve original JSONC indentation through disassemble/reassemble ([#72](https://github.com/mcarvin8/config-disassembler/pull/72))
+- four JSONC and directory-walk correctness bugs ([#69](https://github.com/mcarvin8/config-disassembler/pull/69))
+
+### Other
+
+- *(docs)* update Node.js bindings information in README
+- avoid double disk read per split file during JSONC reassembly ([#71](https://github.com/mcarvin8/config-disassembler/pull/71))
+
 ## [0.5.4](https://github.com/mcarvin8/config-disassembler/compare/v0.5.3...v0.5.4) - 2026-06-01
 
 ### Other
