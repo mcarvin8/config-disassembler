@@ -515,6 +515,24 @@ mod tests {
     }
 
     #[test]
+    fn render_jsonc_property_preserves_leading_comment_lines() {
+        // Exercises lines 276-280: comment lines at the top of the split file
+        // are accumulated into `comment_prefix` and emitted before the key.
+        // Without entering the loop body (push_str + push('\n') + next()), the
+        // comment would be silently dropped.
+        let file_text = "// configures the database\n{\n  \"host\": \"localhost\"\n}\n";
+        let rendered = render_jsonc_property("database", file_text).unwrap();
+        assert!(
+            rendered.starts_with("// configures the database\n"),
+            "leading comment must precede the key: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("  \"database\": {"),
+            "key-value line must follow the comment: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn render_jsonc_array_element_first_line_has_no_leading_newline() {
         // The `if idx > 0 { push('\n') }` guard would push a leading newline
         // for the first line if mutated to `>=`. Note: this assertion alone

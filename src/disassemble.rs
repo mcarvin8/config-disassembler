@@ -1101,4 +1101,40 @@ mod tests {
             "real.json must be collected: {targets:?}"
         );
     }
+
+    #[test]
+    fn collect_disassemble_targets_skips_subdirs_with_metadata_sidecar() {
+        // Exercises lines 220-223: subdirectories that contain a metadata
+        // sidecar are skipped (the `if` body is NOT entered for them), while
+        // ordinary subdirectories ARE pushed onto the stack.
+        // A missing `!` on line 220 would cause `stack.push` to be called only
+        // for split-output dirs and silently skip all plain subdirectories.
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Plain subdirectory: its file must be collected.
+        let plain_sub = tmp.path().join("plain");
+        fs::create_dir_all(&plain_sub).unwrap();
+        let plain_file = plain_sub.join("config.json");
+        fs::write(&plain_file, r#"{"a": 1}"#).unwrap();
+
+        // Previously-disassembled subdirectory: contains a metadata sidecar.
+        // Files inside must NOT be collected.
+        let split_sub = tmp.path().join("app");
+        fs::create_dir_all(&split_sub).unwrap();
+        fs::write(split_sub.join(crate::meta::META_FILENAME), "{}").unwrap();
+        let split_file = split_sub.join("_main.json");
+        fs::write(&split_file, r#"{"a": 1}"#).unwrap();
+
+        let ignore = load_ignore_rules(None, tmp.path()).unwrap();
+        let targets = collect_disassemble_targets(tmp.path(), &ignore, Some(Format::Json)).unwrap();
+
+        assert!(
+            targets.contains(&plain_file),
+            "file in plain subdir must be collected: {targets:?}"
+        );
+        assert!(
+            !targets.contains(&split_file),
+            "file in split-output subdir must be skipped: {targets:?}"
+        );
+    }
 }
