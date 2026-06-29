@@ -6,14 +6,6 @@
     <registrationProvider>DropboxFileManagerHandler</registrationProvider>
     <registrationProviderType>AuraEnabled</registrationProviderType>
     <schemaType>OpenApi3</schemaType>
-    <schemaUploadFileExtension>yaml</schemaUploadFileExtension>
-    <schemaUploadFileName>dropboxfilemanagerhandler_openapi</schemaUploadFileName>
-    <status>Complete</status>
-    <systemVersion>3</systemVersion>
-    <operations>
-        <name>uploadFile</name>
-        <active>true</active>
-    </operations>
     <schema>openapi: 3.0.1
 info:
   title: "@AuraEnabled Apex method APIs"
@@ -26,4 +18,12 @@ paths:
         "200":
           description: Status Code 200
 </schema>
+    <schemaUploadFileExtension>yaml</schemaUploadFileExtension>
+    <schemaUploadFileName>dropboxfilemanagerhandler_openapi</schemaUploadFileName>
+    <status>Complete</status>
+    <systemVersion>3</systemVersion>
+    <operations>
+        <name>uploadFile</name>
+        <active>true</active>
+    </operations>
 </ExternalServiceRegistration>

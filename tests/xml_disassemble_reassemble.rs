@@ -2456,8 +2456,8 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
 /// `<schema>` element holds an embedded OpenAPI YAML blob is disassembled
 /// with a SidecarSpec. The YAML must land in a companion `.yaml` file next
 /// to the source, the disassembled XML shards must not contain the blob, and
-/// reassembly must inject the YAML back so the `<schema>` element is present
-/// in the final output.
+/// reassembly must reproduce the original file byte-for-byte including the
+/// original key order of the root element.
 ///
 /// This replicates the Salesforce SDR
 /// `decomposeExternalServiceRegistrationBeta` preset behaviour.
@@ -2472,6 +2472,8 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         "Fixture {} must exist (run from project root)",
         fixture
     );
+
+    let original = std::fs::read_to_string(fixture).expect("read fixture");
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let base = temp_dir.path();
@@ -2513,10 +2515,6 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         sidecar_content.contains("openapi: 3.0.1"),
         "sidecar must contain the OpenAPI YAML content; got:\n{sidecar_content}"
     );
-    assert!(
-        sidecar_content.contains("uploadFile"),
-        "sidecar must contain the operation name; got:\n{sidecar_content}"
-    );
 
     // Disassembled directory must exist (operations has nested elements).
     let disassembled_dir = base.join("DropboxFileManagerHandler");
@@ -2539,14 +2537,14 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         );
     }
 
-    // Reassemble: schema must be injected back from the sidecar.
+    // Reassemble with the same SidecarSpec so schema is injected back.
     let handler = ReassembleXmlFileHandler::new();
     handler
         .reassemble(
             disassembled_dir.to_str().unwrap(),
             Some("externalServiceRegistration-meta.xml"),
             false,
-            Some(&[sidecar]),
+            Some(std::slice::from_ref(&sidecar)),
         )
         .await
         .expect("reassemble");
@@ -2556,37 +2554,9 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
 
     let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
 
-    // The <schema> element must be present with the YAML content restored.
-    assert!(
-        rebuilt.contains("<schema>"),
-        "reassembled XML must contain <schema> element"
-    );
-    assert!(
-        rebuilt.contains("openapi: 3.0.1"),
-        "reassembled XML must contain the YAML content inside <schema>; got:\n{rebuilt}"
-    );
-    assert!(
-        rebuilt.contains("uploadFile"),
-        "reassembled XML must contain the operation name inside <schema>; got:\n{rebuilt}"
-    );
-
-    // Other leaf elements must survive the round-trip.
-    assert!(
-        rebuilt.contains("<label>DropboxFileManagerHandler</label>"),
-        "leaf elements must be preserved; got:\n{rebuilt}"
-    );
-    assert!(
-        rebuilt.contains("<schemaType>OpenApi3</schemaType>"),
-        "leaf elements must be preserved; got:\n{rebuilt}"
-    );
-    assert!(
-        rebuilt.contains("<status>Complete</status>"),
-        "leaf elements must be preserved; got:\n{rebuilt}"
-    );
-
-    // The <operations> nested element must also survive.
-    assert!(
-        rebuilt.contains("<name>uploadFile</name>"),
-        "nested <operations> element must be preserved; got:\n{rebuilt}"
+    assert_eq!(
+        original, rebuilt,
+        "sidecar round-trip must reproduce original XML byte-for-byte \
+         (key order including <schema> position must be preserved)"
     );
 }

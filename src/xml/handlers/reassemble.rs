@@ -292,6 +292,14 @@ impl ReassembleXmlFileHandler {
             return Ok(());
         };
 
+        // Inject sidecar element content before key reordering so the element
+        // lands at its original position rather than being appended at the end.
+        // Sidecars are written alongside the source XML (not inside the
+        // disassembled directory) so they survive post_purge automatically.
+        if let Some(specs) = sidecar_specs {
+            inject_sidecar_elements(&file_path, &mut merged, specs).await?;
+        }
+
         // Apply stored key order so reassembled XML matches original document order.
         let key_order_path = Path::new(&file_path).join(".key_order.json");
         if let Some(reordered) = read_key_order(&key_order_path)
@@ -299,14 +307,6 @@ impl ReassembleXmlFileHandler {
             .and_then(|order| reorder_root_keys(&merged, &order))
         {
             merged = reordered;
-        }
-
-        // Inject sidecar element content back into the merged document before
-        // serialisation. Sidecars are written by the disassembler alongside the
-        // source XML; they are not part of the disassembled directory and so
-        // survive the post_purge removal of that directory automatically.
-        if let Some(specs) = sidecar_specs {
-            inject_sidecar_elements(&file_path, &mut merged, specs).await?;
         }
 
         let final_xml = build_xml_string(&merged);
@@ -531,9 +531,9 @@ impl Default for ReassembleXmlFileHandler {
 /// `MySvc/`). If a sidecar is absent (element was not in the original XML,
 /// or was never extracted), the spec is silently skipped.
 ///
-/// The injected value uses the `{"#text": content}` shape that `build_xml_string`
-/// expects for a simple text element; quick-xml's Writer then handles correct
-/// XML entity escaping on output.
+/// The injected value uses the `{"#raw-text": content}` shape that `build_xml_string`
+/// writes with `partial_escape`: mandatory XML chars (`<`, `>`, `&`) are escaped
+/// but `"` is left as-is so YAML content round-trips without `&quot;` inflation.
 async fn inject_sidecar_elements(
     dir_path: &str,
     merged: &mut XmlElement,
@@ -562,7 +562,7 @@ async fn inject_sidecar_elements(
                 };
                 root_obj.insert(
                     spec.element.clone(),
-                    serde_json::json!({ "#text": content }),
+                    serde_json::json!({ "#raw-text": content }),
                 );
             }
         }

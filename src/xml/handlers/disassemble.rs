@@ -324,6 +324,25 @@ impl DisassembleXmlFileHandler {
             fs::remove_dir_all(&output_path).await.ok();
         }
 
+        // Capture root key order BEFORE sidecar extraction so the sidecar element
+        // names appear at their original positions in .key_order.json.
+        let pre_extraction_key_order: Option<Vec<String>> =
+            if sidecar_specs.is_some_and(|s| !s.is_empty()) {
+                parse_xml(file_path).await.and_then(|parsed| {
+                    let obj = parsed.as_object()?;
+                    let root_key = obj.keys().find(|k| *k != "?xml")?;
+                    obj.get(root_key)?.as_object().map(|root_obj| {
+                        root_obj
+                            .keys()
+                            .filter(|k| !k.starts_with('@'))
+                            .cloned()
+                            .collect()
+                    })
+                })
+            } else {
+                None
+            };
+
         // Extract sidecar elements before normal disassembly so the disassembler
         // sees schema-free XML and does not try to shard the embedded blob.
         if let Some(specs) = sidecar_specs {
@@ -343,6 +362,15 @@ impl DisassembleXmlFileHandler {
             decompose_rules,
         })
         .await?;
+
+        // Overwrite .key_order.json with the pre-extraction order so sidecar
+        // element names appear at their original positions during reassembly.
+        if let Some(full_order) = pre_extraction_key_order {
+            let key_order_path = output_path.join(".key_order.json");
+            if let Ok(json) = serde_json::to_string(&full_order) {
+                let _ = fs::write(&key_order_path, json).await;
+            }
+        }
 
         // Apply each multi-level rule in order. Each rule walks the same disassembly tree
         // independently; rules are merged into the shared `.multi_level.json` so reassembly

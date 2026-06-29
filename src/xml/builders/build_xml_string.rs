@@ -1,5 +1,6 @@
 //! Build XML string from XmlElement structure.
 
+use quick_xml::escape::partial_escape;
 use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 use serde_json::{Map, Value};
@@ -33,6 +34,7 @@ fn write_element<W: std::io::Write>(
             let attr_name = |k: &str| k.trim_start_matches('@').to_string();
 
             let mut text_content = String::new();
+            let mut raw_text_content = String::new();
             let mut comment_content = String::new();
             let mut text_tail_content = String::new();
             let mut cdata_content = String::new();
@@ -41,6 +43,9 @@ fn write_element<W: std::io::Write>(
                 .filter_map(|(k, v)| {
                     if *k == "#text" {
                         text_content = value_to_string(v);
+                        None
+                    } else if *k == "#raw-text" {
+                        raw_text_content = value_to_string(v);
                         None
                     } else if *k == "#comment" {
                         comment_content = value_to_string(v);
@@ -105,7 +110,6 @@ fn write_element<W: std::io::Write>(
                         _ => {
                             writer
                                 .write_event(Event::Start(BytesStart::new(child_name.as_str())))?;
-                            // BytesText::new() expects unescaped content; the writer escapes when writing
                             writer.write_event(Event::Text(BytesText::new(
                                 value_to_string(child_value).as_str(),
                             )))?;
@@ -124,18 +128,29 @@ fn write_element<W: std::io::Write>(
                 )))?;
             } else if !cdata_content.is_empty()
                 || !text_content.is_empty()
+                || !raw_text_content.is_empty()
                 || !comment_content.is_empty()
                 || !text_tail_content.is_empty()
             {
                 // Add newline+indent before content when no leading text (keeps CDATA/comment on separate line)
-                if text_content.is_empty() && comment_content.is_empty() {
+                if text_content.is_empty()
+                    && raw_text_content.is_empty()
+                    && comment_content.is_empty()
+                {
                     writer.write_event(Event::Text(BytesText::new(
                         format!("\n{}", child_indent).as_str(),
                     )))?;
                 }
-                // Output in order: #text, #comment, #text-tail, #cdata
+                // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
                 if !text_content.is_empty() {
                     writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
+                }
+                // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
+                // literal " in YAML is not converted to &quot; but < > & are still safe.
+                if !raw_text_content.is_empty() {
+                    writer.write_event(Event::Text(BytesText::from_escaped(partial_escape(
+                        raw_text_content.as_str(),
+                    ))))?;
                 }
                 if !comment_content.is_empty() {
                     writer.write_event(Event::Comment(BytesText::new(comment_content.as_str())))?;
@@ -163,7 +178,6 @@ fn write_element<W: std::io::Write>(
         }
         _ => {
             writer.write_event(Event::Start(BytesStart::new(name)))?;
-            // BytesText::new() expects unescaped content; the writer escapes when writing
             writer.write_event(Event::Text(BytesText::new(
                 value_to_string(content).as_str(),
             )))?;
