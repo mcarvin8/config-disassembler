@@ -1,14 +1,17 @@
 //! Disassemble XML file handler.
 
-use crate::xml::builders::build_disassembled_files_unified;
+use crate::xml::builders::{build_disassembled_files_unified, build_xml_string};
 use crate::xml::multi_level::{
     capture_xmlns_from_root, path_segment_from_file_pattern, save_multi_level_config,
     strip_root_and_build_xml,
 };
-use crate::xml::parsers::parse_xml;
-use crate::xml::types::{BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule};
+use crate::xml::parsers::{extract_xml_declaration_from_raw, parse_xml, parse_xml_from_str};
+use crate::xml::types::{
+    BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec,
+};
 use crate::xml::utils::normalize_path_unix;
 use ignore::gitignore::GitignoreBuilder;
+use std::io::Write as _;
 use std::path::Path;
 use tokio::fs;
 
@@ -137,6 +140,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let strategy = strategy.unwrap_or("unique-id");
         let strategy = if ["unique-id", "grouped-by-tag"].contains(&strategy) {
@@ -171,6 +175,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         } else {
@@ -185,6 +190,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         }
@@ -204,6 +210,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let resolved = Path::new(file_path)
             .canonicalize()
@@ -235,6 +242,7 @@ impl DisassembleXmlFileHandler {
             format,
             multi_level_rules,
             decompose_rules,
+            sidecar_specs,
         )
         .await
     }
@@ -250,6 +258,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let dir_path = normalize_path_unix(dir_path);
         let mut entries = fs::read_dir(&dir_path).await?;
@@ -282,6 +291,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         }
@@ -300,6 +310,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("Parsing file to disassemble: {}", file_path);
 
@@ -314,8 +325,61 @@ impl DisassembleXmlFileHandler {
             fs::remove_dir_all(&output_path).await.ok();
         }
 
+        // Capture root key order BEFORE sidecar extraction so the sidecar element
+        // names appear at their original positions in .key_order.json.
+        let pre_extraction_key_order: Option<Vec<String>> =
+            if sidecar_specs.is_some_and(|s| !s.is_empty()) {
+                parse_xml(file_path).await.and_then(|parsed| {
+                    let obj = parsed.as_object()?;
+                    let root_key = obj.keys().find(|k| *k != "?xml")?;
+                    obj.get(root_key)?.as_object().map(|root_obj| {
+                        root_obj
+                            .keys()
+                            .filter(|k| !k.starts_with('@'))
+                            .cloned()
+                            .collect()
+                    })
+                })
+            } else {
+                None
+            };
+
+        // Extract sidecar elements before normal disassembly so the disassembler
+        // sees schema-free XML and does not try to shard the embedded blob.
+        // The original file is never modified; stripped content is written to a
+        // temp file that is deleted after disassembly. Sidecar files are written
+        // into the output directory after disassembly creates it.
+        let extraction_result = if let Some(specs) = sidecar_specs {
+            if !specs.is_empty() {
+                extract_sidecar_elements(file_path, specs).await?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let temp_file: Option<tempfile::NamedTempFile>;
+        let disassemble_path: &str;
+        if let Some((xml, _)) = &extraction_result {
+            let mut tmp = tempfile::Builder::new()
+                .suffix(".xml")
+                .tempfile_in(Path::new(file_path).parent().unwrap_or(Path::new(".")))?;
+            tmp.write_all(xml.as_bytes())?;
+            temp_file = Some(tmp);
+            disassemble_path = temp_file
+                .as_ref()
+                .unwrap()
+                .path()
+                .to_str()
+                .unwrap_or(file_path);
+        } else {
+            temp_file = None;
+            disassemble_path = file_path;
+        }
+
         build_disassembled_files_unified(BuildDisassembledFilesOptions {
-            file_path,
+            file_path: disassemble_path,
             disassembled_path: output_path.to_str().unwrap_or("."),
             base_name: file_name,
             post_purge,
@@ -325,6 +389,31 @@ impl DisassembleXmlFileHandler {
             decompose_rules,
         })
         .await?;
+
+        drop(temp_file); // deletes the temp file
+
+        // Write sidecar files into the output directory, plus a .sidecars.json
+        // metadata file so reassembly can auto-detect specs without CLI flags.
+        if let Some((_, sidecars)) = &extraction_result {
+            for (extension, content) in sidecars {
+                let sidecar_path = output_path.join(format!("{}.{}", base_name, extension));
+                fs::write(&sidecar_path, content).await?;
+            }
+            if let Some(specs) = sidecar_specs {
+                if let Ok(json) = serde_json::to_string(specs) {
+                    let _ = fs::write(output_path.join(".sidecars.json"), json).await;
+                }
+            }
+        }
+
+        // Overwrite .key_order.json with the pre-extraction order so sidecar
+        // element names appear at their original positions during reassembly.
+        if let Some(full_order) = pre_extraction_key_order {
+            let key_order_path = output_path.join(".key_order.json");
+            if let Ok(json) = serde_json::to_string(&full_order) {
+                let _ = fs::write(&key_order_path, json).await;
+            }
+        }
 
         // Apply each multi-level rule in order. Each rule walks the same disassembly tree
         // independently; rules are merged into the shared `.multi_level.json` so reassembly
@@ -474,6 +563,131 @@ impl DisassembleXmlFileHandler {
 impl Default for DisassembleXmlFileHandler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Extract the text content of named XML elements in memory and return the
+/// stripped XML plus the sidecar payloads. The caller is responsible for
+/// writing sidecar files; the original file on disk is never modified.
+///
+/// Returns `None` when no matching element was found.
+/// Returns `Some((stripped_xml, sidecars))` where `sidecars` maps each
+/// `SidecarSpec::extension` to the extracted text content.
+///
+/// Quick-xml's parser automatically unescapes entity references in text
+/// content, so the sidecar receives the raw, unescaped bytes of the embedded
+/// document — exactly what you'd write by hand.
+async fn extract_sidecar_elements(
+    file_path: &str,
+    specs: &[SidecarSpec],
+) -> Result<Option<(String, Vec<(String, String)>)>, Box<dyn std::error::Error + Send + Sync>> {
+    let raw = fs::read_to_string(file_path).await?;
+    let Some(mut parsed) = parse_xml_from_str(&raw, file_path) else {
+        return Ok(None);
+    };
+
+    // parse_xml_cdata drops the XML declaration; recover it from the raw bytes and
+    // re-inject so build_xml_string emits it in the temp file. Without this the
+    // shards produced by build_disassembled_files_unified lack the declaration and
+    // the reassembler falls back to a synthetic default instead of the original.
+    if let (Some(obj), Some(decl)) = (
+        parsed.as_object_mut(),
+        extract_xml_declaration_from_raw(&raw),
+    ) {
+        obj.insert("?xml".to_string(), decl);
+    }
+
+    let root_key = parsed
+        .as_object()
+        .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
+    let Some(root_key) = root_key else {
+        return Ok(None);
+    };
+
+    let mut sidecars: Vec<(String, String)> = Vec::new();
+    if let Some(root_val) = parsed.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
+        if let Some(root_obj) = root_val.as_object_mut() {
+            for spec in specs {
+                let Some(elem_val) = root_obj.remove(&spec.element) else {
+                    continue;
+                };
+                // The XML parser always yields Value::Object for element values;
+                // non-Object shapes are unexpected — restore and skip to preserve data.
+                let text = match &elem_val {
+                    serde_json::Value::Object(obj) => obj
+                        .get("#text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    _ => {
+                        root_obj.insert(spec.element.clone(), elem_val);
+                        continue;
+                    }
+                };
+                sidecars.push((
+                    spec.extension.clone(),
+                    convert_sidecar_content(&text, &spec.extension),
+                ));
+            }
+        }
+    }
+
+    if sidecars.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((build_xml_string(&parsed), sidecars)))
+    }
+}
+
+/// Convert raw text extracted from an XML element to the format implied by `extension`.
+///
+/// - `json` → parse as YAML (superset of JSON) then re-emit as pretty JSON
+/// - `yaml` / `yml` → convert only when source is strict JSON; YAML content passes through
+///   unchanged so quote style, indentation, and formatting are preserved on round-trip
+/// - anything else → pass through unchanged
+///
+/// Falls back to raw text with a warning when the content cannot be parsed.
+fn convert_sidecar_content(text: &str, extension: &str) -> String {
+    match extension.to_ascii_lowercase().as_str() {
+        "json" => {
+            // Parse into serde_yaml::Value first (the native representation) then
+            // serialize to JSON. Going directly to serde_json::Value fails for
+            // complex YAML in serde_yaml 0.9 due to cross-crate numeric type conflicts.
+            match serde_yaml::from_str::<serde_yaml::Value>(text) {
+                Ok(val) => match serde_json::to_string_pretty(&val) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
+                        text.to_string()
+                    }
+                },
+                Err(e) => {
+                    log::warn!(
+                        "sidecar: could not parse content for JSON conversion ({e}); using raw text"
+                    );
+                    text.to_string()
+                }
+            }
+        }
+        "yaml" | "yml" => {
+            // Only convert when the source is strict JSON — YAML content passes through
+            // unchanged to avoid re-serialization changing quote style or formatting.
+            if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+                match serde_yaml::from_str::<serde_yaml::Value>(text)
+                    .ok()
+                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                {
+                    Some(yaml) => yaml,
+                    None => {
+                        log::warn!("sidecar: YAML serialization failed; using raw text");
+                        text.to_string()
+                    }
+                }
+            } else {
+                text.to_string()
+            }
+        }
+        _ => text.to_string(),
     }
 }
 
@@ -747,5 +961,80 @@ mod tests {
         // Stems without any dot are passed through verbatim (no extension to strip).
         assert_eq!(DisassembleXmlFileHandler::output_dir_basename("Foo"), "Foo");
         assert_eq!(DisassembleXmlFileHandler::output_dir_basename(""), "");
+    }
+
+    #[test]
+    fn convert_sidecar_content_yaml_to_json() {
+        // Uses nested YAML matching the fixture shape (quoted strings, string-keyed
+        // mappings, dotted version strings) to catch serde_yaml→serde_json cross-crate
+        // numeric type failures that affect simple-key tests but not complex YAML.
+        let yaml = "openapi: 3.0.1\ninfo:\n  title: \"@AuraEnabled Apex method APIs\"\n  version: 1.0.0\npaths:\n  /uploadFile:\n    post:\n      operationId: uploadFile\n      responses:\n        \"200\":\n          description: OK\n";
+        let out = convert_sidecar_content(yaml, "json");
+        let val: serde_json::Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert_eq!(val["openapi"], "3.0.1");
+        assert_eq!(val["info"]["title"], "@AuraEnabled Apex method APIs");
+        assert_eq!(val["info"]["version"], "1.0.0");
+        assert_eq!(
+            val["paths"]["/uploadFile"]["post"]["operationId"],
+            "uploadFile"
+        );
+    }
+
+    #[test]
+    fn convert_sidecar_content_json_to_yaml() {
+        let json = r#"{"key":"value","num":42}"#;
+        let out = convert_sidecar_content(json, "yaml");
+        // Output must be YAML, not raw JSON — if the yaml arm were deleted, the `_ =>` fallback
+        // would return the original JSON string, which is also parseable as YAML and would fool
+        // a parse-only assertion. Asserting strict-JSON parse fails pins the arm deletion mutant.
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&out).is_err(),
+            "output must be YAML format, not raw JSON: {out}"
+        );
+        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        assert_eq!(val["key"], "value");
+        assert_eq!(val["num"], 42);
+    }
+
+    #[test]
+    fn convert_sidecar_content_json_to_json_prettifies() {
+        let compact = r#"{"a":1}"#;
+        let out = convert_sidecar_content(compact, "json");
+        // Pretty JSON has newlines and indentation.
+        assert!(out.contains('\n'), "expected pretty JSON, got: {out}");
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["a"], 1);
+    }
+
+    #[test]
+    fn convert_sidecar_content_unknown_extension_passes_through() {
+        let raw = "arbitrary: content: here";
+        assert_eq!(convert_sidecar_content(raw, "txt"), raw);
+        assert_eq!(convert_sidecar_content(raw, ""), raw);
+    }
+
+    #[test]
+    fn convert_sidecar_content_malformed_falls_back_to_raw() {
+        // Tabs inside a YAML flow scalar make it unparseable as YAML/JSON.
+        let bad = "{{{{ not valid json or yaml at all >>>>>";
+        assert_eq!(convert_sidecar_content(bad, "json"), bad);
+        assert_eq!(convert_sidecar_content(bad, "yaml"), bad);
+    }
+
+    #[test]
+    fn convert_sidecar_content_yml_extension_same_as_yaml() {
+        let json = r#"{"x":true}"#;
+        let out = convert_sidecar_content(json, "yml");
+        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(val["x"], true);
+    }
+
+    #[test]
+    fn convert_sidecar_content_yaml_passes_through_unchanged() {
+        // YAML content with a yaml extension must NOT be re-serialized — serde_yaml changes
+        // double quotes to single quotes, breaking byte-for-byte round-trip assertions.
+        let yaml = "title: \"@AuraEnabled Apex method APIs\"\nversion: 1.0.0\n";
+        assert_eq!(convert_sidecar_content(yaml, "yaml"), yaml);
+        assert_eq!(convert_sidecar_content(yaml, "yml"), yaml);
     }
 }

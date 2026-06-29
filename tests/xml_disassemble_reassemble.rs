@@ -2,7 +2,7 @@
 //! the reassembled XML matches the original file contents (same as original TypeScript tests).
 
 use config_disassembler::xml::{
-    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler,
+    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler, SidecarSpec,
 };
 use std::path::Path;
 
@@ -17,7 +17,7 @@ async fn reassemble_with_file_path_returns_ok_no_op() {
     let handler = ReassembleXmlFileHandler::new();
     // Path is a file, not a directory; validate_directory returns false
     handler
-        .reassemble(fixture, Some("xml"), false)
+        .reassemble(fixture, Some("xml"), false, None)
         .await
         .expect("reassemble should return Ok(())");
 }
@@ -44,6 +44,7 @@ async fn disassemble_with_unsupported_strategy_defaults_to_unique_id() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -86,6 +87,7 @@ async fn disassemble_directory_with_ignore_skips_matching_files() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -124,6 +126,7 @@ async fn disassemble_directory_processes_xml_files() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -154,6 +157,7 @@ async fn disassemble_directory_ignores_non_xml_files_and_subdirs() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -187,13 +191,14 @@ async fn reassemble_with_post_purge_removes_disassembled_dir() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
     assert!(disassembled_dir.exists());
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), true)
+        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), true, None)
         .await
         .expect("reassemble");
     assert!(
@@ -216,7 +221,7 @@ async fn reassemble_applies_key_order_from_dot_key_order_json() {
     std::fs::write(disassembled_dir.join(".key_order.json"), key_order).expect("write key_order");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
     let out = std::fs::read_to_string(base.join("Out.xml")).expect("read output");
@@ -236,7 +241,7 @@ async fn reassemble_empty_directory_returns_ok_no_output() {
     std::fs::create_dir_all(&empty_dir).expect("create dir");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(empty_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(empty_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble should return Ok(())");
     // No output file created when directory has no parsable files
@@ -264,7 +269,7 @@ async fn reassemble_directory_with_only_empty_xml_files_writes_no_output() {
 
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble should return Ok(())");
 
@@ -292,6 +297,7 @@ async fn disassemble_non_xml_file_returns_ok_no_op() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -329,6 +335,7 @@ async fn disassemble_with_pre_purge_removes_existing_output() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -375,6 +382,7 @@ async fn disassemble_then_reassemble_matches_original_xml() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -386,7 +394,7 @@ async fn disassemble_then_reassemble_matches_original_xml() {
 
     let reassemble_handler = ReassembleXmlFileHandler::new();
     reassemble_handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
 
@@ -432,6 +440,7 @@ async fn disassemble_json_format_then_reassemble_round_trip() {
             "json",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -443,7 +452,12 @@ async fn disassemble_json_format_then_reassemble_round_trip() {
 
     let reassemble_handler = ReassembleXmlFileHandler::new();
     reassemble_handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("json"), false)
+        .reassemble(
+            disassembled_dir.to_str().unwrap(),
+            Some("json"),
+            false,
+            None,
+        )
         .await
         .expect("reassemble");
 
@@ -489,6 +503,7 @@ async fn cdata_preserved_round_trip() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -504,6 +519,7 @@ async fn cdata_preserved_round_trip() {
             disassembled_dir.to_str().unwrap(),
             Some("marketingappextension-meta.xml"),
             false,
+            None,
         )
         .await
         .expect("reassemble");
@@ -551,6 +567,7 @@ async fn comments_preserved_round_trip() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -566,6 +583,7 @@ async fn comments_preserved_round_trip() {
             disassembled_dir.to_str().unwrap(),
             Some("globalValueSetTranslation-meta.xml"),
             false,
+            None,
         )
         .await
         .expect("reassemble");
@@ -616,6 +634,7 @@ async fn deeply_nested_unique_id_elements_round_trip() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -631,6 +650,7 @@ async fn deeply_nested_unique_id_elements_round_trip() {
             disassembled_dir.to_str().unwrap(),
             Some("flow-meta.xml"),
             false,
+            None,
         )
         .await
         .expect("reassemble");
@@ -689,6 +709,7 @@ async fn multi_level_disassemble_then_reassemble_matches_original() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -700,7 +721,7 @@ async fn multi_level_disassemble_then_reassemble_matches_original() {
 
     let reassemble_handler = ReassembleXmlFileHandler::new();
     reassemble_handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
 
@@ -747,6 +768,7 @@ async fn grouped_by_tag_with_fallback_mode_writes_single_file() {
             "xml",
             None,
             Some(&[fallback_rule]),
+            None,
         )
         .await
         .expect("disassemble");
@@ -807,6 +829,7 @@ async fn split_tags_disassemble_then_reassemble_matches_original() {
             "xml",
             None,
             Some(&split_tags_rules),
+            None,
         )
         .await
         .expect("disassemble");
@@ -818,7 +841,7 @@ async fn split_tags_disassemble_then_reassemble_matches_original() {
 
     let reassemble_handler = ReassembleXmlFileHandler::new();
     reassemble_handler
-        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(disassembled_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
 
@@ -848,6 +871,7 @@ async fn disassemble_nonexistent_path_returns_err() {
             "xml",
             None,
             None,
+            None,
         )
         .await;
     assert!(result.is_err(), "missing path should surface an error");
@@ -858,7 +882,7 @@ async fn reassemble_nonexistent_path_returns_err() {
     let _ = env_logger::try_init();
     let handler = ReassembleXmlFileHandler::new();
     let result = handler
-        .reassemble("/nonexistent/dir/xyz", Some("xml"), false)
+        .reassemble("/nonexistent/dir/xyz", Some("xml"), false, None)
         .await;
     assert!(result.is_err(), "missing directory should surface an error");
 }
@@ -884,6 +908,7 @@ async fn disassemble_leaf_only_xml_logs_and_skips() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -922,6 +947,7 @@ async fn disassemble_duplicate_leaf_siblings_under_root_no_op_with_log() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -944,6 +970,7 @@ async fn disassemble_unparseable_xml_is_no_op() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -971,6 +998,7 @@ async fn disassemble_empty_xml_document_is_no_op() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -994,6 +1022,7 @@ async fn disassemble_with_post_purge_removes_source_file() {
             true, // post_purge
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
         )
@@ -1038,6 +1067,7 @@ async fn grouped_by_tag_split_rule_uses_index_when_field_missing() {
             "xml",
             None,
             Some(&rules),
+            None,
         )
         .await
         .expect("disassemble");
@@ -1082,6 +1112,7 @@ async fn grouped_by_tag_group_rule_uses_nested_text_value() {
             "xml",
             None,
             Some(&rules),
+            None,
         )
         .await
         .expect("disassemble");
@@ -1139,6 +1170,7 @@ async fn multi_level_with_empty_path_segment_and_xmlns_derives_segment() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1180,6 +1212,7 @@ async fn multi_level_with_explicit_xmlns_preserved() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
         )
         .await
@@ -1230,6 +1263,7 @@ async fn multi_level_with_multiple_matching_files_appends_rule_once() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1261,6 +1295,7 @@ async fn disassemble_single_file_ignored_via_ignore_rules() {
             false,
             ignore_path.to_str().unwrap(),
             "xml",
+            None,
             None,
             None,
         )
@@ -1302,6 +1337,7 @@ async fn multi_level_rule_without_matching_file_is_noop() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1321,7 +1357,7 @@ async fn reassemble_with_non_parseable_junk_files_is_skipped() {
     std::fs::write(base.join("ignored.txt"), "data").expect("write text");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(base.to_str().unwrap(), Some("xml"), false)
+        .reassemble(base.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble returns Ok even when nothing parses");
     assert!(!base.with_extension("xml").exists());
@@ -1345,7 +1381,7 @@ async fn reassemble_directory_with_nested_subdir_is_recursed() {
     .expect("write inner");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(base.to_str().unwrap(), Some("xml"), false)
+        .reassemble(base.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
     let parent = base.parent().unwrap();
@@ -1366,7 +1402,7 @@ async fn reassemble_invalid_key_order_json_still_writes() {
     std::fs::write(base.join(".key_order.json"), "not valid json").expect("write key order");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(base.to_str().unwrap(), Some("xml"), false)
+        .reassemble(base.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
     assert!(base.with_extension("xml").exists());
@@ -1441,6 +1477,7 @@ async fn fixture_round_trip_matches_original() {
                 "xml",
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -1464,6 +1501,7 @@ async fn fixture_round_trip_matches_original() {
                 disassembled_dir.to_str().unwrap(),
                 Some(reassemble_ext),
                 false,
+                None,
             )
             .await
             .expect("reassemble");
@@ -1529,6 +1567,7 @@ async fn multi_level_skips_unparseable_matching_file() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1576,6 +1615,7 @@ async fn multi_level_skips_matching_file_without_root_to_strip() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
         )
         .await
@@ -1627,6 +1667,7 @@ async fn multi_level_skips_matching_file_with_non_object_strip_target() {
             "xml",
             Some(std::slice::from_ref(&rule)),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1666,7 +1707,7 @@ async fn reassemble_multi_level_skips_unparseable_segment_file() {
     .expect("write config");
     let reassemble = ReassembleXmlFileHandler::new();
     reassemble
-        .reassemble(out_dir.to_str().unwrap(), Some("xml"), false)
+        .reassemble(out_dir.to_str().unwrap(), Some("xml"), false, None)
         .await
         .expect("reassemble");
 }
@@ -1742,6 +1783,7 @@ async fn multi_rule_disassemble_then_reassemble_matches_original() {
             "xml",
             Some(rules.as_slice()),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1783,6 +1825,7 @@ async fn multi_rule_disassemble_then_reassemble_matches_original() {
             disassembled_dir.to_str().unwrap(),
             Some("multi-meta.xml"),
             false,
+            None,
         )
         .await
         .expect("reassemble");
@@ -1873,6 +1916,7 @@ async fn nested_multi_rule_disassemble_then_reassemble_matches_original() {
             "xml",
             Some(rules.as_slice()),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1891,6 +1935,7 @@ async fn nested_multi_rule_disassemble_then_reassemble_matches_original() {
             disassembled_dir.to_str().unwrap(),
             Some("multi-meta.xml"),
             false,
+            None,
         )
         .await
         .expect("reassemble");
@@ -1956,6 +2001,7 @@ async fn disassemble_preserves_dotted_full_names_in_output_dir() {
                 "xml",
                 None,
                 None,
+                None,
             )
             .await
             .expect("disassemble");
@@ -1985,6 +2031,7 @@ async fn disassemble_preserves_dotted_full_names_in_output_dir() {
             dir_a.to_str().unwrap(),
             Some("approvalProcess-meta.xml"),
             true,
+            None,
         )
         .await
         .expect("reassemble a");
@@ -1993,6 +2040,7 @@ async fn disassemble_preserves_dotted_full_names_in_output_dir() {
             dir_b.to_str().unwrap(),
             Some("approvalProcess-meta.xml"),
             true,
+            None,
         )
         .await
         .expect("reassemble b");
@@ -2060,6 +2108,7 @@ async fn compound_unique_id_elements_disambiguate_action_overrides() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -2108,6 +2157,7 @@ async fn compound_unique_id_elements_disambiguate_action_overrides() {
             base.join("Dreamhouse").to_str().unwrap(),
             Some("app-meta.xml"),
             true,
+            None,
         )
         .await
         .expect("reassemble");
@@ -2207,6 +2257,7 @@ async fn unique_id_collision_falls_back_to_hashes_per_sibling() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -2257,6 +2308,7 @@ async fn unique_id_collision_falls_back_to_hashes_per_sibling() {
             base.join("Collision_Test").to_str().unwrap(),
             Some("app-meta.xml"),
             true,
+            None,
         )
         .await
         .expect("reassemble");
@@ -2321,6 +2373,7 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
             "xml",
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -2377,6 +2430,7 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
             base.join("Sanitize_Test").to_str().unwrap(),
             Some("entitlementProcess-meta.xml"),
             true,
+            None,
         )
         .await
         .expect("reassemble");
@@ -2395,5 +2449,120 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
     assert!(
         rebuilt.contains("<milestoneName>Resolution</milestoneName>"),
         "rebuilt XML must contain other milestones too; got:\n{rebuilt}"
+    );
+}
+
+/// Sidecar-elements round-trip: an ExternalServiceRegistration XML whose
+/// `<schema>` element holds an embedded OpenAPI YAML blob is disassembled
+/// with a SidecarSpec. The YAML must land in a companion `.yaml` file next
+/// to the source, the disassembled XML shards must not contain the blob, and
+/// reassembly must reproduce the original file byte-for-byte including the
+/// original key order of the root element.
+///
+/// This replicates the Salesforce SDR
+/// `decomposeExternalServiceRegistrationBeta` preset behaviour.
+#[tokio::test]
+async fn sidecar_schema_element_extracted_and_reinjected() {
+    let _ = env_logger::try_init();
+
+    let fixture =
+        "fixtures/xml/sidecar/DropboxFileManagerHandler.externalServiceRegistration-meta.xml";
+    assert!(
+        Path::new(fixture).exists(),
+        "Fixture {} must exist (run from project root)",
+        fixture
+    );
+
+    let original = std::fs::read_to_string(fixture).expect("read fixture");
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("DropboxFileManagerHandler.externalServiceRegistration-meta.xml");
+    std::fs::copy(fixture, &source).expect("copy fixture");
+
+    let sidecar = SidecarSpec {
+        element: "schema".to_string(),
+        extension: "yaml".to_string(),
+    };
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            Some(std::slice::from_ref(&sidecar)),
+        )
+        .await
+        .expect("disassemble");
+
+    // Disassembled directory must exist (operations has nested elements).
+    let disassembled_dir = base.join("DropboxFileManagerHandler");
+    assert!(
+        disassembled_dir.exists(),
+        "disassembled directory must exist for nested <operations> element"
+    );
+
+    // Sidecar file must exist inside the disassembled directory.
+    let sidecar_path = disassembled_dir.join("DropboxFileManagerHandler.yaml");
+    assert!(
+        sidecar_path.exists(),
+        "sidecar .yaml file must be written inside the disassembled directory"
+    );
+
+    // Sidecar content must be the raw YAML extracted from <schema>.
+    let sidecar_content = std::fs::read_to_string(&sidecar_path).expect("read sidecar");
+    assert!(
+        sidecar_content.contains("openapi: 3.0.1"),
+        "sidecar must contain the OpenAPI YAML content; got:\n{sidecar_content}"
+    );
+
+    // No disassembled shard file must contain the raw YAML blob.
+    for entry in walkdir::WalkDir::new(&disassembled_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "xml"))
+    {
+        let shard = std::fs::read_to_string(entry.path()).expect("read shard");
+        assert!(
+            !shard.contains("openapi: 3.0.1"),
+            "shard {:?} must not contain the extracted YAML blob",
+            entry.path()
+        );
+    }
+
+    // .sidecars.json metadata must exist so reassembly can auto-detect specs.
+    assert!(
+        disassembled_dir.join(".sidecars.json").exists(),
+        ".sidecars.json must be written into the disassembled directory"
+    );
+
+    // Reassemble without explicit SidecarSpec — auto-detected from .sidecars.json.
+    let handler = ReassembleXmlFileHandler::new();
+    handler
+        .reassemble(
+            disassembled_dir.to_str().unwrap(),
+            Some("externalServiceRegistration-meta.xml"),
+            false,
+            None,
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt_path = base.join("DropboxFileManagerHandler.externalServiceRegistration-meta.xml");
+    assert!(rebuilt_path.exists(), "reassembled file must exist");
+
+    let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
+
+    assert_eq!(
+        original, rebuilt,
+        "sidecar round-trip must reproduce original XML byte-for-byte \
+         (key order including <schema> position must be preserved)"
     );
 }

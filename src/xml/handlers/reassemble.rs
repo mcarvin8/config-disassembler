@@ -3,7 +3,7 @@
 use crate::xml::builders::{build_xml_string, merge_xml_elements, reorder_root_keys};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
-use crate::xml::types::{MultiLevelRule, XmlElement};
+use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
 use crate::xml::utils::normalize_path_unix;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -80,6 +80,7 @@ impl ReassembleXmlFileHandler {
         file_path: &str,
         file_extension: Option<&str>,
         post_purge: bool,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         if !self.validate_directory(&file_path).await? {
@@ -123,8 +124,14 @@ impl ReassembleXmlFileHandler {
             .unwrap_or_default();
         // When multi-level reassembly is done, purge the entire disassembled directory
         let post_purge_final = post_purge || config.is_some();
-        self.reassemble_plain(&file_path, file_extension, post_purge_final, &base_segments)
-            .await
+        self.reassemble_plain(
+            &file_path,
+            file_extension,
+            post_purge_final,
+            &base_segments,
+            sidecar_specs,
+        )
+        .await
     }
 
     /// Reassemble a single multi-level segment directory.
@@ -227,12 +234,12 @@ impl ReassembleXmlFileHandler {
                     continue;
                 }
                 let sub_path_str = normalize_path_unix(&sub_path.to_string_lossy());
-                self.reassemble_plain(&sub_path_str, Some("xml"), true, &[])
+                self.reassemble_plain(&sub_path_str, Some("xml"), true, &[], None)
                     .await?;
             }
 
             // Phase 3: merge everything in the item dir into a single .xml at the parent.
-            self.reassemble_plain(&process_path_str, Some("xml"), true, &[])
+            self.reassemble_plain(&process_path_str, Some("xml"), true, &[], None)
                 .await?;
         }
         ensure_segment_files_structure(
@@ -258,6 +265,7 @@ impl ReassembleXmlFileHandler {
         file_extension: Option<&str>,
         post_purge: bool,
         base_segments: &[(String, String, bool)],
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         log::debug!("Parsing directory to reassemble: {}", file_path);
@@ -284,6 +292,34 @@ impl ReassembleXmlFileHandler {
             return Ok(());
         };
 
+        // Resolve sidecar specs: use the caller-supplied slice when non-empty,
+        // otherwise auto-detect from .sidecars.json written by disassembly.
+        let auto_specs: Vec<crate::xml::types::SidecarSpec>;
+        let effective_specs: Option<&[crate::xml::types::SidecarSpec]> =
+            if sidecar_specs.is_some_and(|s| !s.is_empty()) {
+                sidecar_specs
+            } else {
+                let meta_path = Path::new(&file_path).join(".sidecars.json");
+                if let Ok(content) = fs::read_to_string(&meta_path).await {
+                    if let Ok(parsed) =
+                        serde_json::from_str::<Vec<crate::xml::types::SidecarSpec>>(&content)
+                    {
+                        auto_specs = parsed;
+                        Some(auto_specs.as_slice())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+        // Inject sidecar element content before key reordering so the element
+        // lands at its original position rather than being appended at the end.
+        if let Some(specs) = effective_specs {
+            inject_sidecar_elements(&file_path, &mut merged, specs).await?;
+        }
+
         // Apply stored key order so reassembled XML matches original document order.
         let key_order_path = Path::new(&file_path).join(".key_order.json");
         if let Some(reordered) = read_key_order(&key_order_path)
@@ -296,9 +332,23 @@ impl ReassembleXmlFileHandler {
         let final_xml = build_xml_string(&merged);
         let output_path = self.get_output_path(&file_path, file_extension);
 
-        fs::write(&output_path, final_xml).await?;
+        fs::write(&output_path, &final_xml).await?;
 
+        // Remove sidecar files and metadata after successful injection. They are
+        // decomposition artifacts: the content is now inside the reassembled XML.
+        // Only done when post_purge is requested.
         if post_purge {
+            if let Some(specs) = effective_specs {
+                let path = Path::new(&file_path);
+                let base = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("output");
+                for spec in specs {
+                    let sidecar = path.join(format!("{}.{}", base, spec.extension));
+                    fs::remove_file(&sidecar).await.ok();
+                }
+            }
             fs::remove_dir_all(file_path).await.ok();
         }
 
@@ -489,6 +539,52 @@ impl Default for ReassembleXmlFileHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read sidecar files and inject their content back into the merged XML value
+/// before serialisation.
+///
+/// Each sidecar is located inside the decomposed directory itself
+/// (e.g. `MySvc/MySvc.yaml`). If a sidecar is absent (element was not in
+/// the original XML, or was never extracted), the spec is silently skipped.
+///
+/// The injected value uses the `{"#raw-text": content}` shape that `build_xml_string`
+/// writes with `partial_escape`: mandatory XML chars (`<`, `>`, `&`) are escaped
+/// but `"` is left as-is so YAML content round-trips without `&quot;` inflation.
+async fn inject_sidecar_elements(
+    dir_path: &str,
+    merged: &mut XmlElement,
+    specs: &[SidecarSpec],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = Path::new(dir_path);
+    let base = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
+
+    let root_key = merged
+        .as_object()
+        .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
+    let Some(root_key) = root_key else {
+        return Ok(());
+    };
+
+    if let Some(root_val) = merged.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
+        if let Some(root_obj) = root_val.as_object_mut() {
+            for spec in specs {
+                let sidecar_path = path.join(format!("{}.{}", base, spec.extension));
+                let Ok(content) = fs::read_to_string(&sidecar_path).await else {
+                    continue;
+                };
+                root_obj.insert(
+                    spec.element.clone(),
+                    serde_json::json!({ "#raw-text": content }),
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -755,5 +851,48 @@ mod tests {
     fn is_at_base_path_false_for_empty_segments() {
         let segs: Vec<(String, String, bool)> = Vec::new();
         assert!(!is_at_base_path("/anywhere", &segs));
+    }
+
+    // Pins the `delete ! in is_some_and(|s| !s.is_empty())` mutant at line 299.
+    // When sidecar_specs is Some(&[]) the caller supplied nothing useful, so the
+    // code must fall through to auto-detect via .sidecars.json — not treat the
+    // empty slice as authoritative.
+    #[tokio::test]
+    async fn reassemble_plain_some_empty_sidecar_specs_falls_through_to_auto_detect() {
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+
+        tokio::fs::write(
+            dir.join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><Child>hello</Child></Root>"#,
+        )
+        .await
+        .unwrap();
+
+        tokio::fs::write(
+            dir.join(".sidecars.json"),
+            r#"[{"element":"Notes","extension":"yaml"}]"#,
+        )
+        .await
+        .unwrap();
+
+        // Sidecar file name = directory name + extension (matches inject_sidecar_elements logic).
+        tokio::fs::write(dir.join("mydir.yaml"), "key: value")
+            .await
+            .unwrap();
+
+        h.reassemble_plain(dir.to_str().unwrap(), Some("xml"), false, &[], Some(&[]))
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("mydir.xml"))
+            .await
+            .unwrap();
+        assert!(
+            output.contains("key: value"),
+            "sidecar content missing — auto-detect did not run:\n{output}"
+        );
     }
 }

@@ -138,3 +138,25 @@ pub struct MultiLevelRule {
 pub struct MultiLevelConfig {
     pub rules: Vec<MultiLevelRule>,
 }
+
+/// A rule that extracts an XML element's text content to a typed companion
+/// ("sidecar") file during disassembly, and injects it back during reassembly.
+///
+/// **Why:** XML formats sometimes embed non-XML blobs — OpenAPI YAML, WSDL,
+/// JSON schemas — as escaped text inside a single element. Extracting those
+/// blobs to their own typed files lets native tooling (formatters, linters,
+/// IDE plugins) operate on them directly, keeps large content changes out of
+/// the XML diff, and makes the surrounding XML easier to read and review. The
+/// roundtrip is lossless: reassembly reads the sidecar and injects the raw
+/// content back before writing the final XML.
+///
+/// **Format:** `element_name:extension`, e.g. `"schema:yaml"`. Multiple specs
+/// are passed as a slice; use comma separation at the CLI/NAPI layer when
+/// parsing from a string.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SidecarSpec {
+    /// Name of the XML element whose text content is extracted.
+    pub element: String,
+    /// File extension for the sidecar file (without leading dot), e.g. `"yaml"`.
+    pub extension: String,
+}

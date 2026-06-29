@@ -4,7 +4,7 @@
 //! the binary stays a thin shim.
 
 use crate::xml::{
-    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler,
+    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler, SidecarSpec,
 };
 
 /// Options parsed from disassemble CLI args.
@@ -23,6 +23,8 @@ pub struct DisassembleOpts<'a> {
     pub strategy: Option<&'a str>,
     pub multi_level: Option<String>,
     pub split_tags: Option<String>,
+    /// Comma-separated `element:extension` pairs, e.g. `"schema:yaml"`.
+    pub sidecar_elements: Option<String>,
 }
 
 /// Parse --split-tags spec for grouped-by-tag. Comma-separated rules; each rule:
@@ -119,6 +121,7 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
     let mut strategy = None;
     let mut multi_level = None;
     let mut split_tags = None;
+    let mut sidecar_elements = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -162,6 +165,12 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
             if let Some(value) = iter.next() {
                 split_tags = Some(value.clone());
             }
+        } else if let Some(rest) = arg.strip_prefix("--sidecar-elements=") {
+            sidecar_elements = Some(rest.to_string());
+        } else if arg == "--sidecar-elements" {
+            if let Some(value) = iter.next() {
+                sidecar_elements = Some(value.clone());
+            }
         } else if arg.starts_with("--") {
             // Unknown long flag: silently skipped (matches the legacy
             // index-based parser, whose tests pin this behavior via
@@ -184,6 +193,7 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
         strategy,
         multi_level,
         split_tags,
+        sidecar_elements,
     }
 }
 
@@ -192,7 +202,7 @@ pub fn parse_reassemble_args(args: &[String]) -> (Option<&str>, Option<&str>, bo
     let mut path = None;
     let mut extension = None;
     let mut post_purge = false;
-    for arg in args {
+    for arg in args.iter() {
         if arg == "--postpurge" {
             post_purge = true;
         } else if path.is_none() {
@@ -202,6 +212,26 @@ pub fn parse_reassemble_args(args: &[String]) -> (Option<&str>, Option<&str>, bo
         }
     }
     (path, extension, post_purge)
+}
+
+/// Parse a `--sidecar-elements` spec string into a list of [`SidecarSpec`]s.
+///
+/// Input format: comma-separated `element:extension` pairs, e.g.
+/// `"schema:yaml"` or `"schema:yaml,wsdl:wsdl"`. Malformed pairs (missing
+/// colon, empty element or extension) are silently dropped.
+pub fn parse_sidecar_specs(spec: &str) -> Vec<SidecarSpec> {
+    spec.split(',')
+        .map(str::trim)
+        .filter_map(|pair| {
+            let (element, extension) = pair.split_once(':')?;
+            let element = element.trim().to_string();
+            let extension = extension.trim().to_string();
+            if element.is_empty() || extension.is_empty() {
+                return None;
+            }
+            Some(SidecarSpec { element, extension })
+        })
+        .collect()
 }
 
 /// Print CLI usage to stderr.
@@ -222,7 +252,8 @@ pub fn print_usage() {
     );
     eprintln!("    --multi-level <spec>          - Further disassemble matching files: file_pattern:root_to_strip:unique_id_elements (multiple rules separated by ';')");
     eprintln!("    -p, --split-tags <spec>       - With grouped-by-tag: split/group nested tags (e.g. objectPermissions:split:object,fieldPermissions:group:field)");
-    eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml)");
+    eprintln!("    --sidecar-elements <spec>     - Extract element text to companion files: element:extension (comma-separated, e.g. schema:yaml)");
+    eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml); sidecar specs are auto-detected from .sidecars.json");
 }
 
 /// True when `args` only contains the program name (or is empty).
@@ -298,6 +329,16 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
     } else {
         Some(multi_level_rules.as_slice())
     };
+    let sidecar_specs: Vec<SidecarSpec> = opts
+        .sidecar_elements
+        .as_deref()
+        .map(parse_sidecar_specs)
+        .unwrap_or_default();
+    let sidecar_specs_ref = if sidecar_specs.is_empty() {
+        None
+    } else {
+        Some(sidecar_specs.as_slice())
+    };
     let mut handler = DisassembleXmlFileHandler::new();
     handler
         .disassemble(
@@ -310,6 +351,7 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             opts.format,
             multi_level_rules_ref,
             decompose_rules_ref,
+            sidecar_specs_ref,
         )
         .await?;
     Ok(())
@@ -320,7 +362,7 @@ async fn run_reassemble(args: &[String]) -> Result<(), Box<dyn std::error::Error
     let path = path.unwrap_or(".");
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(path, extension.or(Some("xml")), post_purge)
+        .reassemble(path, extension.or(Some("xml")), post_purge, None)
         .await?;
     Ok(())
 }
@@ -801,5 +843,19 @@ mod tests {
         ])
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn parse_sidecar_specs_empty_element_is_dropped() {
+        // `:yaml` — element part is empty; must not produce a spec.
+        let specs = parse_sidecar_specs(":yaml");
+        assert!(specs.is_empty(), "expected no specs, got: {specs:?}");
+    }
+
+    #[test]
+    fn parse_sidecar_specs_empty_extension_is_dropped() {
+        // `schema:` — extension part is empty; must not produce a spec.
+        let specs = parse_sidecar_specs("schema:");
+        assert!(specs.is_empty(), "expected no specs, got: {specs:?}");
     }
 }
