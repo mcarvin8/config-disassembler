@@ -330,6 +330,77 @@ Use version control if you need to preserve intermediate disassembly trees.
 
 ---
 
+## Sidecar elements
+
+`--sidecar-elements` extracts the text content of named XML elements into companion files during disassembly and reinjects them during reassembly. Useful for metadata types that embed large non-XML blobs (OpenAPI schemas, WSDL, etc.) inside an XML element.
+
+### Format
+
+```text
+element:extension[,element:extension,...]
+```
+
+Each pair names the XML element to extract and the file extension for the companion file. Multiple pairs are separated by commas.
+
+### Disassemble
+
+```bash
+config-disassembler xml disassemble \
+  BankService.externalServiceRegistration-meta.xml \
+  --sidecar-elements schema:yaml
+```
+
+Result:
+
+```text
+BankService/
+├── BankService.yaml       ← extracted <schema> content
+├── .sidecars.json         ← auto-detect metadata for reassembly
+├── .key_order.json
+└── (disassembled shards)
+```
+
+- The element is removed from the disassembled XML shards.
+- The companion file is named `{directory}.{extension}` and written inside the disassembled directory.
+- `.sidecars.json` is written automatically so reassembly can locate and reinject sidecar files without any additional flags.
+
+### Format conversion
+
+The extracted text is converted to match the declared extension:
+
+| Extension | YAML source | JSON source |
+|---|---|---|
+| `yaml` / `yml` | passes through unchanged | converted to YAML |
+| `json` | converted to pretty JSON | prettified |
+| anything else | passes through unchanged | passes through unchanged |
+
+This mirrors the Salesforce `decomposeExternalServiceRegistrationBeta` preset: JSON schemas are always stored as YAML when `extension` is `yaml`.
+
+### Reassemble
+
+```bash
+config-disassembler xml reassemble BankService
+```
+
+Reassembly auto-detects sidecars from `.sidecars.json` — no flag required. To override or supply specs manually:
+
+```bash
+config-disassembler xml reassemble BankService --sidecar-elements schema:yaml
+```
+
+The sidecar file content is injected back verbatim into the XML element.
+
+### Multiple sidecars
+
+```bash
+config-disassembler xml disassemble service.xml \
+  --sidecar-elements "schema:yaml,wsdl:xml"
+```
+
+Each spec produces its own companion file.
+
+---
+
 ## Examples
 
 See [examples.md](examples.md) for complete before/after layouts and real-world metadata examples.
