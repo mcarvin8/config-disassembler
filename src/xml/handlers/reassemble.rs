@@ -852,4 +852,47 @@ mod tests {
         let segs: Vec<(String, String, bool)> = Vec::new();
         assert!(!is_at_base_path("/anywhere", &segs));
     }
+
+    // Pins the `delete ! in is_some_and(|s| !s.is_empty())` mutant at line 299.
+    // When sidecar_specs is Some(&[]) the caller supplied nothing useful, so the
+    // code must fall through to auto-detect via .sidecars.json — not treat the
+    // empty slice as authoritative.
+    #[tokio::test]
+    async fn reassemble_plain_some_empty_sidecar_specs_falls_through_to_auto_detect() {
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+
+        tokio::fs::write(
+            dir.join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><Child>hello</Child></Root>"#,
+        )
+        .await
+        .unwrap();
+
+        tokio::fs::write(
+            dir.join(".sidecars.json"),
+            r#"[{"element":"Notes","extension":"yaml"}]"#,
+        )
+        .await
+        .unwrap();
+
+        // Sidecar file name = directory name + extension (matches inject_sidecar_elements logic).
+        tokio::fs::write(dir.join("mydir.yaml"), "key: value")
+            .await
+            .unwrap();
+
+        h.reassemble_plain(dir.to_str().unwrap(), Some("xml"), false, &[], Some(&[]))
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("mydir.xml"))
+            .await
+            .unwrap();
+        assert!(
+            output.contains("key: value"),
+            "sidecar content missing — auto-detect did not run:\n{output}"
+        );
+    }
 }
