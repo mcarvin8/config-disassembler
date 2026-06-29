@@ -868,4 +868,18 @@ mod tests {
         .await
         .unwrap();
     }
+
+    #[test]
+    fn parse_sidecar_specs_empty_element_is_dropped() {
+        // `:yaml` — element part is empty; must not produce a spec.
+        let specs = parse_sidecar_specs(":yaml");
+        assert!(specs.is_empty(), "expected no specs, got: {specs:?}");
+    }
+
+    #[test]
+    fn parse_sidecar_specs_empty_extension_is_dropped() {
+        // `schema:` — extension part is empty; must not produce a spec.
+        let specs = parse_sidecar_specs("schema:");
+        assert!(specs.is_empty(), "expected no specs, got: {specs:?}");
+    }
 }

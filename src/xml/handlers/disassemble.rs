@@ -560,15 +560,15 @@ async fn extract_sidecar_elements(
                 let Some(elem_val) = root_obj.remove(&spec.element) else {
                     continue;
                 };
+                // The XML parser always yields Value::Object for element values;
+                // non-Object shapes are unexpected — restore and skip to preserve data.
                 let text = match &elem_val {
-                    serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Object(obj) => obj
                         .get("#text")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
                     _ => {
-                        // Unexpected shape — restore and skip rather than silently losing data.
                         root_obj.insert(spec.element.clone(), elem_val);
                         continue;
                     }
