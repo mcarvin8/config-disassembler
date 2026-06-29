@@ -667,7 +667,7 @@ mod tests {
             .iter()
             .map(|s| sv(s))
             .collect::<Vec<_>>();
-        let (path, ext, purge) = parse_reassemble_args(&args);
+        let (path, ext, purge, _) = parse_reassemble_args(&args);
         assert_eq!(path, Some("some/dir"));
         assert_eq!(ext, Some("json"));
         assert!(purge);
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn parse_reassemble_args_defaults_and_extra_args_ignored() {
-        let (p, e, purge) = parse_reassemble_args(&[]);
+        let (p, e, purge, _) = parse_reassemble_args(&[]);
         assert!(p.is_none());
         assert!(e.is_none());
         assert!(!purge);
@@ -684,7 +684,7 @@ mod tests {
             .iter()
             .map(|s| sv(s))
             .collect::<Vec<_>>();
-        let (p, e, _) = parse_reassemble_args(&args);
+        let (p, e, _, _) = parse_reassemble_args(&args);
         assert_eq!(p, Some("dir"));
         assert_eq!(e, Some("xml"));
     }
