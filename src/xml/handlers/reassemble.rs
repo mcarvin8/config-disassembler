@@ -3,7 +3,7 @@
 use crate::xml::builders::{build_xml_string, merge_xml_elements, reorder_root_keys};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
-use crate::xml::types::{MultiLevelRule, XmlElement};
+use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
 use crate::xml::utils::normalize_path_unix;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -80,6 +80,7 @@ impl ReassembleXmlFileHandler {
         file_path: &str,
         file_extension: Option<&str>,
         post_purge: bool,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         if !self.validate_directory(&file_path).await? {
@@ -123,8 +124,14 @@ impl ReassembleXmlFileHandler {
             .unwrap_or_default();
         // When multi-level reassembly is done, purge the entire disassembled directory
         let post_purge_final = post_purge || config.is_some();
-        self.reassemble_plain(&file_path, file_extension, post_purge_final, &base_segments)
-            .await
+        self.reassemble_plain(
+            &file_path,
+            file_extension,
+            post_purge_final,
+            &base_segments,
+            sidecar_specs,
+        )
+        .await
     }
 
     /// Reassemble a single multi-level segment directory.
@@ -227,12 +234,12 @@ impl ReassembleXmlFileHandler {
                     continue;
                 }
                 let sub_path_str = normalize_path_unix(&sub_path.to_string_lossy());
-                self.reassemble_plain(&sub_path_str, Some("xml"), true, &[])
+                self.reassemble_plain(&sub_path_str, Some("xml"), true, &[], None)
                     .await?;
             }
 
             // Phase 3: merge everything in the item dir into a single .xml at the parent.
-            self.reassemble_plain(&process_path_str, Some("xml"), true, &[])
+            self.reassemble_plain(&process_path_str, Some("xml"), true, &[], None)
                 .await?;
         }
         ensure_segment_files_structure(
@@ -258,6 +265,7 @@ impl ReassembleXmlFileHandler {
         file_extension: Option<&str>,
         post_purge: bool,
         base_segments: &[(String, String, bool)],
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         log::debug!("Parsing directory to reassemble: {}", file_path);
@@ -293,12 +301,33 @@ impl ReassembleXmlFileHandler {
             merged = reordered;
         }
 
+        // Inject sidecar element content back into the merged document before
+        // serialisation. Sidecars are written by the disassembler alongside the
+        // source XML; they are not part of the disassembled directory and so
+        // survive the post_purge removal of that directory automatically.
+        if let Some(specs) = sidecar_specs {
+            inject_sidecar_elements(&file_path, &mut merged, specs).await?;
+        }
+
         let final_xml = build_xml_string(&merged);
         let output_path = self.get_output_path(&file_path, file_extension);
 
-        fs::write(&output_path, final_xml).await?;
+        fs::write(&output_path, &final_xml).await?;
 
+        // Remove sidecar files after successful injection. They are decomposition
+        // artifacts: the content is now inside the reassembled XML and the sidecars
+        // are no longer needed. We only do this when post_purge is requested so
+        // callers that want to keep the decomposed state can do so consistently.
         if post_purge {
+            if let Some(specs) = sidecar_specs {
+                let path = Path::new(&file_path);
+                let parent = path.parent().unwrap_or(Path::new("."));
+                let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("output");
+                for spec in specs {
+                    let sidecar = parent.join(format!("{}.{}", base, spec.extension));
+                    fs::remove_file(&sidecar).await.ok();
+                }
+            }
             fs::remove_dir_all(file_path).await.ok();
         }
 
@@ -489,6 +518,51 @@ impl Default for ReassembleXmlFileHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read sidecar files and inject their content back into the merged XML value
+/// before serialisation.
+///
+/// Each sidecar is located by combining the decomposed directory's parent
+/// with its base name and the spec's extension (e.g. `MySvc.yaml` next to
+/// `MySvc/`). If a sidecar is absent (element was not in the original XML,
+/// or was never extracted), the spec is silently skipped.
+///
+/// The injected value uses the `{"#text": content}` shape that `build_xml_string`
+/// expects for a simple text element; quick-xml's Writer then handles correct
+/// XML entity escaping on output.
+async fn inject_sidecar_elements(
+    dir_path: &str,
+    merged: &mut XmlElement,
+    specs: &[SidecarSpec],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = Path::new(dir_path);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("output");
+
+    let root_key = merged
+        .as_object()
+        .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
+    let Some(root_key) = root_key else {
+        return Ok(());
+    };
+
+    if let Some(root_val) = merged.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
+        if let Some(root_obj) = root_val.as_object_mut() {
+            for spec in specs {
+                let sidecar_path = parent.join(format!("{}.{}", base, spec.extension));
+                let Ok(content) = fs::read_to_string(&sidecar_path).await else {
+                    continue;
+                };
+                root_obj.insert(
+                    spec.element.clone(),
+                    serde_json::json!({ "#text": content }),
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -18,4 +18,4 @@ pub use multi_level::{
 };
 pub use parsers::parse_xml;
 pub use transformers::{transform_to_json, transform_to_json5, transform_to_yaml};
-pub use types::{DecomposeRule, MultiLevelConfig, MultiLevelRule, XmlElement};
+pub use types::{DecomposeRule, MultiLevelConfig, MultiLevelRule, SidecarSpec, XmlElement};

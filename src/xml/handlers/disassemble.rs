@@ -1,12 +1,12 @@
 //! Disassemble XML file handler.
 
-use crate::xml::builders::build_disassembled_files_unified;
+use crate::xml::builders::{build_disassembled_files_unified, build_xml_string};
 use crate::xml::multi_level::{
     capture_xmlns_from_root, path_segment_from_file_pattern, save_multi_level_config,
     strip_root_and_build_xml,
 };
 use crate::xml::parsers::parse_xml;
-use crate::xml::types::{BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule};
+use crate::xml::types::{BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec};
 use crate::xml::utils::normalize_path_unix;
 use ignore::gitignore::GitignoreBuilder;
 use std::path::Path;
@@ -137,6 +137,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let strategy = strategy.unwrap_or("unique-id");
         let strategy = if ["unique-id", "grouped-by-tag"].contains(&strategy) {
@@ -171,6 +172,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         } else {
@@ -185,6 +187,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         }
@@ -204,6 +207,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let resolved = Path::new(file_path)
             .canonicalize()
@@ -235,6 +239,7 @@ impl DisassembleXmlFileHandler {
             format,
             multi_level_rules,
             decompose_rules,
+            sidecar_specs,
         )
         .await
     }
@@ -250,6 +255,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let dir_path = normalize_path_unix(dir_path);
         let mut entries = fs::read_dir(&dir_path).await?;
@@ -282,6 +288,7 @@ impl DisassembleXmlFileHandler {
                 format,
                 multi_level_rules,
                 decompose_rules,
+                sidecar_specs,
             )
             .await?;
         }
@@ -300,6 +307,7 @@ impl DisassembleXmlFileHandler {
         format: &str,
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
+        sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("Parsing file to disassemble: {}", file_path);
 
@@ -312,6 +320,14 @@ impl DisassembleXmlFileHandler {
 
         if Self::should_pre_purge_output(pre_purge, output_path.exists()) {
             fs::remove_dir_all(&output_path).await.ok();
+        }
+
+        // Extract sidecar elements before normal disassembly so the disassembler
+        // sees schema-free XML and does not try to shard the embedded blob.
+        if let Some(specs) = sidecar_specs {
+            if !specs.is_empty() {
+                extract_sidecar_elements(file_path, base_name, specs).await?;
+            }
         }
 
         build_disassembled_files_unified(BuildDisassembledFilesOptions {
@@ -475,6 +491,71 @@ impl Default for DisassembleXmlFileHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Extract the text content of named XML elements to typed companion sidecar
+/// files, then rewrite the source XML without those elements so the
+/// disassembler operates on a clean, blob-free document.
+///
+/// `base_name` is the file stem without the last dot segment (e.g.
+/// `"MySvc"` from `"MySvc.externalServiceRegistration-meta"`), used to name
+/// the sidecar alongside the source file.
+///
+/// Quick-xml's parser automatically unescapes entity references in text
+/// content, so the sidecar receives the raw, unescaped bytes of the embedded
+/// document — exactly what you'd write by hand.
+async fn extract_sidecar_elements(
+    file_path: &str,
+    base_name: &str,
+    specs: &[SidecarSpec],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(mut parsed) = parse_xml(file_path).await else {
+        return Ok(());
+    };
+
+    let path = Path::new(file_path);
+    let parent = path.parent().unwrap_or(Path::new("."));
+
+    let root_key = parsed
+        .as_object()
+        .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
+    let Some(root_key) = root_key else {
+        return Ok(());
+    };
+
+    let mut modified = false;
+    if let Some(root_val) = parsed.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
+        if let Some(root_obj) = root_val.as_object_mut() {
+            for spec in specs {
+                let Some(elem_val) = root_obj.remove(&spec.element) else {
+                    continue;
+                };
+                let text = match &elem_val {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Object(obj) => obj
+                        .get("#text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    _ => {
+                        // Unexpected shape — restore and skip rather than silently losing data.
+                        root_obj.insert(spec.element.clone(), elem_val);
+                        continue;
+                    }
+                };
+                let sidecar_path = parent.join(format!("{}.{}", base_name, spec.extension));
+                fs::write(&sidecar_path, text).await?;
+                modified = true;
+            }
+        }
+    }
+
+    if modified {
+        let stripped_xml = build_xml_string(&parsed);
+        fs::write(file_path, stripped_xml).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
