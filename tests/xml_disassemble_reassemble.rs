@@ -2,7 +2,7 @@
 //! the reassembled XML matches the original file contents (same as original TypeScript tests).
 
 use config_disassembler::xml::{
-    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler,
+    DecomposeRule, DisassembleXmlFileHandler, MultiLevelRule, ReassembleXmlFileHandler, SidecarSpec,
 };
 use std::path::Path;
 
@@ -2449,5 +2449,144 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
     assert!(
         rebuilt.contains("<milestoneName>Resolution</milestoneName>"),
         "rebuilt XML must contain other milestones too; got:\n{rebuilt}"
+    );
+}
+
+/// Sidecar-elements round-trip: an ExternalServiceRegistration XML whose
+/// `<schema>` element holds an embedded OpenAPI YAML blob is disassembled
+/// with a SidecarSpec. The YAML must land in a companion `.yaml` file next
+/// to the source, the disassembled XML shards must not contain the blob, and
+/// reassembly must inject the YAML back so the `<schema>` element is present
+/// in the final output.
+///
+/// This replicates the Salesforce SDR
+/// `decomposeExternalServiceRegistrationBeta` preset behaviour.
+#[tokio::test]
+async fn sidecar_schema_element_extracted_and_reinjected() {
+    let _ = env_logger::try_init();
+
+    let fixture =
+        "fixtures/xml/sidecar/DropboxFileManagerHandler.externalServiceRegistration-meta.xml";
+    assert!(
+        Path::new(fixture).exists(),
+        "Fixture {} must exist (run from project root)",
+        fixture
+    );
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("DropboxFileManagerHandler.externalServiceRegistration-meta.xml");
+    std::fs::copy(fixture, &source).expect("copy fixture");
+
+    let sidecar = SidecarSpec {
+        element: "schema".to_string(),
+        extension: "yaml".to_string(),
+    };
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            Some(std::slice::from_ref(&sidecar)),
+        )
+        .await
+        .expect("disassemble");
+
+    // Sidecar file must exist alongside the source XML (not inside the disassembled dir).
+    let sidecar_path = base.join("DropboxFileManagerHandler.yaml");
+    assert!(
+        sidecar_path.exists(),
+        "sidecar .yaml file must be written next to the source XML"
+    );
+
+    // Sidecar content must be the raw YAML extracted from <schema>.
+    let sidecar_content = std::fs::read_to_string(&sidecar_path).expect("read sidecar");
+    assert!(
+        sidecar_content.contains("openapi: 3.0.1"),
+        "sidecar must contain the OpenAPI YAML content; got:\n{sidecar_content}"
+    );
+    assert!(
+        sidecar_content.contains("uploadFile"),
+        "sidecar must contain the operation name; got:\n{sidecar_content}"
+    );
+
+    // Disassembled directory must exist (operations has nested elements).
+    let disassembled_dir = base.join("DropboxFileManagerHandler");
+    assert!(
+        disassembled_dir.exists(),
+        "disassembled directory must exist for nested <operations> element"
+    );
+
+    // No disassembled shard file must contain the raw YAML blob.
+    for entry in walkdir::WalkDir::new(&disassembled_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "xml"))
+    {
+        let shard = std::fs::read_to_string(entry.path()).expect("read shard");
+        assert!(
+            !shard.contains("openapi: 3.0.1"),
+            "shard {:?} must not contain the extracted YAML blob",
+            entry.path()
+        );
+    }
+
+    // Reassemble: schema must be injected back from the sidecar.
+    let handler = ReassembleXmlFileHandler::new();
+    handler
+        .reassemble(
+            disassembled_dir.to_str().unwrap(),
+            Some("externalServiceRegistration-meta.xml"),
+            false,
+            Some(&[sidecar]),
+        )
+        .await
+        .expect("reassemble");
+
+    let rebuilt_path = base.join("DropboxFileManagerHandler.externalServiceRegistration-meta.xml");
+    assert!(rebuilt_path.exists(), "reassembled file must exist");
+
+    let rebuilt = std::fs::read_to_string(&rebuilt_path).expect("read rebuilt");
+
+    // The <schema> element must be present with the YAML content restored.
+    assert!(
+        rebuilt.contains("<schema>"),
+        "reassembled XML must contain <schema> element"
+    );
+    assert!(
+        rebuilt.contains("openapi: 3.0.1"),
+        "reassembled XML must contain the YAML content inside <schema>; got:\n{rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("uploadFile"),
+        "reassembled XML must contain the operation name inside <schema>; got:\n{rebuilt}"
+    );
+
+    // Other leaf elements must survive the round-trip.
+    assert!(
+        rebuilt.contains("<label>DropboxFileManagerHandler</label>"),
+        "leaf elements must be preserved; got:\n{rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("<schemaType>OpenApi3</schemaType>"),
+        "leaf elements must be preserved; got:\n{rebuilt}"
+    );
+    assert!(
+        rebuilt.contains("<status>Complete</status>"),
+        "leaf elements must be preserved; got:\n{rebuilt}"
+    );
+
+    // The <operations> nested element must also survive.
+    assert!(
+        rebuilt.contains("<name>uploadFile</name>"),
+        "nested <operations> element must be preserved; got:\n{rebuilt}"
     );
 }
