@@ -624,7 +624,10 @@ async fn extract_sidecar_elements(
                         continue;
                     }
                 };
-                sidecars.push((spec.extension.clone(), text));
+                sidecars.push((
+                    spec.extension.clone(),
+                    convert_sidecar_content(&text, &spec.extension),
+                ));
             }
         }
     }
@@ -633,6 +636,60 @@ async fn extract_sidecar_elements(
         Ok(None)
     } else {
         Ok(Some((build_xml_string(&parsed), sidecars)))
+    }
+}
+
+/// Convert raw text extracted from an XML element to the format implied by `extension`.
+///
+/// - `json` → parse as YAML (superset of JSON) then re-emit as pretty JSON
+/// - `yaml` / `yml` → parse as JSON then re-emit as YAML; falls back to YAML→YAML if not JSON
+/// - anything else → pass through unchanged
+///
+/// Falls back to raw text with a warning when the content cannot be parsed.
+fn convert_sidecar_content(text: &str, extension: &str) -> String {
+    match extension.to_ascii_lowercase().as_str() {
+        "json" => {
+            match serde_yaml::from_str::<serde_json::Value>(text) {
+                Ok(val) => match serde_json::to_string_pretty(&val) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
+                        text.to_string()
+                    }
+                },
+                Err(e) => {
+                    log::warn!("sidecar: could not parse content for JSON conversion ({e}); using raw text");
+                    text.to_string()
+                }
+            }
+        }
+        "yaml" | "yml" => {
+            // Try JSON first (stricter); fall back to YAML re-serialization.
+            let val: Option<serde_yaml::Value> = serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|v| {
+                    serde_yaml::to_string(&v)
+                        .ok()
+                        .and_then(|s| serde_yaml::from_str(&s).ok())
+                })
+                .or_else(|| serde_yaml::from_str(text).ok());
+            match val {
+                Some(v) => match serde_yaml::to_string(&v) {
+                    Ok(yaml) => yaml,
+                    Err(e) => {
+                        log::warn!("sidecar: YAML serialization failed ({e}); using raw text");
+                        text.to_string()
+                    }
+                },
+                None => {
+                    log::warn!(
+                        "sidecar: could not parse content for YAML conversion; using raw text"
+                    );
+                    text.to_string()
+                }
+            }
+        }
+        _ => text.to_string(),
     }
 }
 
@@ -906,5 +963,57 @@ mod tests {
         // Stems without any dot are passed through verbatim (no extension to strip).
         assert_eq!(DisassembleXmlFileHandler::output_dir_basename("Foo"), "Foo");
         assert_eq!(DisassembleXmlFileHandler::output_dir_basename(""), "");
+    }
+
+    #[test]
+    fn convert_sidecar_content_yaml_to_json() {
+        let yaml = "key: value\nlist:\n  - a\n  - b\n";
+        let out = convert_sidecar_content(yaml, "json");
+        let val: serde_json::Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert_eq!(val["key"], "value");
+        assert_eq!(val["list"][0], "a");
+        assert_eq!(val["list"][1], "b");
+    }
+
+    #[test]
+    fn convert_sidecar_content_json_to_yaml() {
+        let json = r#"{"key":"value","num":42}"#;
+        let out = convert_sidecar_content(json, "yaml");
+        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        assert_eq!(val["key"], "value");
+        assert_eq!(val["num"], 42);
+    }
+
+    #[test]
+    fn convert_sidecar_content_json_to_json_prettifies() {
+        let compact = r#"{"a":1}"#;
+        let out = convert_sidecar_content(compact, "json");
+        // Pretty JSON has newlines and indentation.
+        assert!(out.contains('\n'), "expected pretty JSON, got: {out}");
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["a"], 1);
+    }
+
+    #[test]
+    fn convert_sidecar_content_unknown_extension_passes_through() {
+        let raw = "arbitrary: content: here";
+        assert_eq!(convert_sidecar_content(raw, "txt"), raw);
+        assert_eq!(convert_sidecar_content(raw, ""), raw);
+    }
+
+    #[test]
+    fn convert_sidecar_content_malformed_falls_back_to_raw() {
+        // Tabs inside a YAML flow scalar make it unparseable as YAML/JSON.
+        let bad = "{{{{ not valid json or yaml at all >>>>>";
+        assert_eq!(convert_sidecar_content(bad, "json"), bad);
+        assert_eq!(convert_sidecar_content(bad, "yaml"), bad);
+    }
+
+    #[test]
+    fn convert_sidecar_content_yml_extension_same_as_yaml() {
+        let json = r#"{"x":true}"#;
+        let out = convert_sidecar_content(json, "yml");
+        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(val["x"], true);
     }
 }
