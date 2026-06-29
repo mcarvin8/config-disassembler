@@ -382,13 +382,7 @@ This mirrors the Salesforce `decomposeExternalServiceRegistrationBeta` preset: J
 config-disassembler xml reassemble BankService
 ```
 
-Reassembly auto-detects sidecars from `.sidecars.json` — no flag required. To override or supply specs manually:
-
-```bash
-config-disassembler xml reassemble BankService --sidecar-elements schema:yaml
-```
-
-The sidecar file content is injected back verbatim into the XML element.
+Reassembly auto-detects sidecars from `.sidecars.json` written during disassembly — no flag required. The sidecar file content is injected back verbatim into the XML element.
 
 ### Multiple sidecars
 

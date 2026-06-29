@@ -197,31 +197,21 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
     }
 }
 
-/// Parse reassemble args: `<path> [extension] [--postpurge] [--sidecar-elements <spec>]`.
-pub fn parse_reassemble_args(
-    args: &[String],
-) -> (Option<&str>, Option<&str>, bool, Option<String>) {
+/// Parse reassemble args: `<path> [extension] [--postpurge]`.
+pub fn parse_reassemble_args(args: &[String]) -> (Option<&str>, Option<&str>, bool) {
     let mut path = None;
     let mut extension = None;
     let mut post_purge = false;
-    let mut sidecar_elements: Option<String> = None;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    for arg in args.iter() {
         if arg == "--postpurge" {
             post_purge = true;
-        } else if let Some(rest) = arg.strip_prefix("--sidecar-elements=") {
-            sidecar_elements = Some(rest.to_string());
-        } else if arg == "--sidecar-elements" {
-            if let Some(value) = iter.next() {
-                sidecar_elements = Some(value.clone());
-            }
         } else if path.is_none() {
             path = Some(arg.as_str());
         } else if extension.is_none() {
             extension = Some(arg.as_str());
         }
     }
-    (path, extension, post_purge, sidecar_elements)
+    (path, extension, post_purge)
 }
 
 /// Parse a `--sidecar-elements` spec string into a list of [`SidecarSpec`]s.
@@ -263,7 +253,7 @@ pub fn print_usage() {
     eprintln!("    --multi-level <spec>          - Further disassemble matching files: file_pattern:root_to_strip:unique_id_elements (multiple rules separated by ';')");
     eprintln!("    -p, --split-tags <spec>       - With grouped-by-tag: split/group nested tags (e.g. objectPermissions:split:object,fieldPermissions:group:field)");
     eprintln!("    --sidecar-elements <spec>     - Extract element text to companion files: element:extension (comma-separated, e.g. schema:yaml)");
-    eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml)");
+    eprintln!("  reassemble <path> [extension] [--postpurge]  - Reassemble directory (default extension: xml); sidecar specs are auto-detected from .sidecars.json");
 }
 
 /// True when `args` only contains the program name (or is empty).
@@ -368,25 +358,11 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 }
 
 async fn run_reassemble(args: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (path, extension, post_purge, sidecar_elements) = parse_reassemble_args(args);
+    let (path, extension, post_purge) = parse_reassemble_args(args);
     let path = path.unwrap_or(".");
-    let sidecar_specs: Vec<SidecarSpec> = sidecar_elements
-        .as_deref()
-        .map(parse_sidecar_specs)
-        .unwrap_or_default();
-    let sidecar_specs_ref = if sidecar_specs.is_empty() {
-        None
-    } else {
-        Some(sidecar_specs.as_slice())
-    };
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(
-            path,
-            extension.or(Some("xml")),
-            post_purge,
-            sidecar_specs_ref,
-        )
+        .reassemble(path, extension.or(Some("xml")), post_purge, None)
         .await?;
     Ok(())
 }
@@ -667,7 +643,7 @@ mod tests {
             .iter()
             .map(|s| sv(s))
             .collect::<Vec<_>>();
-        let (path, ext, purge, _) = parse_reassemble_args(&args);
+        let (path, ext, purge) = parse_reassemble_args(&args);
         assert_eq!(path, Some("some/dir"));
         assert_eq!(ext, Some("json"));
         assert!(purge);
@@ -675,7 +651,7 @@ mod tests {
 
     #[test]
     fn parse_reassemble_args_defaults_and_extra_args_ignored() {
-        let (p, e, purge, _) = parse_reassemble_args(&[]);
+        let (p, e, purge) = parse_reassemble_args(&[]);
         assert!(p.is_none());
         assert!(e.is_none());
         assert!(!purge);
@@ -684,7 +660,7 @@ mod tests {
             .iter()
             .map(|s| sv(s))
             .collect::<Vec<_>>();
-        let (p, e, _, _) = parse_reassemble_args(&args);
+        let (p, e, _) = parse_reassemble_args(&args);
         assert_eq!(p, Some("dir"));
         assert_eq!(e, Some("xml"));
     }
