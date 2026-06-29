@@ -322,7 +322,10 @@ impl ReassembleXmlFileHandler {
             if let Some(specs) = sidecar_specs {
                 let path = Path::new(&file_path);
                 let parent = path.parent().unwrap_or(Path::new("."));
-                let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("output");
+                let base = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("output");
                 for spec in specs {
                     let sidecar = parent.join(format!("{}.{}", base, spec.extension));
                     fs::remove_file(&sidecar).await.ok();
@@ -538,7 +541,10 @@ async fn inject_sidecar_elements(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = Path::new(dir_path);
     let parent = path.parent().unwrap_or(Path::new("."));
-    let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("output");
+    let base = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
 
     let root_key = merged
         .as_object()

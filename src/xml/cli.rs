@@ -198,7 +198,9 @@ pub fn parse_disassemble_args(args: &[String]) -> DisassembleOpts<'_> {
 }
 
 /// Parse reassemble args: `<path> [extension] [--postpurge] [--sidecar-elements <spec>]`.
-pub fn parse_reassemble_args(args: &[String]) -> (Option<&str>, Option<&str>, bool, Option<String>) {
+pub fn parse_reassemble_args(
+    args: &[String],
+) -> (Option<&str>, Option<&str>, bool, Option<String>) {
     let mut path = None;
     let mut extension = None;
     let mut post_purge = false;
@@ -379,7 +381,12 @@ async fn run_reassemble(args: &[String]) -> Result<(), Box<dyn std::error::Error
     };
     let handler = ReassembleXmlFileHandler::new();
     handler
-        .reassemble(path, extension.or(Some("xml")), post_purge, sidecar_specs_ref)
+        .reassemble(
+            path,
+            extension.or(Some("xml")),
+            post_purge,
+            sidecar_specs_ref,
+        )
         .await?;
     Ok(())
 }

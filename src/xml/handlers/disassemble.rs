@@ -6,7 +6,9 @@ use crate::xml::multi_level::{
     strip_root_and_build_xml,
 };
 use crate::xml::parsers::parse_xml;
-use crate::xml::types::{BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec};
+use crate::xml::types::{
+    BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec,
+};
 use crate::xml::utils::normalize_path_unix;
 use ignore::gitignore::GitignoreBuilder;
 use std::path::Path;
