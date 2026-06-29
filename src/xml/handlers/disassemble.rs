@@ -642,51 +642,44 @@ async fn extract_sidecar_elements(
 /// Convert raw text extracted from an XML element to the format implied by `extension`.
 ///
 /// - `json` → parse as YAML (superset of JSON) then re-emit as pretty JSON
-/// - `yaml` / `yml` → parse as JSON then re-emit as YAML; falls back to YAML→YAML if not JSON
+/// - `yaml` / `yml` → convert only when source is strict JSON; YAML content passes through
+///   unchanged so quote style, indentation, and formatting are preserved on round-trip
 /// - anything else → pass through unchanged
 ///
 /// Falls back to raw text with a warning when the content cannot be parsed.
 fn convert_sidecar_content(text: &str, extension: &str) -> String {
     match extension.to_ascii_lowercase().as_str() {
-        "json" => {
-            match serde_yaml::from_str::<serde_json::Value>(text) {
-                Ok(val) => match serde_json::to_string_pretty(&val) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
-                        text.to_string()
-                    }
-                },
+        "json" => match serde_yaml::from_str::<serde_json::Value>(text) {
+            Ok(val) => match serde_json::to_string_pretty(&val) {
+                Ok(json) => json,
                 Err(e) => {
-                    log::warn!("sidecar: could not parse content for JSON conversion ({e}); using raw text");
+                    log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
                     text.to_string()
                 }
+            },
+            Err(e) => {
+                log::warn!(
+                    "sidecar: could not parse content for JSON conversion ({e}); using raw text"
+                );
+                text.to_string()
             }
-        }
+        },
         "yaml" | "yml" => {
-            // Try JSON first (stricter); fall back to YAML re-serialization.
-            let val: Option<serde_yaml::Value> = serde_json::from_str::<serde_json::Value>(text)
-                .ok()
-                .and_then(|v| {
-                    serde_yaml::to_string(&v)
-                        .ok()
-                        .and_then(|s| serde_yaml::from_str(&s).ok())
-                })
-                .or_else(|| serde_yaml::from_str(text).ok());
-            match val {
-                Some(v) => match serde_yaml::to_string(&v) {
-                    Ok(yaml) => yaml,
-                    Err(e) => {
-                        log::warn!("sidecar: YAML serialization failed ({e}); using raw text");
+            // Only convert when the source is strict JSON — YAML content passes through
+            // unchanged to avoid re-serialization changing quote style or formatting.
+            if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+                match serde_yaml::from_str::<serde_yaml::Value>(text)
+                    .ok()
+                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                {
+                    Some(yaml) => yaml,
+                    None => {
+                        log::warn!("sidecar: YAML serialization failed; using raw text");
                         text.to_string()
                     }
-                },
-                None => {
-                    log::warn!(
-                        "sidecar: could not parse content for YAML conversion; using raw text"
-                    );
-                    text.to_string()
                 }
+            } else {
+                text.to_string()
             }
         }
         _ => text.to_string(),
@@ -1015,5 +1008,14 @@ mod tests {
         let out = convert_sidecar_content(json, "yml");
         let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
         assert_eq!(val["x"], true);
+    }
+
+    #[test]
+    fn convert_sidecar_content_yaml_passes_through_unchanged() {
+        // YAML content with a yaml extension must NOT be re-serialized — serde_yaml changes
+        // double quotes to single quotes, breaking byte-for-byte round-trip assertions.
+        let yaml = "title: \"@AuraEnabled Apex method APIs\"\nversion: 1.0.0\n";
+        assert_eq!(convert_sidecar_content(yaml, "yaml"), yaml);
+        assert_eq!(convert_sidecar_content(yaml, "yml"), yaml);
     }
 }
