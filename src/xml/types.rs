@@ -153,7 +153,7 @@ pub struct MultiLevelConfig {
 /// **Format:** `element_name:extension`, e.g. `"schema:yaml"`. Multiple specs
 /// are passed as a slice; use comma separation at the CLI/NAPI layer when
 /// parsing from a string.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SidecarSpec {
     /// Name of the XML element whose text content is extracted.
     pub element: String,

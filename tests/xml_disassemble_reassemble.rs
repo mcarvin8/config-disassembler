@@ -2537,14 +2537,20 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         );
     }
 
-    // Reassemble with the same SidecarSpec so schema is injected back.
+    // .sidecars.json metadata must exist so reassembly can auto-detect specs.
+    assert!(
+        disassembled_dir.join(".sidecars.json").exists(),
+        ".sidecars.json must be written into the disassembled directory"
+    );
+
+    // Reassemble without explicit SidecarSpec — auto-detected from .sidecars.json.
     let handler = ReassembleXmlFileHandler::new();
     handler
         .reassemble(
             disassembled_dir.to_str().unwrap(),
             Some("externalServiceRegistration-meta.xml"),
             false,
-            Some(std::slice::from_ref(&sidecar)),
+            None,
         )
         .await
         .expect("reassemble");

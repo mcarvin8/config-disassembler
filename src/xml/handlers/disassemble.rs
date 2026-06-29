@@ -5,7 +5,7 @@ use crate::xml::multi_level::{
     capture_xmlns_from_root, path_segment_from_file_pattern, save_multi_level_config,
     strip_root_and_build_xml,
 };
-use crate::xml::parsers::parse_xml;
+use crate::xml::parsers::{extract_xml_declaration_from_raw, parse_xml, parse_xml_from_str};
 use crate::xml::types::{
     BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec,
 };
@@ -392,11 +392,17 @@ impl DisassembleXmlFileHandler {
 
         drop(temp_file); // deletes the temp file
 
-        // Write sidecar files into the output directory.
+        // Write sidecar files into the output directory, plus a .sidecars.json
+        // metadata file so reassembly can auto-detect specs without CLI flags.
         if let Some((_, sidecars)) = &extraction_result {
             for (extension, content) in sidecars {
                 let sidecar_path = output_path.join(format!("{}.{}", base_name, extension));
                 fs::write(&sidecar_path, content).await?;
+            }
+            if let Some(specs) = sidecar_specs {
+                if let Ok(json) = serde_json::to_string(specs) {
+                    let _ = fs::write(output_path.join(".sidecars.json"), json).await;
+                }
             }
         }
 
@@ -575,9 +581,21 @@ async fn extract_sidecar_elements(
     file_path: &str,
     specs: &[SidecarSpec],
 ) -> Result<Option<(String, Vec<(String, String)>)>, Box<dyn std::error::Error + Send + Sync>> {
-    let Some(mut parsed) = parse_xml(file_path).await else {
+    let raw = fs::read_to_string(file_path).await?;
+    let Some(mut parsed) = parse_xml_from_str(&raw, file_path) else {
         return Ok(None);
     };
+
+    // parse_xml_cdata drops the XML declaration; recover it from the raw bytes and
+    // re-inject so build_xml_string emits it in the temp file. Without this the
+    // shards produced by build_disassembled_files_unified lack the declaration and
+    // the reassembler falls back to a synthetic default instead of the original.
+    if let (Some(obj), Some(decl)) = (
+        parsed.as_object_mut(),
+        extract_xml_declaration_from_raw(&raw),
+    ) {
+        obj.insert("?xml".to_string(), decl);
+    }
 
     let root_key = parsed
         .as_object()

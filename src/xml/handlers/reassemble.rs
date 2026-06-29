@@ -292,11 +292,31 @@ impl ReassembleXmlFileHandler {
             return Ok(());
         };
 
+        // Resolve sidecar specs: use the caller-supplied slice when non-empty,
+        // otherwise auto-detect from .sidecars.json written by disassembly.
+        let auto_specs: Vec<crate::xml::types::SidecarSpec>;
+        let effective_specs: Option<&[crate::xml::types::SidecarSpec]> =
+            if sidecar_specs.is_some_and(|s| !s.is_empty()) {
+                sidecar_specs
+            } else {
+                let meta_path = Path::new(&file_path).join(".sidecars.json");
+                if let Ok(content) = fs::read_to_string(&meta_path).await {
+                    if let Ok(parsed) =
+                        serde_json::from_str::<Vec<crate::xml::types::SidecarSpec>>(&content)
+                    {
+                        auto_specs = parsed;
+                        Some(auto_specs.as_slice())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
         // Inject sidecar element content before key reordering so the element
         // lands at its original position rather than being appended at the end.
-        // Sidecars are written alongside the source XML (not inside the
-        // disassembled directory) so they survive post_purge automatically.
-        if let Some(specs) = sidecar_specs {
+        if let Some(specs) = effective_specs {
             inject_sidecar_elements(&file_path, &mut merged, specs).await?;
         }
 
@@ -314,12 +334,11 @@ impl ReassembleXmlFileHandler {
 
         fs::write(&output_path, &final_xml).await?;
 
-        // Remove sidecar files after successful injection. They are decomposition
-        // artifacts: the content is now inside the reassembled XML and the sidecars
-        // are no longer needed. We only do this when post_purge is requested so
-        // callers that want to keep the decomposed state can do so consistently.
+        // Remove sidecar files and metadata after successful injection. They are
+        // decomposition artifacts: the content is now inside the reassembled XML.
+        // Only done when post_purge is requested.
         if post_purge {
-            if let Some(specs) = sidecar_specs {
+            if let Some(specs) = effective_specs {
                 let path = Path::new(&file_path);
                 let base = path
                     .file_name()
