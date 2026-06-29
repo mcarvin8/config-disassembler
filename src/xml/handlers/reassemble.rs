@@ -321,13 +321,12 @@ impl ReassembleXmlFileHandler {
         if post_purge {
             if let Some(specs) = sidecar_specs {
                 let path = Path::new(&file_path);
-                let parent = path.parent().unwrap_or(Path::new("."));
                 let base = path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("output");
                 for spec in specs {
-                    let sidecar = parent.join(format!("{}.{}", base, spec.extension));
+                    let sidecar = path.join(format!("{}.{}", base, spec.extension));
                     fs::remove_file(&sidecar).await.ok();
                 }
             }
@@ -526,10 +525,9 @@ impl Default for ReassembleXmlFileHandler {
 /// Read sidecar files and inject their content back into the merged XML value
 /// before serialisation.
 ///
-/// Each sidecar is located by combining the decomposed directory's parent
-/// with its base name and the spec's extension (e.g. `MySvc.yaml` next to
-/// `MySvc/`). If a sidecar is absent (element was not in the original XML,
-/// or was never extracted), the spec is silently skipped.
+/// Each sidecar is located inside the decomposed directory itself
+/// (e.g. `MySvc/MySvc.yaml`). If a sidecar is absent (element was not in
+/// the original XML, or was never extracted), the spec is silently skipped.
 ///
 /// The injected value uses the `{"#raw-text": content}` shape that `build_xml_string`
 /// writes with `partial_escape`: mandatory XML chars (`<`, `>`, `&`) are escaped
@@ -540,7 +538,6 @@ async fn inject_sidecar_elements(
     specs: &[SidecarSpec],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = Path::new(dir_path);
-    let parent = path.parent().unwrap_or(Path::new("."));
     let base = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -556,7 +553,7 @@ async fn inject_sidecar_elements(
     if let Some(root_val) = merged.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
         if let Some(root_obj) = root_val.as_object_mut() {
             for spec in specs {
-                let sidecar_path = parent.join(format!("{}.{}", base, spec.extension));
+                let sidecar_path = path.join(format!("{}.{}", base, spec.extension));
                 let Ok(content) = fs::read_to_string(&sidecar_path).await else {
                     continue;
                 };

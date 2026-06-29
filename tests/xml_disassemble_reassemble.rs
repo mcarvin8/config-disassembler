@@ -2502,11 +2502,18 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         .await
         .expect("disassemble");
 
-    // Sidecar file must exist alongside the source XML (not inside the disassembled dir).
-    let sidecar_path = base.join("DropboxFileManagerHandler.yaml");
+    // Disassembled directory must exist (operations has nested elements).
+    let disassembled_dir = base.join("DropboxFileManagerHandler");
+    assert!(
+        disassembled_dir.exists(),
+        "disassembled directory must exist for nested <operations> element"
+    );
+
+    // Sidecar file must exist inside the disassembled directory.
+    let sidecar_path = disassembled_dir.join("DropboxFileManagerHandler.yaml");
     assert!(
         sidecar_path.exists(),
-        "sidecar .yaml file must be written next to the source XML"
+        "sidecar .yaml file must be written inside the disassembled directory"
     );
 
     // Sidecar content must be the raw YAML extracted from <schema>.
@@ -2514,13 +2521,6 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
     assert!(
         sidecar_content.contains("openapi: 3.0.1"),
         "sidecar must contain the OpenAPI YAML content; got:\n{sidecar_content}"
-    );
-
-    // Disassembled directory must exist (operations has nested elements).
-    let disassembled_dir = base.join("DropboxFileManagerHandler");
-    assert!(
-        disassembled_dir.exists(),
-        "disassembled directory must exist for nested <operations> element"
     );
 
     // No disassembled shard file must contain the raw YAML blob.
