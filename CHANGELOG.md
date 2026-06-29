@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/mcarvin8/config-disassembler/compare/v0.6.0...v0.7.0) - 2026-06-29
+
+### Added
+
+- add sidecar-elements for extracting embedded non-XML blobs ([#73](https://github.com/mcarvin8/config-disassembler/pull/73))
+
 ## [0.6.0](https://github.com/mcarvin8/config-disassembler/compare/v0.5.4...v0.6.0) - 2026-06-08
 
 ### Fixed
