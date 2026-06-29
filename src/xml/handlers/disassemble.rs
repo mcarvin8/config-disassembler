@@ -649,21 +649,26 @@ async fn extract_sidecar_elements(
 /// Falls back to raw text with a warning when the content cannot be parsed.
 fn convert_sidecar_content(text: &str, extension: &str) -> String {
     match extension.to_ascii_lowercase().as_str() {
-        "json" => match serde_yaml::from_str::<serde_json::Value>(text) {
-            Ok(val) => match serde_json::to_string_pretty(&val) {
-                Ok(json) => json,
+        "json" => {
+            // Parse into serde_yaml::Value first (the native representation) then
+            // serialize to JSON. Going directly to serde_json::Value fails for
+            // complex YAML in serde_yaml 0.9 due to cross-crate numeric type conflicts.
+            match serde_yaml::from_str::<serde_yaml::Value>(text) {
+                Ok(val) => match serde_json::to_string_pretty(&val) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
+                        text.to_string()
+                    }
+                },
                 Err(e) => {
-                    log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
+                    log::warn!(
+                        "sidecar: could not parse content for JSON conversion ({e}); using raw text"
+                    );
                     text.to_string()
                 }
-            },
-            Err(e) => {
-                log::warn!(
-                    "sidecar: could not parse content for JSON conversion ({e}); using raw text"
-                );
-                text.to_string()
             }
-        },
+        }
         "yaml" | "yml" => {
             // Only convert when the source is strict JSON — YAML content passes through
             // unchanged to avoid re-serialization changing quote style or formatting.
@@ -960,12 +965,19 @@ mod tests {
 
     #[test]
     fn convert_sidecar_content_yaml_to_json() {
-        let yaml = "key: value\nlist:\n  - a\n  - b\n";
+        // Uses nested YAML matching the fixture shape (quoted strings, string-keyed
+        // mappings, dotted version strings) to catch serde_yaml→serde_json cross-crate
+        // numeric type failures that affect simple-key tests but not complex YAML.
+        let yaml = "openapi: 3.0.1\ninfo:\n  title: \"@AuraEnabled Apex method APIs\"\n  version: 1.0.0\npaths:\n  /uploadFile:\n    post:\n      operationId: uploadFile\n      responses:\n        \"200\":\n          description: OK\n";
         let out = convert_sidecar_content(yaml, "json");
         let val: serde_json::Value = serde_json::from_str(&out).expect("output must be valid JSON");
-        assert_eq!(val["key"], "value");
-        assert_eq!(val["list"][0], "a");
-        assert_eq!(val["list"][1], "b");
+        assert_eq!(val["openapi"], "3.0.1");
+        assert_eq!(val["info"]["title"], "@AuraEnabled Apex method APIs");
+        assert_eq!(val["info"]["version"], "1.0.0");
+        assert_eq!(
+            val["paths"]["/uploadFile"]["post"]["operationId"],
+            "uploadFile"
+        );
     }
 
     #[test]
