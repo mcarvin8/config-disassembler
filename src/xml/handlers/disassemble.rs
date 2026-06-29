@@ -972,6 +972,13 @@ mod tests {
     fn convert_sidecar_content_json_to_yaml() {
         let json = r#"{"key":"value","num":42}"#;
         let out = convert_sidecar_content(json, "yaml");
+        // Output must be YAML, not raw JSON — if the yaml arm were deleted, the `_ =>` fallback
+        // would return the original JSON string, which is also parseable as YAML and would fool
+        // a parse-only assertion. Asserting strict-JSON parse fails pins the arm deletion mutant.
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&out).is_err(),
+            "output must be YAML format, not raw JSON: {out}"
+        );
         let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
         assert_eq!(val["key"], "value");
         assert_eq!(val["num"], 42);
