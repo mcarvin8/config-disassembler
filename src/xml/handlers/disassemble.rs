@@ -11,6 +11,7 @@ use crate::xml::types::{
 };
 use crate::xml::utils::normalize_path_unix;
 use ignore::gitignore::GitignoreBuilder;
+use std::io::Write as _;
 use std::path::Path;
 use tokio::fs;
 
@@ -345,14 +346,40 @@ impl DisassembleXmlFileHandler {
 
         // Extract sidecar elements before normal disassembly so the disassembler
         // sees schema-free XML and does not try to shard the embedded blob.
-        if let Some(specs) = sidecar_specs {
+        // The original file is never modified; stripped content is written to a
+        // temp file that is deleted after disassembly. Sidecar files are written
+        // into the output directory after disassembly creates it.
+        let extraction_result = if let Some(specs) = sidecar_specs {
             if !specs.is_empty() {
-                extract_sidecar_elements(file_path, base_name, specs).await?;
+                extract_sidecar_elements(file_path, specs).await?
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        let temp_file: Option<tempfile::NamedTempFile>;
+        let disassemble_path: &str;
+        if let Some((xml, _)) = &extraction_result {
+            let mut tmp = tempfile::Builder::new()
+                .suffix(".xml")
+                .tempfile_in(Path::new(file_path).parent().unwrap_or(Path::new(".")))?;
+            tmp.write_all(xml.as_bytes())?;
+            temp_file = Some(tmp);
+            disassemble_path = temp_file
+                .as_ref()
+                .unwrap()
+                .path()
+                .to_str()
+                .unwrap_or(file_path);
+        } else {
+            temp_file = None;
+            disassemble_path = file_path;
         }
 
         build_disassembled_files_unified(BuildDisassembledFilesOptions {
-            file_path,
+            file_path: disassemble_path,
             disassembled_path: output_path.to_str().unwrap_or("."),
             base_name: file_name,
             post_purge,
@@ -362,6 +389,16 @@ impl DisassembleXmlFileHandler {
             decompose_rules,
         })
         .await?;
+
+        drop(temp_file); // deletes the temp file
+
+        // Write sidecar files into the output directory.
+        if let Some((_, sidecars)) = &extraction_result {
+            for (extension, content) in sidecars {
+                let sidecar_path = output_path.join(format!("{}.{}", base_name, extension));
+                fs::write(&sidecar_path, content).await?;
+            }
+        }
 
         // Overwrite .key_order.json with the pre-extraction order so sidecar
         // element names appear at their original positions during reassembly.
@@ -523,37 +560,33 @@ impl Default for DisassembleXmlFileHandler {
     }
 }
 
-/// Extract the text content of named XML elements to typed companion sidecar
-/// files, then rewrite the source XML without those elements so the
-/// disassembler operates on a clean, blob-free document.
+/// Extract the text content of named XML elements in memory and return the
+/// stripped XML plus the sidecar payloads. The caller is responsible for
+/// writing sidecar files; the original file on disk is never modified.
 ///
-/// `base_name` is the file stem without the last dot segment (e.g.
-/// `"MySvc"` from `"MySvc.externalServiceRegistration-meta"`), used to name
-/// the sidecar alongside the source file.
+/// Returns `None` when no matching element was found.
+/// Returns `Some((stripped_xml, sidecars))` where `sidecars` maps each
+/// `SidecarSpec::extension` to the extracted text content.
 ///
 /// Quick-xml's parser automatically unescapes entity references in text
 /// content, so the sidecar receives the raw, unescaped bytes of the embedded
 /// document — exactly what you'd write by hand.
 async fn extract_sidecar_elements(
     file_path: &str,
-    base_name: &str,
     specs: &[SidecarSpec],
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Option<(String, Vec<(String, String)>)>, Box<dyn std::error::Error + Send + Sync>> {
     let Some(mut parsed) = parse_xml(file_path).await else {
-        return Ok(());
+        return Ok(None);
     };
-
-    let path = Path::new(file_path);
-    let parent = path.parent().unwrap_or(Path::new("."));
 
     let root_key = parsed
         .as_object()
         .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
     let Some(root_key) = root_key else {
-        return Ok(());
+        return Ok(None);
     };
 
-    let mut modified = false;
+    let mut sidecars: Vec<(String, String)> = Vec::new();
     if let Some(root_val) = parsed.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
         if let Some(root_obj) = root_val.as_object_mut() {
             for spec in specs {
@@ -573,19 +606,16 @@ async fn extract_sidecar_elements(
                         continue;
                     }
                 };
-                let sidecar_path = parent.join(format!("{}.{}", base_name, spec.extension));
-                fs::write(&sidecar_path, text).await?;
-                modified = true;
+                sidecars.push((spec.extension.clone(), text));
             }
         }
     }
 
-    if modified {
-        let stripped_xml = build_xml_string(&parsed);
-        fs::write(file_path, stripped_xml).await?;
+    if sidecars.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((build_xml_string(&parsed), sidecars)))
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
