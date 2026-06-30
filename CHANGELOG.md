@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/mcarvin8/config-disassembler/compare/v0.7.0...v0.8.0) - 2026-06-30
+
+### Added
+
+- preserve original format of sidecar content through round-trip ([#76](https://github.com/mcarvin8/config-disassembler/pull/76))
+
+### Fixed
+
+- update anyhow to 1.0.103 to address RUSTSEC-2026-0190 ([#78](https://github.com/mcarvin8/config-disassembler/pull/78))
+
 ## [0.7.0](https://github.com/mcarvin8/config-disassembler/compare/v0.6.0...v0.7.0) - 2026-06-29
 
 ### Added
