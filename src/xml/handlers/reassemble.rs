@@ -948,4 +948,59 @@ mod tests {
             "sidecar content missing — auto-detect did not run:\n{output}"
         );
     }
+
+    // Pins `delete match arm "json"` mutant: without the arm, YAML input to
+    // convert_to_format("json") falls through to `_ =>` and returns raw YAML.
+    #[test]
+    fn convert_to_format_yaml_to_json() {
+        let yaml = "openapi: 3.0.1\ninfo:\n  title: \"Test API\"\n  version: 1.0.0\n";
+        let out = convert_to_format(yaml, "json");
+        let val: serde_json::Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert_eq!(val["openapi"], "3.0.1");
+        assert_eq!(val["info"]["title"], "Test API");
+        assert_eq!(val["info"]["version"], "1.0.0");
+    }
+
+    // Pins `delete match arm "yaml" | "yml"` mutant: without the arm, JSON input
+    // to convert_to_format("yaml") falls through to `_ =>` and returns raw JSON.
+    #[test]
+    fn convert_to_format_json_to_yaml() {
+        let json = r#"{"key":"value","num":42}"#;
+        let out = convert_to_format(json, "yaml");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&out).is_err(),
+            "output must be YAML format, not raw JSON: {out}"
+        );
+        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        assert_eq!(val["key"], "value");
+        assert_eq!(val["num"], 42);
+    }
+
+    #[test]
+    fn convert_to_format_yml_extension_same_as_yaml() {
+        let json = r#"{"x":true}"#;
+        let out = convert_to_format(json, "yml");
+        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(val["x"], true);
+    }
+
+    #[test]
+    fn convert_to_format_yaml_passes_through_unchanged() {
+        // Pure YAML fails serde_json parse → returned as-is without re-serialization.
+        let yaml = "title: \"@AuraEnabled\"\nversion: 1.0.0\n";
+        assert_eq!(convert_to_format(yaml, "yaml"), yaml);
+    }
+
+    #[test]
+    fn convert_to_format_unknown_extension_passes_through() {
+        let raw = "arbitrary content";
+        assert_eq!(convert_to_format(raw, "txt"), raw);
+        assert_eq!(convert_to_format(raw, ""), raw);
+    }
+
+    #[test]
+    fn convert_to_format_malformed_falls_back_to_raw() {
+        let bad = "{{{{ not valid json or yaml at all >>>>>";
+        assert_eq!(convert_to_format(bad, "json"), bad);
+    }
 }

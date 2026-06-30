@@ -2544,6 +2544,16 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
         ".sidecars.json must be written into the disassembled directory"
     );
 
+    // original_format must be "yaml" — the <schema> element contains OpenAPI YAML.
+    // Pins the `== -> !=` mutant in the element-matching find() in process_file:
+    // with != the single-element find returns None, serialising to null not "yaml".
+    let sidecars_json = std::fs::read_to_string(disassembled_dir.join(".sidecars.json"))
+        .expect("read .sidecars.json");
+    assert!(
+        sidecars_json.contains("\"original_format\":\"yaml\""),
+        ".sidecars.json must record original_format \"yaml\" for the YAML <schema> element; got:\n{sidecars_json}"
+    );
+
     // Reassemble without explicit SidecarSpec — auto-detected from .sidecars.json.
     let handler = ReassembleXmlFileHandler::new();
     handler
