@@ -229,7 +229,11 @@ pub fn parse_sidecar_specs(spec: &str) -> Vec<SidecarSpec> {
             if element.is_empty() || extension.is_empty() {
                 return None;
             }
-            Some(SidecarSpec { element, extension })
+            Some(SidecarSpec {
+                element,
+                extension,
+                original_format: None,
+            })
         })
         .collect()
 }

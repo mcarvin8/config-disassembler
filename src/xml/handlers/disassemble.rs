@@ -395,12 +395,28 @@ impl DisassembleXmlFileHandler {
         // Write sidecar files into the output directory, plus a .sidecars.json
         // metadata file so reassembly can auto-detect specs without CLI flags.
         if let Some((_, sidecars)) = &extraction_result {
-            for (extension, content) in sidecars {
+            for (_, extension, content, _) in sidecars {
                 let sidecar_path = output_path.join(format!("{}.{}", base_name, extension));
                 fs::write(&sidecar_path, content).await?;
             }
             if let Some(specs) = sidecar_specs {
-                if let Ok(json) = serde_json::to_string(specs) {
+                // Enrich each spec with the original_format detected at extraction time
+                // so reassembly can convert the sidecar content back to the correct format.
+                let enriched: Vec<SidecarSpec> = specs
+                    .iter()
+                    .map(|spec| {
+                        let original_format = sidecars
+                            .iter()
+                            .find(|(el, _, _, _)| el == &spec.element)
+                            .and_then(|(_, _, _, fmt)| fmt.clone());
+                        SidecarSpec {
+                            element: spec.element.clone(),
+                            extension: spec.extension.clone(),
+                            original_format,
+                        }
+                    })
+                    .collect();
+                if let Ok(json) = serde_json::to_string(&enriched) {
                     let _ = fs::write(output_path.join(".sidecars.json"), json).await;
                 }
             }
@@ -571,8 +587,8 @@ impl Default for DisassembleXmlFileHandler {
 /// writing sidecar files; the original file on disk is never modified.
 ///
 /// Returns `None` when no matching element was found.
-/// Returns `Some((stripped_xml, sidecars))` where `sidecars` maps each
-/// `SidecarSpec::extension` to the extracted text content.
+/// Returns `Some((stripped_xml, sidecars))` where each sidecar entry is
+/// `(element, extension, content, original_format)`.
 ///
 /// Quick-xml's parser automatically unescapes entity references in text
 /// content, so the sidecar receives the raw, unescaped bytes of the embedded
@@ -580,7 +596,10 @@ impl Default for DisassembleXmlFileHandler {
 async fn extract_sidecar_elements(
     file_path: &str,
     specs: &[SidecarSpec],
-) -> Result<Option<(String, Vec<(String, String)>)>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    Option<(String, Vec<(String, String, String, Option<String>)>)>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let raw = fs::read_to_string(file_path).await?;
     let Some(mut parsed) = parse_xml_from_str(&raw, file_path) else {
         return Ok(None);
@@ -604,7 +623,8 @@ async fn extract_sidecar_elements(
         return Ok(None);
     };
 
-    let mut sidecars: Vec<(String, String)> = Vec::new();
+    // (element, extension, content, original_format)
+    let mut sidecars: Vec<(String, String, String, Option<String>)> = Vec::new();
     if let Some(root_val) = parsed.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
         if let Some(root_obj) = root_val.as_object_mut() {
             for spec in specs {
@@ -624,9 +644,12 @@ async fn extract_sidecar_elements(
                         continue;
                     }
                 };
+                let original_format = detect_content_format(&text);
                 sidecars.push((
+                    spec.element.clone(),
                     spec.extension.clone(),
                     convert_sidecar_content(&text, &spec.extension),
+                    original_format,
                 ));
             }
         }
@@ -636,6 +659,18 @@ async fn extract_sidecar_elements(
         Ok(None)
     } else {
         Ok(Some((build_xml_string(&parsed), sidecars)))
+    }
+}
+
+/// Detect whether `text` is JSON or YAML. Returns `Some("json")`, `Some("yaml")`,
+/// or `None` for content that cannot be parsed as either.
+fn detect_content_format(text: &str) -> Option<String> {
+    if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+        Some("json".to_string())
+    } else if serde_yaml::from_str::<serde_yaml::Value>(text).is_ok() {
+        Some("yaml".to_string())
+    } else {
+        None
     }
 }
 

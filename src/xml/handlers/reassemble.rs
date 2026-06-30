@@ -541,6 +541,52 @@ impl Default for ReassembleXmlFileHandler {
     }
 }
 
+/// Convert `content` (in whatever format the sidecar file uses) to `target_format`.
+///
+/// - `"json"` → parse via serde_yaml (superset of JSON) then emit as pretty JSON
+/// - `"yaml"` / `"yml"` → only convert when content is strict JSON; YAML passes through
+/// - anything else → pass through unchanged
+///
+/// Falls back to raw content with a warning when conversion fails.
+fn convert_to_format(content: &str, target_format: &str) -> String {
+    match target_format.to_ascii_lowercase().as_str() {
+        "json" => {
+            match serde_yaml::from_str::<serde_yaml::Value>(content) {
+                Ok(val) => match serde_json::to_string_pretty(&val) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        log::warn!("sidecar reassemble: JSON serialization failed ({e}); using raw content");
+                        content.to_string()
+                    }
+                },
+                Err(e) => {
+                    log::warn!("sidecar reassemble: could not parse content for JSON conversion ({e}); using raw content");
+                    content.to_string()
+                }
+            }
+        }
+        "yaml" | "yml" => {
+            if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+                match serde_yaml::from_str::<serde_yaml::Value>(content)
+                    .ok()
+                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                {
+                    Some(yaml) => yaml,
+                    None => {
+                        log::warn!(
+                            "sidecar reassemble: YAML serialization failed; using raw content"
+                        );
+                        content.to_string()
+                    }
+                }
+            } else {
+                content.to_string()
+            }
+        }
+        _ => content.to_string(),
+    }
+}
+
 /// Read sidecar files and inject their content back into the merged XML value
 /// before serialisation.
 ///
@@ -576,9 +622,16 @@ async fn inject_sidecar_elements(
                 let Ok(content) = fs::read_to_string(&sidecar_path).await else {
                     continue;
                 };
+                // When the original XML embedded a different format than the sidecar
+                // extension (e.g. JSON schema extracted to a .yaml sidecar), convert
+                // the sidecar content back to the original format before injecting.
+                let final_content = match &spec.original_format {
+                    Some(fmt) => convert_to_format(&content, fmt),
+                    None => content,
+                };
                 root_obj.insert(
                     spec.element.clone(),
-                    serde_json::json!({ "#raw-text": content }),
+                    serde_json::json!({ "#raw-text": final_content }),
                 );
             }
         }
@@ -894,5 +947,60 @@ mod tests {
             output.contains("key: value"),
             "sidecar content missing — auto-detect did not run:\n{output}"
         );
+    }
+
+    // Pins `delete match arm "json"` mutant: without the arm, YAML input to
+    // convert_to_format("json") falls through to `_ =>` and returns raw YAML.
+    #[test]
+    fn convert_to_format_yaml_to_json() {
+        let yaml = "openapi: 3.0.1\ninfo:\n  title: \"Test API\"\n  version: 1.0.0\n";
+        let out = convert_to_format(yaml, "json");
+        let val: serde_json::Value = serde_json::from_str(&out).expect("output must be valid JSON");
+        assert_eq!(val["openapi"], "3.0.1");
+        assert_eq!(val["info"]["title"], "Test API");
+        assert_eq!(val["info"]["version"], "1.0.0");
+    }
+
+    // Pins `delete match arm "yaml" | "yml"` mutant: without the arm, JSON input
+    // to convert_to_format("yaml") falls through to `_ =>` and returns raw JSON.
+    #[test]
+    fn convert_to_format_json_to_yaml() {
+        let json = r#"{"key":"value","num":42}"#;
+        let out = convert_to_format(json, "yaml");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&out).is_err(),
+            "output must be YAML format, not raw JSON: {out}"
+        );
+        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        assert_eq!(val["key"], "value");
+        assert_eq!(val["num"], 42);
+    }
+
+    #[test]
+    fn convert_to_format_yml_extension_same_as_yaml() {
+        let json = r#"{"x":true}"#;
+        let out = convert_to_format(json, "yml");
+        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(val["x"], true);
+    }
+
+    #[test]
+    fn convert_to_format_yaml_passes_through_unchanged() {
+        // Pure YAML fails serde_json parse → returned as-is without re-serialization.
+        let yaml = "title: \"@AuraEnabled\"\nversion: 1.0.0\n";
+        assert_eq!(convert_to_format(yaml, "yaml"), yaml);
+    }
+
+    #[test]
+    fn convert_to_format_unknown_extension_passes_through() {
+        let raw = "arbitrary content";
+        assert_eq!(convert_to_format(raw, "txt"), raw);
+        assert_eq!(convert_to_format(raw, ""), raw);
+    }
+
+    #[test]
+    fn convert_to_format_malformed_falls_back_to_raw() {
+        let bad = "{{{{ not valid json or yaml at all >>>>>";
+        assert_eq!(convert_to_format(bad, "json"), bad);
     }
 }
