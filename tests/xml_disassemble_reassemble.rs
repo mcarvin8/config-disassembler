@@ -2483,6 +2483,7 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
     let sidecar = SidecarSpec {
         element: "schema".to_string(),
         extension: "yaml".to_string(),
+        original_format: None,
     };
 
     let mut disassemble = DisassembleXmlFileHandler::new();

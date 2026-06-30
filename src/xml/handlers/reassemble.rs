@@ -541,6 +541,52 @@ impl Default for ReassembleXmlFileHandler {
     }
 }
 
+/// Convert `content` (in whatever format the sidecar file uses) to `target_format`.
+///
+/// - `"json"` → parse via serde_yaml (superset of JSON) then emit as pretty JSON
+/// - `"yaml"` / `"yml"` → only convert when content is strict JSON; YAML passes through
+/// - anything else → pass through unchanged
+///
+/// Falls back to raw content with a warning when conversion fails.
+fn convert_to_format(content: &str, target_format: &str) -> String {
+    match target_format.to_ascii_lowercase().as_str() {
+        "json" => {
+            match serde_yaml::from_str::<serde_yaml::Value>(content) {
+                Ok(val) => match serde_json::to_string_pretty(&val) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        log::warn!("sidecar reassemble: JSON serialization failed ({e}); using raw content");
+                        content.to_string()
+                    }
+                },
+                Err(e) => {
+                    log::warn!("sidecar reassemble: could not parse content for JSON conversion ({e}); using raw content");
+                    content.to_string()
+                }
+            }
+        }
+        "yaml" | "yml" => {
+            if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+                match serde_yaml::from_str::<serde_yaml::Value>(content)
+                    .ok()
+                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                {
+                    Some(yaml) => yaml,
+                    None => {
+                        log::warn!(
+                            "sidecar reassemble: YAML serialization failed; using raw content"
+                        );
+                        content.to_string()
+                    }
+                }
+            } else {
+                content.to_string()
+            }
+        }
+        _ => content.to_string(),
+    }
+}
+
 /// Read sidecar files and inject their content back into the merged XML value
 /// before serialisation.
 ///
@@ -576,9 +622,16 @@ async fn inject_sidecar_elements(
                 let Ok(content) = fs::read_to_string(&sidecar_path).await else {
                     continue;
                 };
+                // When the original XML embedded a different format than the sidecar
+                // extension (e.g. JSON schema extracted to a .yaml sidecar), convert
+                // the sidecar content back to the original format before injecting.
+                let final_content = match &spec.original_format {
+                    Some(fmt) => convert_to_format(&content, fmt),
+                    None => content,
+                };
                 root_obj.insert(
                     spec.element.clone(),
-                    serde_json::json!({ "#raw-text": content }),
+                    serde_json::json!({ "#raw-text": final_content }),
                 );
             }
         }

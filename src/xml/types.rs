@@ -159,4 +159,11 @@ pub struct SidecarSpec {
     pub element: String,
     /// File extension for the sidecar file (without leading dot), e.g. `"yaml"`.
     pub extension: String,
+    /// Format of the content as it existed inside the XML before extraction
+    /// ("json" or "yaml"). Detected at disassembly time and stored in
+    /// `.sidecars.json` so reassembly can convert the sidecar back to its
+    /// original format before injecting it into the XML. `None` means the
+    /// content was not recognised as JSON or YAML (raw pass-through).
+    #[serde(default)]
+    pub original_format: Option<String>,
 }
