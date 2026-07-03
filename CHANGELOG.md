@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/mcarvin8/config-disassembler/compare/v0.8.0...v0.8.1) - 2026-07-01
+
+### Other
+
+- *(deps)* bump ignore from 0.4.25 to 0.4.27 ([#87](https://github.com/mcarvin8/config-disassembler/pull/87))
+- *(deps)* bump env_logger from 0.11.10 to 0.11.11 ([#85](https://github.com/mcarvin8/config-disassembler/pull/85))
+- *(deps)* bump quick-xml from 0.40.1 to 0.41.0 ([#86](https://github.com/mcarvin8/config-disassembler/pull/86))
+- *(deps)* bump configparser from 3.1.0 to 3.2.0 ([#81](https://github.com/mcarvin8/config-disassembler/pull/81))
+- *(deps)* bump regex from 1.12.3 to 1.12.4 ([#84](https://github.com/mcarvin8/config-disassembler/pull/84))
+- *(deps)* bump log from 0.4.30 to 0.4.33 ([#82](https://github.com/mcarvin8/config-disassembler/pull/82))
+- *(deps)* bump codecov/codecov-action from 6 to 7 ([#80](https://github.com/mcarvin8/config-disassembler/pull/80))
+- *(deps)* bump actions/checkout from 6 to 7 ([#79](https://github.com/mcarvin8/config-disassembler/pull/79))
+- *(ci)* set commit message prefixes for Dependabot
+
 ## [0.8.0](https://github.com/mcarvin8/config-disassembler/compare/v0.7.0...v0.8.0) - 2026-06-30
 
 ### Added
