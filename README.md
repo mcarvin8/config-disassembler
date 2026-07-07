@@ -151,7 +151,6 @@ Formats:
 Commands:
   disassemble
   reassemble
-  parse (XML only)
 ```
 
 Examples:
@@ -159,7 +158,6 @@ Examples:
 ```bash
 config-disassembler yaml disassemble envs/
 config-disassembler toml reassemble Cargo
-config-disassembler xml parse flow.xml
 ```
 
 ## Common options
@@ -169,8 +167,8 @@ config-disassembler xml parse flow.xml
 | `--output-format <fmt>` | Output format |
 | `--unique-id <field>` | Name array items using a field |
 | `--ignore-path <path>` | Ignore file path |
-| `--prepurge` | Remove existing output before writing |
-| `--postpurge` | Remove input after success |
+| `--pre-purge` (`--prepurge` for XML) | Remove existing output before writing |
+| `--post-purge` (`--postpurge` for XML) | Remove input after success |
 
 ## Ignore files
 
