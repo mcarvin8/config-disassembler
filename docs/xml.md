@@ -5,7 +5,6 @@ The `xml` subcommand splits large XML files into smaller pieces and reassembles 
 ```bash
 config-disassembler xml disassemble <path> [options]
 config-disassembler xml reassemble  <path> [extension] [--postpurge]
-config-disassembler xml parse       <path>
 ```
 
 `<path>` may be a single XML file or a directory containing XML files.
@@ -35,16 +34,6 @@ flow/
 ```bash
 config-disassembler xml reassemble flow
 ```
-
-### Parse
-
-`parse` inspects how the disassembler reads an XML file without writing any output. Use it to preview the internal representation before choosing a strategy or to diagnose unexpected splits.
-
-```bash
-config-disassembler xml parse flow.xml
-```
-
-Prints the parsed structure to stdout. Useful for verifying attribute and CDATA handling before committing to a disassembly run.
 
 ---
 
@@ -392,6 +381,29 @@ config-disassembler xml disassemble service.xml \
 ```
 
 Each spec produces its own companion file.
+
+---
+
+---
+
+## Round-trip verification (library API)
+
+`verify_roundtrip` disassembles and reassembles an XML file inside an isolated temp directory, then reports whether the reconstructed file matches the original. It never touches the caller's file. This is a library-only API — no CLI subcommand yet.
+
+```rust
+use config_disassembler::xml::{verify_roundtrip, RoundtripStatus, VerifyOptions};
+
+let status = verify_roundtrip("flow.xml", VerifyOptions::default()).await?;
+match status {
+    RoundtripStatus::Identical => println!("byte-identical round trip"),
+    RoundtripStatus::Reordered => println!("semantically equal; only sibling/attribute order changed"),
+    RoundtripStatus::Drift(reason) => println!("genuine content loss: {reason}"),
+}
+```
+
+`VerifyOptions` mirrors the disassemble options that affect structure (`unique_id_elements`, `strategy`, `ignore_path`, `multi_level_rules`, `decompose_rules`, `sidecar_specs`) — set the same values you'd pass to disassembly so the round trip exercises the same rules.
+
+Comparison ignores sibling/attribute order (`Reordered`) since element order is not guaranteed to survive a disassemble/reassemble cycle, but reports `Drift` when content is genuinely lost or changed. Useful for CI dry-run checks: verify a metadata file round-trips cleanly without writing anything to the working tree.
 
 ---
 
