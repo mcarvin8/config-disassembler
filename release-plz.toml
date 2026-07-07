@@ -15,9 +15,9 @@ body = """
 
 {% if version %}\
     {% if previous.version %}\
-        ## [{{ version }}]({{ release_link }})
+        ## [{{ version }}]({{ release_link }}) - {{ timestamp | date(format="%Y-%m-%d") }}
     {% else %}\
-        ## [{{ version }}]
+        ## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
     {% endif %}\
 {% endif %}\
 
