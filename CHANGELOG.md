@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/mcarvin8/config-disassembler/compare/v0.8.2...v0.8.3)
+
+### ⛰️ Features
+
+
+- *(xml)* Add round-trip verify API ([#94](https://github.com/mcarvin8/config-disassembler/pull/94)) - ([84f7d12](https://github.com/mcarvin8/config-disassembler/commit/84f7d1256f5f8da37cc91af6f5ad138d2eeca8bc))
+
+### 📚 Documentation
+
+
+- Fix README CLI inaccuracies - ([5b348b0](https://github.com/mcarvin8/config-disassembler/commit/5b348b0678fc5a8b4c08689b9693d16cc88dedfe))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(release-plz)* Add release-plz configuration - ([805dcde](https://github.com/mcarvin8/config-disassembler/commit/805dcdeb78c341d6d008f03d7f4a4573c26161a7))
+
+
 ## [0.8.2](https://github.com/mcarvin8/config-disassembler/compare/v0.8.1...v0.8.2) - 2026-07-07
 
 ### Other
