@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/mcarvin8/config-disassembler/compare/v0.8.3...v0.9.0) - 2026-07-07
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Verify_roundtrip mislocates reconstructed file for dotted filenames ([#95](https://github.com/mcarvin8/config-disassembler/pull/95)) - ([d45db35](https://github.com/mcarvin8/config-disassembler/commit/d45db35e4c6be721d307a7540be243b803d18730))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(release-plz)* Include timestamp in release version entries - ([4415de6](https://github.com/mcarvin8/config-disassembler/commit/4415de67596631c92cd0249748893e8edfa30b3e))
+
+
 ## [0.8.3](https://github.com/mcarvin8/config-disassembler/compare/v0.8.2...v0.8.3)
 
 ### ⛰️ Features
