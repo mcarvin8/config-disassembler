@@ -197,6 +197,9 @@ See [docs/xml.md](docs/xml.md) for splitting strategies, split tags, and multi-l
 use config_disassembler::disassemble::{disassemble, DisassembleOptions};
 use config_disassembler::reassemble::{reassemble, ReassembleOptions};
 use config_disassembler::format::Format;
+
+// XML-only round-trip verification (see docs/xml.md)
+use config_disassembler::xml::{verify_roundtrip, RoundtripStatus, VerifyOptions};
 ```
 
 ## Node.js bindings

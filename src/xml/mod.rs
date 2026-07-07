@@ -9,6 +9,7 @@ pub mod parsers;
 pub mod transformers;
 pub mod types;
 pub mod utils;
+pub mod verify;
 
 pub use builders::build_xml_string;
 pub use handlers::{DisassembleXmlFileHandler, ReassembleXmlFileHandler};
@@ -19,3 +20,4 @@ pub use multi_level::{
 pub use parsers::parse_xml;
 pub use transformers::{transform_to_json, transform_to_json5, transform_to_yaml};
 pub use types::{DecomposeRule, MultiLevelConfig, MultiLevelRule, SidecarSpec, XmlElement};
+pub use verify::{verify_roundtrip, RoundtripStatus, VerifyOptions};
