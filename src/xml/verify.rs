@@ -26,6 +26,17 @@ pub struct VerifyOptions<'a> {
     pub unique_id_elements: Option<&'a str>,
     pub strategy: Option<&'a str>,
     pub ignore_path: &'a str,
+    /// Extension (may itself contain dots, e.g. `"permissionset-meta.xml"`)
+    /// passed to the round-trip's `reassemble()` call — same parameter as
+    /// [`crate::xml::ReassembleXmlFileHandler::reassemble`]'s
+    /// `file_extension`. The disassembled directory is named after the
+    /// original filename with its last dot segment stripped (e.g.
+    /// `HR_Admin.permissionset-meta.xml` disassembles into `HR_Admin/`), so
+    /// reassembling with the wrong extension produces a reconstructed
+    /// filename that doesn't match the original. Defaults to whatever
+    /// suffix the original filename has beyond the disassembled directory's
+    /// name, which reproduces the original filename exactly.
+    pub file_extension: Option<&'a str>,
     pub multi_level_rules: Option<&'a [MultiLevelRule]>,
     pub decompose_rules: Option<&'a [DecomposeRule]>,
     pub sidecar_specs: Option<&'a [SidecarSpec]>,
@@ -73,16 +84,40 @@ pub async fn verify_roundtrip(
         ));
     };
 
+    let dir_base_name = disassembled_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
+
+    // The disassembled dir's basename need not match the original filename:
+    // the crate strips the last dot segment off the file stem when naming
+    // it (e.g. `HR_Admin.permissionset-meta.xml` disassembles into
+    // `HR_Admin/`). Default the reassemble extension to whatever suffix the
+    // original filename has beyond that basename, so the reconstructed file
+    // matches the original filename unless the caller overrides it.
+    let file_extension: String = options
+        .file_extension
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            base_name
+                .strip_prefix(&format!("{dir_base_name}."))
+                .map(str::to_string)
+                .unwrap_or_else(|| "xml".to_string())
+        });
+
     ReassembleXmlFileHandler::new()
         .reassemble(
             disassembled_dir.to_string_lossy().as_ref(),
-            Some("xml"),
+            Some(&file_extension),
             true,
             options.sidecar_specs,
         )
         .await?;
 
-    let reconstructed_path = temp_dir.path().join(&base_name);
+    let reconstructed_path = disassembled_dir
+        .parent()
+        .unwrap_or(temp_dir.path())
+        .join(format!("{dir_base_name}.{file_extension}"));
     let reconstructed_content = match fs::read_to_string(&reconstructed_path).await {
         Ok(c) => c,
         Err(_) => {
@@ -96,7 +131,10 @@ pub async fn verify_roundtrip(
         return Ok(RoundtripStatus::Identical);
     }
 
-    let reconstructed_parsed = parse_xml_from_str(&reconstructed_content, &base_name);
+    let reconstructed_parsed = parse_xml_from_str(
+        &reconstructed_content,
+        &reconstructed_path.to_string_lossy(),
+    );
     match (original_parsed, reconstructed_parsed) {
         (Some(orig), Some(recon)) if canonicalize(&orig) == canonicalize(&recon) => {
             Ok(RoundtripStatus::Reordered)
@@ -270,5 +308,30 @@ mod tests {
             status,
             RoundtripStatus::Drift("missing in round-trip output".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn verify_roundtrip_handles_dotted_meta_filename() {
+        // Regression test: the disassembled directory for a stem like
+        // `HR_Admin.permissionset-meta` is named `HR_Admin` (the crate
+        // strips the last dot segment). Without a correct default
+        // `file_extension`, reassemble would write `HR_Admin.xml` — a
+        // filename that does NOT match the original
+        // `HR_Admin.permissionset-meta.xml` — and `verify_roundtrip` would
+        // look for the wrong reconstructed file, falsely reporting
+        // `Drift("missing in round-trip output")` for every dotted `-meta`
+        // filename (the common case for real Salesforce metadata).
+        let status = verify_roundtrip(
+            "fixtures/xml/general/HR_Admin.permissionset-meta.xml",
+            VerifyOptions {
+                unique_id_elements: Some(
+                    "application,apexClass,name,externalDataSource,flow,object,apexPage,recordType,tab,field",
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, RoundtripStatus::Identical);
     }
 }
