@@ -188,6 +188,16 @@ exclude_re = [
     "src/disassemble\\.rs:509:17: replace > with == in leading_comment_start",
     "src/disassemble\\.rs:619:13: replace >= with < in digit_width",
     "src/reassemble\\.rs:231:17: replace > with == in leading_comment_start",
+    # `handle_directory`'s `if files_to_process.len() <= 1` is a pure performance
+    # fork: the fast-path branch (inline `.await`) and the concurrent branch
+    # (semaphore + JoinSet) both end up calling `process_file` on every file in
+    # `files_to_process` and produce byte-identical output for 0 or 1 files --
+    # the concurrent path just pays fixed setup cost for nothing when there's no
+    # second file to overlap it against. Flipping `<=` to `>` only changes which
+    # branch a 0- or 1-file directory takes, not what ends up on disk, so no
+    # black-box test (this crate only asserts on the resulting files) can ever
+    # distinguish the two. See PR mcarvin8/config-disassembler#99.
+    "src/xml/handlers/disassemble\\.rs:.*replace <= with > in DisassembleXmlFileHandler::handle_directory",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky

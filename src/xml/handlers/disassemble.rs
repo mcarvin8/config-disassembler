@@ -296,6 +296,30 @@ impl DisassembleXmlFileHandler {
             files_to_process.push(normalize_path_unix(&sub_file_path));
         }
 
+        // A directory with 0 or 1 processable files -- e.g. a bot/flow/custom-metadata
+        // component folder holding a single record -- gets nothing from the concurrency
+        // machinery below: there's no second file to overlap it against, only the fixed cost
+        // of standing up a semaphore and JoinSet for one task. Skip straight to processing it
+        // inline instead.
+        if files_to_process.len() <= 1 {
+            for file_path in files_to_process {
+                Self::process_file(
+                    dir_path.clone(),
+                    strategy.to_string(),
+                    file_path,
+                    unique_id_elements.map(str::to_string),
+                    pre_purge,
+                    post_purge,
+                    format.to_string(),
+                    multi_level_rules.map(<[MultiLevelRule]>::to_vec),
+                    decompose_rules.map(<[DecomposeRule]>::to_vec),
+                    sidecar_specs.map(<[SidecarSpec]>::to_vec),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
         // Fan out across the shared multi-threaded tokio runtime instead of disassembling one
         // file at a time: this directory-mode call is the common case (a whole metadata type's
         // parent XML files in one call), so a plain sequential loop here left every core but one
