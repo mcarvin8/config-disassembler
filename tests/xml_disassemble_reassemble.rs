@@ -178,6 +178,65 @@ async fn disassemble_directory_processes_every_file_across_multiple_concurrency_
 }
 
 #[tokio::test]
+async fn disassemble_directory_with_a_single_file_uses_the_inline_fast_path() {
+    // A directory holding exactly one processable file must skip the concurrency
+    // machinery (semaphore/JoinSet) and still disassemble correctly via the inline path.
+    let _ = env_logger::try_init();
+    let fixture = "fixtures/xml/general/HR_Admin.permissionset-meta.xml";
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let dir_path = temp_dir.path().join("meta");
+    std::fs::create_dir_all(&dir_path).expect("create dir");
+    let dest = dir_path.join("Solo.permissionset-meta.xml");
+    std::fs::copy(fixture, &dest).expect("copy");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            dir_path.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    assert!(dir_path.join("Solo").exists());
+}
+
+#[tokio::test]
+async fn disassemble_directory_with_no_processable_files_is_a_noop() {
+    // An empty directory (0 files collected) must also take the inline fast path and
+    // return Ok without error.
+    let _ = env_logger::try_init();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let dir_path = temp_dir.path().join("meta");
+    std::fs::create_dir_all(&dir_path).expect("create dir");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            dir_path.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+}
+
+#[tokio::test]
 async fn disassemble_directory_ignores_non_xml_files_and_subdirs() {
     // Directory contains one XML, a non-XML file, and a subdirectory; handle_directory must
     // skip the non-file / non-XML entries without error.
