@@ -135,6 +135,49 @@ async fn disassemble_directory_processes_xml_files() {
 }
 
 #[tokio::test]
+async fn disassemble_directory_processes_every_file_across_multiple_concurrency_batches() {
+    // handle_directory fans files out across a bounded semaphore (16 permits at a time).
+    // A 2-file directory can't catch a batching bug in that bounded fan-out, so this
+    // exercises a file count well past one batch to confirm every file still gets
+    // processed -- not just the first wave.
+    let _ = env_logger::try_init();
+    let fixture = "fixtures/xml/general/HR_Admin.permissionset-meta.xml";
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let dir_path = temp_dir.path().join("meta");
+    std::fs::create_dir_all(&dir_path).expect("create dir");
+
+    const FILE_COUNT: usize = 40;
+    for i in 0..FILE_COUNT {
+        let dest = dir_path.join(format!("Component{i}.permissionset-meta.xml"));
+        std::fs::copy(fixture, &dest).expect("copy");
+    }
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            dir_path.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    for i in 0..FILE_COUNT {
+        assert!(
+            dir_path.join(format!("Component{i}")).exists(),
+            "Component{i} must have been disassembled"
+        );
+    }
+}
+
+#[tokio::test]
 async fn disassemble_directory_ignores_non_xml_files_and_subdirs() {
     // Directory contains one XML, a non-XML file, and a subdirectory; handle_directory must
     // skip the non-file / non-XML entries without error.
