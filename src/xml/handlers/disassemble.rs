@@ -13,7 +13,17 @@ use crate::xml::utils::normalize_path_unix;
 use ignore::gitignore::GitignoreBuilder;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::fs;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
+/// Upper bound on how many files inside one directory-mode `disassemble()` call are
+/// processed concurrently. Each spawned task is real OS-thread parallelism (not just
+/// cooperative async interleaving), so this also caps how many XML parses/serializations
+/// run at once; bounded rather than unbounded so a directory with thousands of files
+/// doesn't spawn thousands of tasks (and their file handles) simultaneously.
+const DIRECTORY_CONCURRENCY: usize = 16;
 
 pub struct DisassembleXmlFileHandler {
     ign: Option<ignore::gitignore::Gitignore>,
@@ -232,17 +242,17 @@ impl DisassembleXmlFileHandler {
 
         let dir_path = resolved.parent().unwrap_or(Path::new("."));
         let dir_path_str = normalize_path_unix(&dir_path.to_string_lossy());
-        self.process_file(
-            &dir_path_str,
-            strategy,
-            &resolved_str,
-            unique_id_elements,
+        Self::process_file(
+            dir_path_str,
+            strategy.to_string(),
+            resolved_str,
+            unique_id_elements.map(str::to_string),
             pre_purge,
             post_purge,
-            format,
-            multi_level_rules,
-            decompose_rules,
-            sidecar_specs,
+            format.to_string(),
+            multi_level_rules.map(<[MultiLevelRule]>::to_vec),
+            decompose_rules.map(<[DecomposeRule]>::to_vec),
+            sidecar_specs.map(<[SidecarSpec]>::to_vec),
         )
         .await
     }
@@ -264,6 +274,9 @@ impl DisassembleXmlFileHandler {
         let mut entries = fs::read_dir(&dir_path).await?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
 
+        // Ignore-checking needs `&self`, so this discovery pass stays sequential; it's cheap
+        // (just readdir + string matching, no XML parsing or file writes).
+        let mut files_to_process: Vec<String> = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let sub_path = entry.path();
             let sub_file_path = sub_path.to_string_lossy();
@@ -280,38 +293,78 @@ impl DisassembleXmlFileHandler {
                 log::warn!("File ignored by ignore rules: {}", sub_file_path);
                 continue;
             }
-            let sub_file_path_norm = normalize_path_unix(&sub_file_path);
-            self.process_file(
-                &dir_path,
-                strategy,
-                &sub_file_path_norm,
-                unique_id_elements,
-                pre_purge,
-                post_purge,
-                format,
-                multi_level_rules,
-                decompose_rules,
-                sidecar_specs,
-            )
-            .await?;
+            files_to_process.push(normalize_path_unix(&sub_file_path));
         }
+
+        // Fan out across the shared multi-threaded tokio runtime instead of disassembling one
+        // file at a time: this directory-mode call is the common case (a whole metadata type's
+        // parent XML files in one call), so a plain sequential loop here left every core but one
+        // idle no matter how many files there were. `process_file` needs no instance state, so
+        // each task is spawned with owned copies of its inputs and runs fully independently;
+        // bounded by a semaphore so a directory with thousands of files doesn't spawn thousands
+        // of tasks (and open file handles) at once.
+        let semaphore = Arc::new(Semaphore::new(DIRECTORY_CONCURRENCY));
+        let mut join_set = JoinSet::new();
+        for file_path in files_to_process {
+            let dir_path = dir_path.clone();
+            let strategy = strategy.to_string();
+            let unique_id_elements = unique_id_elements.map(str::to_string);
+            let format = format.to_string();
+            let multi_level_rules = multi_level_rules.map(<[MultiLevelRule]>::to_vec);
+            let decompose_rules = decompose_rules.map(<[DecomposeRule]>::to_vec);
+            let sidecar_specs = sidecar_specs.map(<[SidecarSpec]>::to_vec);
+            let semaphore = Arc::clone(&semaphore);
+
+            join_set.spawn(async move {
+                let _permit = semaphore.acquire_owned().await.expect("semaphore closed");
+                Self::process_file(
+                    dir_path,
+                    strategy,
+                    file_path,
+                    unique_id_elements,
+                    pre_purge,
+                    post_purge,
+                    format,
+                    multi_level_rules,
+                    decompose_rules,
+                    sidecar_specs,
+                )
+                .await
+            });
+        }
+
+        while let Some(joined) = join_set.join_next().await {
+            joined.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;
+        }
+
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn process_file(
-        &self,
-        dir_path: &str,
-        strategy: &str,
-        file_path: &str,
-        unique_id_elements: Option<&str>,
+        dir_path: String,
+        strategy: String,
+        file_path: String,
+        unique_id_elements: Option<String>,
         pre_purge: bool,
         post_purge: bool,
-        format: &str,
-        multi_level_rules: Option<&[MultiLevelRule]>,
-        decompose_rules: Option<&[DecomposeRule]>,
-        sidecar_specs: Option<&[SidecarSpec]>,
+        format: String,
+        multi_level_rules: Option<Vec<MultiLevelRule>>,
+        decompose_rules: Option<Vec<DecomposeRule>>,
+        sidecar_specs: Option<Vec<SidecarSpec>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Owned params so this can be `tokio::spawn`ed from `handle_directory` (spawned
+        // futures must be `'static`); shadow back to borrowed views under the same names
+        // so the body below is unchanged from the pre-concurrency version.
+        let dir_path = dir_path.as_str();
+        let file_path = file_path.as_str();
+        let strategy = strategy.as_str();
+        let format = format.as_str();
+        let unique_id_elements = unique_id_elements.as_deref();
+        let multi_level_rules = multi_level_rules.as_deref();
+        let decompose_rules = decompose_rules.as_deref();
+        let sidecar_specs = sidecar_specs.as_deref();
+
         log::debug!("Parsing file to disassemble: {}", file_path);
 
         let file_name = Path::new(file_path)
@@ -436,8 +489,7 @@ impl DisassembleXmlFileHandler {
         // can replay them in order.
         if let Some(rules) = multi_level_rules {
             for rule in rules {
-                self.recursively_disassemble_multi_level(&output_path, rule, format)
-                    .await?;
+                Self::recursively_disassemble_multi_level(&output_path, rule, format).await?;
             }
         }
 
@@ -447,7 +499,6 @@ impl DisassembleXmlFileHandler {
     /// Recursively walk the disassembly output; for XML files matching the rule's file_pattern,
     /// strip the root and re-disassemble with the rule's unique_id_elements.
     async fn recursively_disassemble_multi_level(
-        &self,
         dir_path: &Path,
         rule: &MultiLevelRule,
         format: &str,
