@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3](https://github.com/mcarvin8/config-disassembler/compare/v0.9.2...v0.9.3) - 2026-08-03
+
+### 🐛 Bug Fixes
+
+
+- Resolve clippy warnings blocking CI ([#110](https://github.com/mcarvin8/config-disassembler/pull/110)) - ([aac5540](https://github.com/mcarvin8/config-disassembler/commit/aac554024d6ed756751b643bd686a9df1b7c8b88))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- Drop cargo-mutants SHA pin, use released v27.1.0 ([#112](https://github.com/mcarvin8/config-disassembler/pull/112)) - ([d6cee3d](https://github.com/mcarvin8/config-disassembler/commit/d6cee3df292df24607f71f15d7ba1c8f9fa79326))
+
+### Build
+
+
+- Bump schneegans/dynamic-badges-action from 1.8.0 to 1.9.0 ([#101](https://github.com/mcarvin8/config-disassembler/pull/101)) - ([a06feb8](https://github.com/mcarvin8/config-disassembler/commit/a06feb8d204d3172dc43245cebd7ecb6ae923f0c))
+
+
 ## [0.9.2](https://github.com/mcarvin8/config-disassembler/compare/v0.9.1...v0.9.2) - 2026-07-08
 
 ### ⚡ Performance
