@@ -466,7 +466,7 @@ pub async fn build_disassembled_files_unified(
     if is_leaves_only(has_nested_elements, leaf_count) {
         log::error!(
             "The XML file {} only has leaf elements. This file will not be disassembled.",
-            &file_path
+            file_path
         );
         return Ok(());
     }
