@@ -49,17 +49,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Install cargo-mutants from the merge commit of upstream PR
+      # v27.1.0 (2026-06-02) includes the fix from upstream PR
       # https://github.com/sourcefrog/cargo-mutants/pull/613 (fixes #611
-      # "is not a file" mid-run, and rewrites BuildDir::overwrite_file to
-      # distinguish ENOENT / symlink / directory / non-regular file in
-      # the error message). The latest tagged release on crates.io is
-      # v27.0.0 from 2026-03-07 and does *not* contain this fix. Pinned
-      # to a specific SHA so the install is reproducible; revisit and
-      # switch back to taiki-e/install-action@v2 once a 27.x.x release
-      # ships with this fix.
-      - name: Install cargo-mutants (from upstream main, post-#613)
-        run: cargo install --locked --git https://github.com/sourcefrog/cargo-mutants --rev cbdfe8a574566e01cef9ffaa7475dfaf69c88440 cargo-mutants
+      # "is not a file" mid-run), so the git-SHA pin used prior to this
+      # release is no longer needed.
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
 
       - name: Compute diff vs base
         id: diff
@@ -141,10 +138,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Install cargo-mutants from the merge commit of upstream PR #613;
-      # see the matching note on the `incremental` job above.
-      - name: Install cargo-mutants (from upstream main, post-#613)
-        run: cargo install --locked --git https://github.com/sourcefrog/cargo-mutants --rev cbdfe8a574566e01cef9ffaa7475dfaf69c88440 cargo-mutants
+      # See the matching note on the `incremental` job above.
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0
 
       - name: Run full mutation testing
         run: cargo mutants --no-shuffle
