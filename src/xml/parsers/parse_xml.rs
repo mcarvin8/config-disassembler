@@ -57,10 +57,9 @@ pub fn extract_xml_declaration_from_raw(xml_content: &str) -> Option<XmlElement>
     let decl_content = decl_re.captures(xml_content)?.get(1)?.as_str();
     let mut decl = serde_json::Map::new();
     let version_re = regex::Regex::new(r#"version="([^"]*)""#).ok()?;
-    if let Some(cap) = version_re.captures(decl_content) {
+    {
+        let cap = version_re.captures(decl_content)?;
         decl.insert("@version".to_string(), Value::String(cap[1].to_string()));
-    } else {
-        return None;
     }
     let encoding_re = regex::Regex::new(r#"encoding="([^"]*)""#).ok()?;
     if let Some(cap) = encoding_re.captures(decl_content) {
