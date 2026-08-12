@@ -18,3 +18,7 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "build"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
