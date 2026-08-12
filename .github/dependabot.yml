@@ -8,10 +8,9 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      dependencies:
-        dependency-type: "production"
-      dev-dependencies:
-        dependency-type: "development"
+      cargo:
+        patterns:
+          - "*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
