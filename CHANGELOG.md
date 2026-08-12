@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4](https://github.com/mcarvin8/config-disassembler/compare/v0.9.3...v0.9.4) - 2026-08-12
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(ci)* Add github actions group - ([aaa1f03](https://github.com/mcarvin8/config-disassembler/commit/aaa1f03b633ececdaaa3b1e2e565c9def01c2577))
+- *(ci)* One group for all cargo dependencies - ([3a8fb4c](https://github.com/mcarvin8/config-disassembler/commit/3a8fb4cc31ea91eac02071d5dc6b63f49bc21ab9))
+- *(ci)* Group dependencies into prd and dev ([#113](https://github.com/mcarvin8/config-disassembler/pull/113)) - ([32be4dd](https://github.com/mcarvin8/config-disassembler/commit/32be4dd5f78623366c89f8adbd220abdccd97322))
+
+
 ## [0.9.3](https://github.com/mcarvin8/config-disassembler/compare/v0.9.2...v0.9.3) - 2026-08-03
 
 ### 🐛 Bug Fixes
