@@ -47,6 +47,7 @@ async fn disassemble_with_unsupported_strategy_defaults_to_unique_id() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -85,6 +86,7 @@ async fn disassemble_directory_with_ignore_skips_matching_files() {
             false,
             base.join(".xmldisassemblerignore").to_str().unwrap(),
             "xml",
+            None,
             None,
             None,
             None,
@@ -127,6 +129,7 @@ async fn disassemble_directory_processes_xml_files() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -162,6 +165,7 @@ async fn disassemble_directory_processes_every_file_across_multiple_concurrency_
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -202,6 +206,7 @@ async fn disassemble_directory_with_a_single_file_uses_the_inline_fast_path() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -228,6 +233,7 @@ async fn disassemble_directory_with_no_processable_files_is_a_noop() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -262,6 +268,7 @@ async fn disassemble_directory_ignores_non_xml_files_and_subdirs() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -291,6 +298,7 @@ async fn reassemble_with_post_purge_removes_disassembled_dir() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -402,6 +410,7 @@ async fn disassemble_non_xml_file_returns_ok_no_op() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble should return Ok(())");
@@ -437,6 +446,7 @@ async fn disassemble_with_pre_purge_removes_existing_output() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -482,6 +492,7 @@ async fn disassemble_then_reassemble_matches_original_xml() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -540,6 +551,7 @@ async fn disassemble_json_format_then_reassemble_round_trip() {
             false,
             ".xmldisassemblerignore",
             "json",
+            None,
             None,
             None,
             None,
@@ -603,6 +615,7 @@ async fn cdata_preserved_round_trip() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -670,6 +683,7 @@ async fn comments_preserved_round_trip() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -734,6 +748,7 @@ async fn deeply_nested_unique_id_elements_round_trip() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -812,6 +827,7 @@ async fn multi_level_disassemble_then_reassemble_matches_original() {
             Some(std::slice::from_ref(&rule)),
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -870,6 +886,7 @@ async fn grouped_by_tag_with_fallback_mode_writes_single_file() {
             "xml",
             None,
             Some(&[fallback_rule]),
+            None,
             None,
         )
         .await
@@ -932,6 +949,7 @@ async fn split_tags_disassemble_then_reassemble_matches_original() {
             None,
             Some(&split_tags_rules),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -974,6 +992,7 @@ async fn disassemble_nonexistent_path_returns_err() {
             None,
             None,
             None,
+            None,
         )
         .await;
     assert!(result.is_err(), "missing path should surface an error");
@@ -1010,6 +1029,7 @@ async fn disassemble_leaf_only_xml_logs_and_skips() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -1050,6 +1070,7 @@ async fn disassemble_duplicate_leaf_siblings_under_root_no_op_with_log() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1072,6 +1093,7 @@ async fn disassemble_unparseable_xml_is_no_op() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -1101,6 +1123,7 @@ async fn disassemble_empty_xml_document_is_no_op() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1124,6 +1147,7 @@ async fn disassemble_with_post_purge_removes_source_file() {
             true, // post_purge
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -1170,6 +1194,7 @@ async fn grouped_by_tag_split_rule_uses_index_when_field_missing() {
             None,
             Some(&rules),
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1214,6 +1239,7 @@ async fn grouped_by_tag_group_rule_uses_nested_text_value() {
             "xml",
             None,
             Some(&rules),
+            None,
             None,
         )
         .await
@@ -1273,6 +1299,7 @@ async fn multi_level_with_empty_path_segment_and_xmlns_derives_segment() {
             Some(std::slice::from_ref(&rule)),
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1314,6 +1341,7 @@ async fn multi_level_with_explicit_xmlns_preserved() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
             None,
         )
@@ -1366,6 +1394,7 @@ async fn multi_level_with_multiple_matching_files_appends_rule_once() {
             Some(std::slice::from_ref(&rule)),
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1397,6 +1426,7 @@ async fn disassemble_single_file_ignored_via_ignore_rules() {
             false,
             ignore_path.to_str().unwrap(),
             "xml",
+            None,
             None,
             None,
             None,
@@ -1438,6 +1468,7 @@ async fn multi_level_rule_without_matching_file_is_noop() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
             None,
         )
@@ -1580,6 +1611,7 @@ async fn fixture_round_trip_matches_original() {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -1670,6 +1702,7 @@ async fn multi_level_skips_unparseable_matching_file() {
             Some(std::slice::from_ref(&rule)),
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -1717,6 +1750,7 @@ async fn multi_level_skips_matching_file_without_root_to_strip() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
             None,
         )
@@ -1768,6 +1802,7 @@ async fn multi_level_skips_matching_file_with_non_object_strip_target() {
             ".xmldisassemblerignore",
             "xml",
             Some(std::slice::from_ref(&rule)),
+            None,
             None,
             None,
         )
@@ -1884,6 +1919,7 @@ async fn multi_rule_disassemble_then_reassemble_matches_original() {
             ".xmldisassemblerignore",
             "xml",
             Some(rules.as_slice()),
+            None,
             None,
             None,
         )
@@ -2019,6 +2055,7 @@ async fn nested_multi_rule_disassemble_then_reassemble_matches_original() {
             Some(rules.as_slice()),
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -2101,6 +2138,7 @@ async fn disassemble_preserves_dotted_full_names_in_output_dir() {
                 false,
                 ".xmldisassemblerignore",
                 "xml",
+                None,
                 None,
                 None,
                 None,
@@ -2208,6 +2246,7 @@ async fn compound_unique_id_elements_disambiguate_action_overrides() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -2360,6 +2399,7 @@ async fn unique_id_collision_falls_back_to_hashes_per_sibling() {
             None,
             None,
             None,
+            None,
         )
         .await
         .expect("disassemble");
@@ -2473,6 +2513,7 @@ async fn unique_id_value_with_path_separator_is_sanitized() {
             false,
             ".xmldisassemblerignore",
             "xml",
+            None,
             None,
             None,
             None,
@@ -2601,6 +2642,7 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
             None,
             None,
             Some(std::slice::from_ref(&sidecar)),
+            None,
         )
         .await
         .expect("disassemble");

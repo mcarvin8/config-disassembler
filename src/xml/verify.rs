@@ -74,6 +74,7 @@ pub async fn verify_roundtrip(
             options.multi_level_rules,
             options.decompose_rules,
             options.sidecar_specs,
+            None,
         )
         .await?;
 
@@ -247,6 +248,7 @@ mod tests {
                 true,
                 "",
                 "xml",
+                None,
                 None,
                 None,
                 None,

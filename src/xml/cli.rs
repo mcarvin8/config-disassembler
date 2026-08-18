@@ -356,6 +356,7 @@ async fn run_disassemble(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             multi_level_rules_ref,
             decompose_rules_ref,
             sidecar_specs_ref,
+            None,
         )
         .await?;
     Ok(())
