@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/mcarvin8/config-disassembler/compare/v0.9.4...v0.10.0) - 2026-08-18
+
+### ⛰️ Features
+
+
+- *(xml)* Accept explicit base_dir for ignore-path resolution ([#117](https://github.com/mcarvin8/config-disassembler/pull/117)) - ([a6363c8](https://github.com/mcarvin8/config-disassembler/commit/a6363c8135f36bc755ba77de4653f2dd1152b92c))
+
+
 ## [0.9.4](https://github.com/mcarvin8/config-disassembler/compare/v0.9.3...v0.9.4) - 2026-08-12
 
 ### ⚙️ Miscellaneous Tasks
