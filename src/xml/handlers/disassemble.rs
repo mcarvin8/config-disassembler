@@ -151,6 +151,7 @@ impl DisassembleXmlFileHandler {
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
         sidecar_specs: Option<&[SidecarSpec]>,
+        base_dir: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let strategy = strategy.unwrap_or("unique-id");
         let strategy = if ["unique-id", "grouped-by-tag"].contains(&strategy) {
@@ -167,7 +168,7 @@ impl DisassembleXmlFileHandler {
 
         let path = Path::new(file_path);
         let meta = fs::metadata(path).await?;
-        let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let cwd = Self::resolve_base_dir(base_dir);
         let relative_path = path.strip_prefix(&cwd).unwrap_or(path).to_string_lossy();
         let relative_path = Self::posix_path(&relative_path);
 
@@ -201,11 +202,24 @@ impl DisassembleXmlFileHandler {
                 multi_level_rules,
                 decompose_rules,
                 sidecar_specs,
+                base_dir,
             )
             .await?;
         }
 
         Ok(())
+    }
+
+    /// Resolve the directory that ignore-matching paths are computed relative to.
+    /// `Some(dir)` is used verbatim (the caller — e.g. Node bindings running
+    /// inside a `worker_threads` pool, where `process.chdir()` is unavailable —
+    /// already knows its project root); `None` falls back to the process's
+    /// actual working directory, preserving the original CLI behavior.
+    fn resolve_base_dir(base_dir: Option<&str>) -> std::path::PathBuf {
+        match base_dir {
+            Some(dir) => Path::new(dir).to_path_buf(),
+            None => std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf()),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -269,10 +283,11 @@ impl DisassembleXmlFileHandler {
         multi_level_rules: Option<&[MultiLevelRule]>,
         decompose_rules: Option<&[DecomposeRule]>,
         sidecar_specs: Option<&[SidecarSpec]>,
+        base_dir: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let dir_path = normalize_path_unix(dir_path);
         let mut entries = fs::read_dir(&dir_path).await?;
-        let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let cwd = Self::resolve_base_dir(base_dir);
 
         // Ignore-checking needs `&self`, so this discovery pass stays sequential; it's cheap
         // (just readdir + string matching, no XML parsing or file writes).
