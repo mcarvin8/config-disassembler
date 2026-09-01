@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/mcarvin8/config-disassembler/compare/v0.10.0...v0.10.1) - 2026-09-01
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(deps)* Bump the cargo group with 2 updates ([#119](https://github.com/mcarvin8/config-disassembler/pull/119)) - ([f4a44f6](https://github.com/mcarvin8/config-disassembler/commit/f4a44f6ad2cb85fa347155f9e020a44835fcabea))
+- Remove skip rule for chore(deps) in release config - ([4ab65f3](https://github.com/mcarvin8/config-disassembler/commit/4ab65f30ee4e5d357bfb7caed385cc3c5aa19cae))
+
+
 ## [0.10.0](https://github.com/mcarvin8/config-disassembler/compare/v0.9.4...v0.10.0) - 2026-08-18
 
 ### ⛰️ Features
