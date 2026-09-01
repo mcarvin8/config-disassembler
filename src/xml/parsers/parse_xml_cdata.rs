@@ -14,20 +14,18 @@ use serde_json::{Map, Number, Value};
 
 /// Append raw entity reference to buffer (e.g. "quot" -> "&quot;").
 fn append_entity_to_raw(ref_: &quick_xml::events::BytesRef<'_>, raw: &mut String) {
-    let name = String::from_utf8_lossy(ref_.as_ref());
     raw.push('&');
-    raw.push_str(&name);
+    raw.push_str(ref_.as_ref());
     raw.push(';');
 }
 
 /// Append CDATA content to the current element's "#cdata" buffer. Silently noops when the
 /// stack is empty; quick-xml rejects CDATA outside an element before reaching this point.
-fn append_cdata_to_current(stack: &mut [(String, Map<String, Value>)], bytes: &[u8]) {
-    let content = String::from_utf8_lossy(bytes);
+fn append_cdata_to_current(stack: &mut [(String, Map<String, Value>)], content: &str) {
     if let Some((_, elem)) = stack.last_mut() {
         let merged = match elem.get("#cdata").and_then(|v| v.as_str()) {
             Some(prev) => format!("{}{}", prev, content),
-            None => content.into_owned(),
+            None => content.to_string(),
         };
         elem.insert("#cdata".to_string(), Value::String(merged));
     }
@@ -156,12 +154,12 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
             Ok(Event::Start(e)) => {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
                 text_buffer_after_comment = false;
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 let mut attrs = Map::new();
                 for a in e.attributes().flatten() {
-                    let key = format!("@{}", String::from_utf8_lossy(a.key.as_ref()));
+                    let key = format!("@{}", a.key.as_ref());
                     let val = a
-                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                        .normalized_value(XmlVersion::Implicit1_0)
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
                 }
@@ -185,12 +183,12 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
             Ok(Event::Empty(e)) => {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
                 text_buffer_after_comment = false;
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let name = e.name().as_ref().to_string();
                 let mut attrs = Map::new();
                 for a in e.attributes().flatten() {
-                    let key = format!("@{}", String::from_utf8_lossy(a.key.as_ref()));
+                    let key = format!("@{}", a.key.as_ref());
                     let val = a
-                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                        .normalized_value(XmlVersion::Implicit1_0)
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
                 }
@@ -203,16 +201,15 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 );
             }
             Ok(Event::Text(e)) => {
-                let text = e.decode().unwrap_or_default();
                 if let Some((_, elem)) = stack.last() {
                     text_buffer_after_comment = elem.contains_key("#comment");
                 }
-                text_buffer.push_str(&text);
+                text_buffer.push_str(e.as_ref());
             }
             Ok(Event::Comment(e)) => {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
                 text_buffer_after_comment = false;
-                let content = e.decode().unwrap_or_default().to_string();
+                let content = e.as_ref().to_string();
                 if let Some((_, elem)) = stack.last_mut() {
                     elem.insert("#comment".to_string(), Value::String(content));
                 }
@@ -250,7 +247,7 @@ mod tests {
         // Defensive path: CDATA emitted with no open element (unreachable via quick-xml but
         // the helper still handles it gracefully without panicking).
         let mut stack: Vec<(String, Map<String, Value>)> = Vec::new();
-        append_cdata_to_current(&mut stack, b"ignored");
+        append_cdata_to_current(&mut stack, "ignored");
         assert!(stack.is_empty());
     }
 
@@ -258,8 +255,8 @@ mod tests {
     fn append_cdata_to_current_sets_and_appends() {
         // First call sets `#cdata`; second call appends (covers both match arms).
         let mut stack: Vec<(String, Map<String, Value>)> = vec![("r".to_string(), Map::new())];
-        append_cdata_to_current(&mut stack, b"one");
-        append_cdata_to_current(&mut stack, b"two");
+        append_cdata_to_current(&mut stack, "one");
+        append_cdata_to_current(&mut stack, "two");
         let (_, elem) = stack.last().unwrap();
         assert_eq!(elem.get("#cdata").and_then(|v| v.as_str()), Some("onetwo"));
     }
