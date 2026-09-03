@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/mcarvin8/config-disassembler/compare/v0.10.1...v0.10.2) - 2026-09-03
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Preserve source file's trailing newline on reassembly ([#121](https://github.com/mcarvin8/config-disassembler/pull/121)) - ([214fd4c](https://github.com/mcarvin8/config-disassembler/commit/214fd4c8a1caeef4dbc1c20f5c996721b734756a))
+
+
 ## [0.10.1](https://github.com/mcarvin8/config-disassembler/compare/v0.10.0...v0.10.1) - 2026-09-01
 
 ### ⚙️ Miscellaneous Tasks
