@@ -487,6 +487,21 @@ pub async fn build_disassembled_files_unified(
     let json = serde_json::to_string(&key_order).unwrap_or_else(|_| "[]".to_string());
     let _ = fs::write(key_order_path, json).await;
 
+    // Persist whether the source file ended with a trailing newline so reassembly can
+    // reproduce it exactly. `build_xml_string` always trims trailing whitespace from its
+    // output (leaf-element formatting needs a deterministic end), so without this the
+    // reassembled file silently drops a trailing newline present in virtually every
+    // real-world XML file (editors, `cat > file <<EOF ... EOF` heredocs, git's own "end
+    // with newline" convention) -- a byte-for-byte difference that isn't a real semantic
+    // change but gets reported as "reordered" by verify_roundtrip.
+    let trailing_newline_path =
+        std::path::Path::new(disassembled_path).join(".trailing_newline.json");
+    let _ = fs::write(
+        trailing_newline_path,
+        xml_content.ends_with('\n').to_string(),
+    )
+    .await;
+
     if should_write_leaf_file(leaf_count) {
         let final_leaf_content = if strategy == "grouped-by-tag" {
             order_xml_element_keys(&leaf_content, &key_order)

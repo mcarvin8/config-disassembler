@@ -272,6 +272,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_roundtrip_identical_when_source_has_trailing_newline() {
+        // Regression test: `build_xml_string` used to unconditionally trim trailing
+        // whitespace from the reassembled output, so a source file ending in a newline
+        // (the common case -- `cat > file <<EOF ... EOF` heredocs, most editors, git's
+        // own "end with newline" convention) always came back `Reordered` even though
+        // nothing was semantically reordered: the only diff was the missing trailing
+        // newline. `.trailing_newline.json` now records and reproduces it.
+        let tmp = tempfile::tempdir().unwrap();
+        let xml_path = tmp.path().join("Simple.xml");
+        tokio::fs::write(
+            &xml_path,
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root xmlns="http://example.com"><Child><Name>hello</Name></Child></Root>"#,
+        )
+        .await
+        .unwrap();
+
+        // Normalize to the tool's own canonical formatting first (same technique as
+        // `verify_roundtrip_identical_for_simple_xml` above -- arbitrary hand-written
+        // XML need not byte-match the tool's own formatting even absent this bug).
+        DisassembleXmlFileHandler::new()
+            .disassemble(
+                xml_path.to_str().unwrap(),
+                None,
+                None,
+                true,
+                true,
+                "",
+                "xml",
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        ReassembleXmlFileHandler::new()
+            .reassemble(
+                tmp.path().join("Simple").to_str().unwrap(),
+                Some("xml"),
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Append the trailing newline that a real-world file would have.
+        let canonical = tokio::fs::read_to_string(&xml_path).await.unwrap();
+        tokio::fs::write(&xml_path, format!("{canonical}\n"))
+            .await
+            .unwrap();
+
+        let status = verify_roundtrip(xml_path.to_str().unwrap(), VerifyOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(status, RoundtripStatus::Identical);
+    }
+
+    #[tokio::test]
     async fn verify_roundtrip_reordered_when_sibling_order_changes() {
         let tmp = tempfile::tempdir().unwrap();
         let xml_path = tmp.path().join("Multi.xml");
