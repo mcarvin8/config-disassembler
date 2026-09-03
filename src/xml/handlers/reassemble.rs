@@ -19,6 +19,14 @@ async fn read_key_order(path: &Path) -> Option<Vec<String>> {
     serde_json::from_slice::<Vec<String>>(&bytes).ok()
 }
 
+/// Read a `.trailing_newline.json` file (if present) and parse it as a bool. Absent --
+/// e.g. a directory disassembled by a crate version predating this sidecar -- defaults
+/// to `false`, preserving the pre-existing "always trim trailing whitespace" behavior.
+async fn read_trailing_newline(path: &Path) -> Option<bool> {
+    let bytes = fs::read(path).await.ok()?;
+    String::from_utf8(bytes).ok()?.trim().parse::<bool>().ok()
+}
+
 /// Remove @xmlns from an object so the reassembled segment wrapper (e.g. programProcesses) has no xmlns.
 fn strip_xmlns_from_value(v: Value) -> Value {
     match v {
@@ -329,7 +337,18 @@ impl ReassembleXmlFileHandler {
             merged = reordered;
         }
 
-        let final_xml = build_xml_string(&merged);
+        let mut final_xml = build_xml_string(&merged);
+
+        // Reproduce the original file's trailing newline (or lack of one) instead of
+        // always trimming it away -- see `.trailing_newline.json` in build_disassembled_files.rs.
+        let trailing_newline_path = Path::new(&file_path).join(".trailing_newline.json");
+        if read_trailing_newline(&trailing_newline_path)
+            .await
+            .unwrap_or(false)
+        {
+            final_xml.push('\n');
+        }
+
         let output_path = self.get_output_path(&file_path, file_extension);
 
         fs::write(&output_path, &final_xml).await?;
