@@ -44,10 +44,14 @@ pub fn parse_xml_from_str(content: &str, file_path: &str) -> Option<XmlElement> 
     // distinction between "never had whitespace" and "had it, now removed". Walk the
     // document root's own children rather than `parsed` itself: the root wrapper always
     // has exactly one key (the root element), which would otherwise always qualify.
-    if let Some(obj) = parsed.as_object_mut() {
-        for value in obj.values_mut() {
-            mark_compact_elements(value);
-        }
+    //
+    // `parse_xml_with_cdata` always returns `Value::Object` (a populated root or an
+    // empty map -- see its two return sites), so `as_object_mut` is infallible here.
+    let root_children = parsed
+        .as_object_mut()
+        .expect("parse_xml_with_cdata always returns an object");
+    for value in root_children.values_mut() {
+        mark_compact_elements(value);
     }
 
     let cleaned = strip_whitespace_text_nodes(&parsed);
