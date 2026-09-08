@@ -2721,3 +2721,76 @@ async fn sidecar_schema_element_extracted_and_reinjected() {
          (key order including <schema> position must be preserved)"
     );
 }
+
+#[tokio::test]
+async fn disassemble_with_empty_sidecar_specs_slice_behaves_like_none() {
+    // Exercises the `Some(specs) if specs.is_empty()` arm distinctly from the
+    // `sidecar_specs: None` case: an explicitly-empty slice must still
+    // disassemble normally without attempting sidecar extraction.
+    let _ = env_logger::try_init();
+    let fixture = "fixtures/xml/general/HR_Admin.permissionset-meta.xml";
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("HR_Admin.permissionset-meta.xml");
+    std::fs::copy(fixture, &source).expect("copy fixture");
+
+    let empty_specs: Vec<SidecarSpec> = Vec::new();
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            Some(&empty_specs),
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    assert!(
+        base.join("HR_Admin").exists(),
+        "disassembled output directory must exist"
+    );
+}
+
+#[tokio::test]
+async fn disassemble_with_explicit_base_dir_resolves_relative_path() {
+    // Exercises the `Some(dir) => Path::new(dir).to_path_buf()` arm of
+    // `resolve_base_dir`: passing an explicit base_dir must be honored
+    // instead of falling back to the process's actual working directory.
+    let _ = env_logger::try_init();
+    let fixture = "fixtures/xml/general/HR_Admin.permissionset-meta.xml";
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("HR_Admin.permissionset-meta.xml");
+    std::fs::copy(fixture, &source).expect("copy fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            None,
+            Some("unique-id"),
+            false,
+            false,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+            Some(base.to_str().unwrap()),
+        )
+        .await
+        .expect("disassemble");
+
+    assert!(
+        base.join("HR_Admin").exists(),
+        "disassembled output directory must exist"
+    );
+}
