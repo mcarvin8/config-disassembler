@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::xml::parsers::parse_xml_cdata;
-use crate::xml::parsers::strip_whitespace_text_nodes;
+use crate::xml::parsers::{mark_compact_elements, strip_whitespace_text_nodes};
 use crate::xml::types::XmlElement;
 
 /// Parses an XML file from a path.
@@ -26,7 +26,7 @@ pub async fn parse_xml(file_path: &str) -> Option<XmlElement> {
 /// Parses XML from a string. The file_path is used for error logging only.
 /// Uses custom parser that preserves CDATA sections (output as #cdata key).
 pub fn parse_xml_from_str(content: &str, file_path: &str) -> Option<XmlElement> {
-    let parsed: Value = match parse_xml_cdata::parse_xml_with_cdata(content) {
+    let mut parsed: Value = match parse_xml_cdata::parse_xml_with_cdata(content) {
         Ok(v) => v,
         Err(e) => {
             log::error!(
@@ -37,6 +37,18 @@ pub fn parse_xml_from_str(content: &str, file_path: &str) -> Option<XmlElement> 
             return None;
         }
     };
+
+    // Mark single-element "compact" wrappers (no whitespace around their sole child --
+    // e.g. Flow's `<connector><targetReference>X</targetReference></connector>`) before
+    // stripping whitespace-only text nodes below, which would otherwise erase the
+    // distinction between "never had whitespace" and "had it, now removed". Walk the
+    // document root's own children rather than `parsed` itself: the root wrapper always
+    // has exactly one key (the root element), which would otherwise always qualify.
+    if let Some(obj) = parsed.as_object_mut() {
+        for value in obj.values_mut() {
+            mark_compact_elements(value);
+        }
+    }
 
     let cleaned = strip_whitespace_text_nodes(&parsed);
     Some(cleaned)
