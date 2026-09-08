@@ -1022,4 +1022,153 @@ mod tests {
         let bad = "{{{{ not valid json or yaml at all >>>>>";
         assert_eq!(convert_to_format(bad, "json"), bad);
     }
+
+    #[test]
+    fn convert_to_format_json_serialize_failure_falls_back_to_raw() {
+        // YAML permits compound (sequence) mapping keys via explicit-key
+        // syntax; JSON object keys must be strings, so serializing this
+        // value with serde_json fails and the raw content must come back
+        // unchanged (the `Err(e)` arm of the inner match).
+        let yaml_with_sequence_key = "? [a, b]\n: value\n";
+        assert_eq!(
+            convert_to_format(yaml_with_sequence_key, "json"),
+            yaml_with_sequence_key
+        );
+    }
+
+    #[tokio::test]
+    async fn reassemble_plain_uses_caller_supplied_sidecar_specs_directly() {
+        // Exercises the `sidecar_specs` (non-empty, caller-supplied) arm
+        // rather than falling through to `.sidecars.json` auto-detection.
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+
+        tokio::fs::write(
+            dir.join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><Child>hello</Child></Root>"#,
+        )
+        .await
+        .unwrap();
+        // Deliberately no .sidecars.json — the caller-supplied spec must be used as-is.
+        tokio::fs::write(dir.join("mydir.yaml"), "key: value")
+            .await
+            .unwrap();
+
+        let specs = [SidecarSpec {
+            element: "Notes".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        h.reassemble_plain(dir.to_str().unwrap(), Some("xml"), false, &[], Some(&specs))
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("mydir.xml"))
+            .await
+            .unwrap();
+        assert!(
+            output.contains("key: value"),
+            "caller-supplied sidecar spec was not used:\n{output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reassemble_plain_ignores_malformed_sidecars_json() {
+        // Exercises the `Err(_)` arm of parsing `.sidecars.json`: malformed
+        // content must not fail reassembly, just skip sidecar injection.
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+
+        tokio::fs::write(
+            dir.join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><Child>hello</Child></Root>"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(dir.join(".sidecars.json"), "not valid json")
+            .await
+            .unwrap();
+
+        h.reassemble_plain(dir.to_str().unwrap(), Some("xml"), false, &[], None)
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("mydir.xml"))
+            .await
+            .unwrap();
+        assert!(output.contains("Child"), "reassembly must still succeed");
+    }
+
+    #[tokio::test]
+    async fn reassemble_plain_post_purge_removes_sidecar_files() {
+        // Exercises the post_purge branch that removes sidecar files (and
+        // the disassembled directory) once their content has been injected.
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+
+        tokio::fs::write(
+            dir.join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><Child>hello</Child></Root>"#,
+        )
+        .await
+        .unwrap();
+        let sidecar_path = dir.join("mydir.yaml");
+        tokio::fs::write(&sidecar_path, "key: value").await.unwrap();
+
+        let specs = [SidecarSpec {
+            element: "Notes".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        h.reassemble_plain(dir.to_str().unwrap(), Some("xml"), true, &[], Some(&specs))
+            .await
+            .unwrap();
+
+        assert!(!dir.exists(), "post_purge must remove the disassembled dir");
+        let output = tokio::fs::read_to_string(tmp.path().join("mydir.xml"))
+            .await
+            .unwrap();
+        assert!(output.contains("key: value"));
+    }
+
+    #[tokio::test]
+    async fn inject_sidecar_elements_ok_when_no_root_key() {
+        // A merged value with no usable root key (only "?xml") must return
+        // Ok(()) without attempting injection.
+        let mut merged: XmlElement = json!({ "?xml": { "@version": "1.0" } });
+        let specs = [SidecarSpec {
+            element: "Notes".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        inject_sidecar_elements("does-not-matter", &mut merged, &specs)
+            .await
+            .unwrap();
+        assert_eq!(merged, json!({ "?xml": { "@version": "1.0" } }));
+    }
+
+    #[tokio::test]
+    async fn inject_sidecar_elements_skips_missing_sidecar_file() {
+        // When the sidecar file referenced by the spec doesn't exist on disk,
+        // the spec must be silently skipped rather than erroring.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("mydir");
+        tokio::fs::create_dir(&dir).await.unwrap();
+        let mut merged: XmlElement = json!({ "Root": { "Child": { "#text": "hello" } } });
+        let specs = [SidecarSpec {
+            element: "Notes".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        inject_sidecar_elements(dir.to_str().unwrap(), &mut merged, &specs)
+            .await
+            .unwrap();
+        assert_eq!(merged, json!({ "Root": { "Child": { "#text": "hello" } } }));
+    }
 }

@@ -924,4 +924,57 @@ mod tests {
             "got: {err}"
         );
     }
+
+    #[test]
+    fn default_output_path_uses_dir_name_when_source_filename_has_no_stem() {
+        // A source_filename of ".." has no file_stem (Path::new("..").file_stem()
+        // is None), so the fallback must reuse the name as-is rather than panic
+        // or produce an empty stem.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("settings");
+        let meta = Meta {
+            source_format: Format::Json,
+            file_format: Format::Json,
+            source_filename: Some("..".to_string()),
+            root: Root::Object {
+                key_order: vec![],
+                key_files: std::collections::BTreeMap::new(),
+                main_file: None,
+            },
+            indent: None,
+        };
+        let out = default_output_path(&dir, &meta, Format::Json).unwrap();
+        assert_eq!(out, tmp.path().join("...json"));
+    }
+
+    #[test]
+    fn reassemble_with_no_output_uses_default_output_path() {
+        // Exercises the `opts.output = None` arm of `reassemble()`, which
+        // delegates to `default_output_path`.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("orig.json");
+        fs::write(&input, r#"{"a": 1}"#).unwrap();
+        let split = tmp.path().join("split");
+        crate::disassemble::disassemble(crate::disassemble::DisassembleOptions {
+            input: input.clone(),
+            input_format: Some(Format::Json),
+            output_dir: Some(split.clone()),
+            output_format: Some(Format::Json),
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        let out = reassemble(ReassembleOptions {
+            input_dir: split,
+            output: None,
+            output_format: Some(Format::Json),
+            post_purge: false,
+        })
+        .unwrap();
+        assert_eq!(out, tmp.path().join("orig.json"));
+        assert!(out.exists());
+    }
 }

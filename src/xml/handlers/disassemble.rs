@@ -1162,4 +1162,110 @@ mod tests {
         assert_eq!(convert_sidecar_content(yaml, "yaml"), yaml);
         assert_eq!(convert_sidecar_content(yaml, "yml"), yaml);
     }
+
+    #[test]
+    fn detect_content_format_recognizes_json_yaml_and_neither() {
+        assert_eq!(
+            detect_content_format(r#"{"a":1}"#),
+            Some("json".to_string())
+        );
+        assert_eq!(
+            detect_content_format("a: 1\nb: 2\n"),
+            Some("yaml".to_string())
+        );
+        // Tabs are illegal for indentation in both JSON and (this construct) YAML.
+        assert_eq!(detect_content_format("\tnot: \tvalid: \tanything"), None);
+    }
+
+    #[test]
+    fn convert_sidecar_content_json_serialize_failure_falls_back_to_raw() {
+        // YAML permits compound (sequence) mapping keys via "? - a\n  - b"
+        // explicit-key syntax; JSON object keys must be strings, so
+        // serializing this value with serde_json fails and the raw text must
+        // be returned unchanged (the `Err(e)` arm of the inner match).
+        let yaml_with_sequence_key = "? [a, b]\n: value\n";
+        assert_eq!(
+            convert_sidecar_content(yaml_with_sequence_key, "json"),
+            yaml_with_sequence_key
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_returns_none_for_unparseable_xml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bad.xml");
+        tokio::fs::write(&path, "<<not xml").await.unwrap();
+        let specs = [SidecarSpec {
+            element: "schema".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        let result = extract_sidecar_elements(path.to_str().unwrap(), &specs)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_returns_none_when_no_root_element() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("decl_only.xml");
+        tokio::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>"#)
+            .await
+            .unwrap();
+        let specs = [SidecarSpec {
+            element: "schema".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        let result = extract_sidecar_elements(path.to_str().unwrap(), &specs)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_returns_none_when_no_spec_element_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("no_match.xml");
+        tokio::fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><child>value</child></Root>"#,
+        )
+        .await
+        .unwrap();
+        let specs = [SidecarSpec {
+            element: "schema".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        let result = extract_sidecar_elements(path.to_str().unwrap(), &specs)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_extracts_matching_element() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("match.xml");
+        tokio::fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><schema>openapi: 3.0.1</schema><child>value</child></Root>"#,
+        )
+        .await
+        .unwrap();
+        let specs = [SidecarSpec {
+            element: "schema".to_string(),
+            extension: "yaml".to_string(),
+            original_format: None,
+        }];
+        let (stripped, sidecars) = extract_sidecar_elements(path.to_str().unwrap(), &specs)
+            .await
+            .unwrap()
+            .expect("schema element should be extracted");
+        assert!(!stripped.contains("<schema>"));
+        assert_eq!(sidecars.len(), 1);
+        assert_eq!(sidecars[0].0, "schema");
+    }
 }

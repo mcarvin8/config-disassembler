@@ -1179,4 +1179,123 @@ mod tests {
             "file in split-output subdir must be skipped: {targets:?}"
         );
     }
+
+    #[test]
+    fn disassemble_file_infers_input_format_from_extension_when_unset() {
+        // Exercises the `None => Format::from_path(&opts.input)?` arm: no
+        // input_format is given, so it must be derived from the file extension.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("a.json");
+        fs::write(&input, r#"{"x": 1}"#).unwrap();
+
+        let output_dir = disassemble(DisassembleOptions {
+            input,
+            input_format: None,
+            output_dir: None,
+            output_format: None,
+            unique_id: None,
+            pre_purge: false,
+            post_purge: false,
+            ignore_path: None,
+        })
+        .unwrap();
+
+        assert!(output_dir.join(crate::meta::META_FILENAME).exists());
+    }
+
+    #[test]
+    fn collect_disassemble_targets_skips_files_not_matching_expected_format() {
+        // Exercises the `if expected != detected { continue; }` arm: a
+        // directory containing files of more than one known format, with an
+        // explicit expected format, must only collect the matching ones.
+        let tmp = tempfile::tempdir().unwrap();
+        let json_file = tmp.path().join("a.json");
+        fs::write(&json_file, r#"{"a": 1}"#).unwrap();
+        let yaml_file = tmp.path().join("b.yaml");
+        fs::write(&yaml_file, "a: 1").unwrap();
+
+        let ignore = load_ignore_rules(None, tmp.path()).unwrap();
+        let targets = collect_disassemble_targets(tmp.path(), &ignore, Some(Format::Json)).unwrap();
+
+        assert!(targets.contains(&json_file));
+        assert!(!targets.contains(&yaml_file));
+    }
+
+    #[test]
+    fn collect_disassemble_targets_collects_every_format_when_expected_is_none() {
+        // Exercises the `expected_format: None` arm (no `if let Some` body):
+        // every recognized format must be collected, not just one.
+        let tmp = tempfile::tempdir().unwrap();
+        let json_file = tmp.path().join("a.json");
+        fs::write(&json_file, r#"{"a": 1}"#).unwrap();
+        let yaml_file = tmp.path().join("b.yaml");
+        fs::write(&yaml_file, "a: 1").unwrap();
+
+        let ignore = load_ignore_rules(None, tmp.path()).unwrap();
+        let targets = collect_disassemble_targets(tmp.path(), &ignore, None).unwrap();
+
+        assert!(targets.contains(&json_file));
+        assert!(targets.contains(&yaml_file));
+    }
+
+    #[test]
+    fn default_output_dir_errors_when_input_has_no_file_stem() {
+        // Exercises the `ok_or_else` error arm: a path with no file_name
+        // component (e.g. "..") has no file_stem either.
+        let err = default_output_dir(Path::new("..")).expect_err("\"..\" has no file_stem");
+        assert!(
+            err.to_string()
+                .contains("could not derive a directory name from"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn write_array_root_falls_back_to_index_when_unique_id_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let items = vec![json!({"a": 1}), json!({"a": 2})];
+        let root = write_array_root(tmp.path(), &items, Format::Json, None).unwrap();
+        let root = serde_json::to_value(&root).unwrap();
+        let files = root["files"].as_array().unwrap();
+        assert_eq!(files, &vec![json!("0001.json"), json!("0002.json")]);
+    }
+
+    #[test]
+    fn write_array_root_falls_back_to_index_when_unique_id_value_collides() {
+        // Two items sharing the same unique-id value must not both keep the
+        // derived basename: the second must fall back to its index.
+        let tmp = tempfile::tempdir().unwrap();
+        let items = vec![json!({"name": "dup"}), json!({"name": "dup"})];
+        let root = write_array_root(tmp.path(), &items, Format::Json, Some("name")).unwrap();
+        let root = serde_json::to_value(&root).unwrap();
+        let files = root["files"].as_array().unwrap();
+        assert_eq!(files[0], json!("dup.json"));
+        assert_eq!(files[1], json!("0002.json"));
+    }
+
+    #[test]
+    fn write_array_root_hashes_when_index_derived_name_collides() {
+        // The first item's unique-id value happens to equal the second
+        // item's index-derived filename ("0002" — 4-digit padded); the
+        // second item has no unique-id field, so it naturally falls back to
+        // that same index-derived name, forcing a hash-suffixed filename.
+        let tmp = tempfile::tempdir().unwrap();
+        let items = vec![json!({"name": "0002"}), json!({"other": 1})];
+        let root = write_array_root(tmp.path(), &items, Format::Json, Some("name")).unwrap();
+        let root = serde_json::to_value(&root).unwrap();
+        let files = root["files"].as_array().unwrap();
+        assert_eq!(files[0], json!("0002.json"));
+        let hashed = files[1].as_str().unwrap();
+        assert!(hashed.starts_with("0002-"), "files: {files:?}");
+        assert!(hashed.ends_with(".json"));
+        assert!(tmp.path().join(hashed).exists());
+    }
+
+    #[test]
+    fn unique_id_basename_returns_none_when_sanitized_value_is_empty() {
+        // A unique-id value that sanitizes to an empty string (all dots)
+        // must fall through to None rather than producing an empty basename.
+        let v = json!({"id": "..."});
+        assert_eq!(unique_id_basename(&v, "id"), None);
+    }
 }

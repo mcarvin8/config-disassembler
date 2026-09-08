@@ -798,6 +798,24 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test]
+    async fn run_disassemble_with_sidecar_elements_passes_specs_slice() {
+        // A non-empty --sidecar-elements spec causes sidecar_specs_ref to be
+        // Some(slice) rather than None, covering that branch in run_disassemble.
+        let dir = tempfile::tempdir().unwrap();
+        let xml_path = dir.path().join("sample.xml");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><Root><schema>key: value</schema><child><name>a</name></child></Root>"#;
+        std::fs::write(&xml_path, xml).unwrap();
+        run(vec![
+            sv("xml-disassembler"),
+            sv("disassemble"),
+            xml_path.to_string_lossy().to_string(),
+            sv("--sidecar-elements=schema:yaml"),
+        ])
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn should_print_usage_only_for_fewer_than_two_args() {
         // Pins each `<` mutant: `<=` would also trigger on len=2,
@@ -862,5 +880,39 @@ mod tests {
         // `schema:` — extension part is empty; must not produce a spec.
         let specs = parse_sidecar_specs("schema:");
         assert!(specs.is_empty(), "expected no specs, got: {specs:?}");
+    }
+
+    #[test]
+    fn parse_sidecar_specs_parses_single_and_multiple_pairs() {
+        let specs = parse_sidecar_specs("schema:yaml");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].element, "schema");
+        assert_eq!(specs[0].extension, "yaml");
+        assert!(specs[0].original_format.is_none());
+
+        let specs = parse_sidecar_specs("schema:yaml,wsdl:wsdl");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[1].element, "wsdl");
+        assert_eq!(specs[1].extension, "wsdl");
+    }
+
+    #[test]
+    fn parse_disassemble_args_sidecar_elements_eq_form() {
+        let args = ["file.xml", "--sidecar-elements=schema:yaml"]
+            .iter()
+            .map(|s| sv(s))
+            .collect::<Vec<_>>();
+        let opts = parse_disassemble_args(&args);
+        assert_eq!(opts.sidecar_elements.as_deref(), Some("schema:yaml"));
+    }
+
+    #[test]
+    fn parse_disassemble_args_sidecar_elements_space_form() {
+        let args = ["file.xml", "--sidecar-elements", "schema:yaml"]
+            .iter()
+            .map(|s| sv(s))
+            .collect::<Vec<_>>();
+        let opts = parse_disassemble_args(&args);
+        assert_eq!(opts.sidecar_elements.as_deref(), Some("schema:yaml"));
     }
 }
