@@ -96,7 +96,14 @@ fn has_single_inner_wrapper(
     root_val: &serde_json::Map<String, serde_json::Value>,
     inner_wrapper: &str,
 ) -> bool {
-    let non_attr_keys: Vec<&String> = root_val.keys().filter(|k| *k != "@xmlns").collect();
+    // Exclude `@xmlns` (an attribute, not a child element) and any internal `#`-prefixed
+    // marker (`#compact`, `#text`, etc.) -- neither counts as a real child element, so a
+    // thin `<root xmlns="..."><inner>...</inner></root>` wrapper whose `inner` happens to
+    // be parsed with such a marker attached must still be recognised as single-child.
+    let non_attr_keys: Vec<&String> = root_val
+        .keys()
+        .filter(|k| *k != "@xmlns" && !k.starts_with('#'))
+        .collect();
     non_attr_keys.len() == 1 && non_attr_keys[0].as_str() == inner_wrapper
 }
 
@@ -463,6 +470,22 @@ mod tests {
         let m = map_from(&[
             ("@xmlns", json!("http://example.com")),
             ("inner", json!({"a": 1})),
+        ]);
+        assert!(has_single_inner_wrapper(&m, "inner"));
+    }
+
+    #[test]
+    fn has_single_inner_wrapper_true_when_sibling_is_internal_compact_marker() {
+        // A `#compact` (or `#text`/`#comment`/etc.) marker on `root_val` is an internal
+        // parser annotation, not a real child element -- it must not count toward the
+        // "single child" total. Without this, a genuinely thin wrapper whose XML source
+        // had zero whitespace around it (making it eligible for the `#compact` marker
+        // itself) would be misdetected as having two children and lose the
+        // already-correct fast path in `ensure_segment_files_structure`.
+        let m = map_from(&[
+            ("@xmlns", json!("http://example.com")),
+            ("inner", json!({"a": 1})),
+            ("#compact", json!(true)),
         ]);
         assert!(has_single_inner_wrapper(&m, "inner"));
     }
