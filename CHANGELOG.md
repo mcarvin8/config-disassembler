@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/mcarvin8/config-disassembler/compare/v0.10.2...v0.10.3) - 2026-09-08
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Preserve compact single-child element formatting on round-trip ([#123](https://github.com/mcarvin8/config-disassembler/pull/123)) - ([00e0413](https://github.com/mcarvin8/config-disassembler/commit/00e0413f4a2f9d33dd6ed0fcfaf4c7266b092fa8))
+
+
 ## [0.10.2](https://github.com/mcarvin8/config-disassembler/compare/v0.10.1...v0.10.2) - 2026-09-03
 
 ### 🐛 Bug Fixes
