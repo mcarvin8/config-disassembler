@@ -38,6 +38,7 @@ fn write_element<W: std::io::Write>(
             let mut comment_content = String::new();
             let mut text_tail_content = String::new();
             let mut cdata_content = String::new();
+            let mut is_compact = false;
             let child_elements: Vec<(&String, &Value)> = children
                 .iter()
                 .filter_map(|(k, v)| {
@@ -56,6 +57,9 @@ fn write_element<W: std::io::Write>(
                     } else if *k == "#cdata" {
                         cdata_content = value_to_string(v);
                         None
+                    } else if *k == "#compact" {
+                        is_compact = v.as_bool().unwrap_or(false);
+                        None
                     } else {
                         Some((*k, *v))
                     }
@@ -73,7 +77,17 @@ fn write_element<W: std::io::Write>(
             }
             writer.write_event(Event::Start(start))?;
 
-            if !child_elements.is_empty() {
+            if is_compact
+                && child_elements.len() == 1
+                && matches!(child_elements[0].1, Value::Object(_))
+            {
+                // Single-element wrapper with zero surrounding whitespace in the source
+                // (e.g. `<connector><targetReference>X</targetReference></connector>`) --
+                // render the wrapper and its one child on the same line, with no
+                // indent/newline in between, matching the original formatting.
+                let (child_name, child_value) = child_elements[0];
+                write_element(writer, child_name, child_value, indent_level)?;
+            } else if !child_elements.is_empty() {
                 writer.write_event(Event::Text(BytesText::new(
                     format!("\n{}", child_indent).as_str(),
                 )))?;
