@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5](https://github.com/mcarvin8/config-disassembler/compare/v0.10.4...v0.10.5) - 2026-09-09
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Stop double-escaping comment content on every round trip ([#128](https://github.com/mcarvin8/config-disassembler/pull/128)) - ([71aa0f8](https://github.com/mcarvin8/config-disassembler/commit/71aa0f8f70a9e25979441bd7886e6aacb7e4ba8b))
+
+
 ## [0.10.4](https://github.com/mcarvin8/config-disassembler/compare/v0.10.3...v0.10.4) - 2026-09-09
 
 ### 🐛 Bug Fixes
