@@ -218,16 +218,24 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 );
             }
             Ok(Event::Text(e)) => {
-                if let Some((_, elem)) = stack.last() {
-                    text_buffer_after_comment = elem.contains_key("#comment");
-                }
+                // Deliberately does NOT touch `text_buffer_after_comment` here. It used
+                // to be re-derived on every Text event as `elem.contains_key("#comment")`,
+                // which is a stale, persistent check (the key is never removed) rather
+                // than "did a comment immediately precede this text". That misrouted
+                // trailing whitespace after `<!--c--><![CDATA[x]]>` into `#text-tail`
+                // (comment-shaped) instead of `#text` (cdata-shaped), even though the
+                // CDATA handler below had already reset the flag to false - re-parsing
+                // the disassembled output then re-triggered the same misroute, growing
+                // an extra blank #text-tail line on every successive round trip. The
+                // flag is now a proper transient signal: Comment sets it true, every
+                // other event that can intervene (Start/End/Empty/CData) resets it false.
                 text_buffer.push_str(e.as_ref());
             }
             Ok(Event::Comment(e)) => {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
-                text_buffer_after_comment = false;
                 let content = e.as_ref().to_string();
                 append_comment_to_current(&mut stack, &content);
+                text_buffer_after_comment = true;
             }
             Ok(Event::GeneralRef(ref_)) => {
                 append_entity_to_raw(&ref_, &mut text_buffer);
@@ -538,6 +546,31 @@ mod tests {
         assert!(
             item.get("#text").is_some(),
             "text after CDATA must be stored as #text"
+        );
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_text_after_comment_then_cdata_stored_as_text_not_tail() {
+        // A comment immediately followed by CDATA, then trailing whitespace/text before
+        // the closing tag: the CDATA event resets `text_buffer_after_comment` to false,
+        // so the trailing text must land in `#text` (cdata-shaped), not `#text-tail`
+        // (comment-shaped) - `elem.contains_key("#comment")` staying true forever
+        // (the key is never removed) used to re-derive the flag as true on the Text
+        // event regardless, misrouting it and causing an extra #text-tail line to
+        // reappear (and grow) on every subsequent disassemble/reassemble cycle.
+        let xml = r#"<root><item><!--c--><![CDATA[x]]>tail</item></root>"#;
+        let v = parse_xml_with_cdata(xml).unwrap();
+        let item = v
+            .get("root")
+            .and_then(|r| r.get("item"))
+            .and_then(|i| i.as_object())
+            .unwrap();
+        assert_eq!(item.get("#comment").and_then(|c| c.as_str()), Some("c"));
+        assert_eq!(item.get("#cdata").and_then(|c| c.as_str()), Some("x"));
+        assert_eq!(item.get("#text").and_then(|t| t.as_str()), Some("tail"));
+        assert!(
+            item.get("#text-tail").is_none(),
+            "trailing text after comment+CDATA must not be misrouted to #text-tail"
         );
     }
 

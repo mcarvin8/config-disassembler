@@ -2974,3 +2974,70 @@ async fn multiple_sibling_comments_under_the_same_element_are_all_preserved() {
         "both sibling comments must survive the full round trip, got: {reassembled}"
     );
 }
+
+#[tokio::test]
+async fn comment_then_cdata_stays_stable_across_repeated_round_trips() {
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName><alpha><alpha><!-- --><![CDATA[!]]></alpha></alpha></item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    async fn roundtrip(source: &std::path::Path, base: &std::path::Path) {
+        let mut disassemble = DisassembleXmlFileHandler::new();
+        disassemble
+            .disassemble(
+                source.to_str().unwrap(),
+                Some("fullName"),
+                Some("unique-id"),
+                true,
+                true,
+                ".xmldisassemblerignore",
+                "xml",
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("disassemble");
+
+        let reassemble_handler = ReassembleXmlFileHandler::new();
+        reassemble_handler
+            .reassemble(
+                base.join("Fuzz").to_str().unwrap(),
+                Some("fuzz-meta.xml"),
+                true,
+                None,
+            )
+            .await
+            .expect("reassemble");
+    }
+
+    roundtrip(&source, base).await;
+    let after_first = std::fs::read_to_string(&source).expect("read after first round trip");
+
+    roundtrip(&source, base).await;
+    let after_second = std::fs::read_to_string(&source).expect("read after second round trip");
+
+    roundtrip(&source, base).await;
+    let after_third = std::fs::read_to_string(&source).expect("read after third round trip");
+
+    assert_eq!(
+        after_first, after_second,
+        "a comment immediately followed by CDATA must not grow extra blank lines on a \
+         second round trip, got after_first: {after_first:?}\nafter_second: {after_second:?}"
+    );
+    assert_eq!(
+        after_second, after_third,
+        "must stay stable indefinitely, not just for one extra round trip"
+    );
+    assert!(
+        after_first.contains('!') && after_first.contains("<!-- -->"),
+        "both the comment and CDATA content must survive, got: {after_first}"
+    );
+}
