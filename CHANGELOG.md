@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/mcarvin8/config-disassembler/compare/v0.10.3...v0.10.4) - 2026-09-09
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Preserve direct mixed content on elements that also have real children ([#127](https://github.com/mcarvin8/config-disassembler/pull/127)) - ([2108e9e](https://github.com/mcarvin8/config-disassembler/commit/2108e9e1acc9734f3bbb5278ba2f5b10c76f9211))
+
+### 🧪 Testing
+
+
+- Raise line coverage to 99.21% ([#126](https://github.com/mcarvin8/config-disassembler/pull/126)) - ([232eda4](https://github.com/mcarvin8/config-disassembler/commit/232eda45d7801b38b71142fbe71b94cf22fa8555))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- Create funding file - ([66a6ed0](https://github.com/mcarvin8/config-disassembler/commit/66a6ed07f403f05c413647db0a1d2c2ca89f188c))
+
+
 ## [0.10.3](https://github.com/mcarvin8/config-disassembler/compare/v0.10.2...v0.10.3) - 2026-09-08
 
 ### 🐛 Bug Fixes
