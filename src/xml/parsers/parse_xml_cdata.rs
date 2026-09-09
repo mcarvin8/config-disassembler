@@ -31,6 +31,23 @@ fn append_cdata_to_current(stack: &mut [(String, Map<String, Value>)], content: 
     }
 }
 
+/// Append comment content to the current element's "#comment" buffer. Mirrors
+/// `append_cdata_to_current`: multiple sibling `<!--...-->` comments under the same
+/// element accumulate into one string rather than the second overwriting the first
+/// (the previous behavior via a plain `insert`), the same way multiple adjacent CDATA
+/// sections and multiple text runs between comments (`#text-tail`) already concatenate
+/// rather than clobber. Silently noops when the stack is empty; quick-xml rejects a
+/// comment outside an element before reaching this point.
+fn append_comment_to_current(stack: &mut [(String, Map<String, Value>)], content: &str) {
+    if let Some((_, elem)) = stack.last_mut() {
+        let merged = match elem.get("#comment").and_then(|v| v.as_str()) {
+            Some(prev) => format!("{}{}", prev, content),
+            None => content.to_string(),
+        };
+        elem.insert("#comment".to_string(), Value::String(merged));
+    }
+}
+
 /// Attach a finished child element (from Event::End or Event::Empty) to its parent -
 /// or record it as the root when the stack is empty.
 fn attach_child_to_parent(
@@ -210,9 +227,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
                 text_buffer_after_comment = false;
                 let content = e.as_ref().to_string();
-                if let Some((_, elem)) = stack.last_mut() {
-                    elem.insert("#comment".to_string(), Value::String(content));
-                }
+                append_comment_to_current(&mut stack, &content);
             }
             Ok(Event::GeneralRef(ref_)) => {
                 append_entity_to_raw(&ref_, &mut text_buffer);
