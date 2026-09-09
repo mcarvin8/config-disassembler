@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.7](https://github.com/mcarvin8/config-disassembler/compare/v0.10.6...v0.10.7) - 2026-09-09
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Stop trailing text after comment+CDATA growing on every round trip ([#132](https://github.com/mcarvin8/config-disassembler/pull/132)) - ([0e58f2c](https://github.com/mcarvin8/config-disassembler/commit/0e58f2c510a96d6fb5e0b10d13be292367026e11))
+
+
 ## [0.10.6](https://github.com/mcarvin8/config-disassembler/compare/v0.10.5...v0.10.6) - 2026-09-09
 
 ### 🐛 Bug Fixes
