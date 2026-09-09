@@ -184,7 +184,14 @@ fn write_element<W: std::io::Write>(
                         )))?;
                     }
                     if !comment_content.is_empty() {
-                        writer.write_event(Event::Comment(BytesText::new(
+                        // XML comment content is never subject to entity resolution on
+                        // read (the reader stores it raw - see parse_xml_cdata.rs's
+                        // Event::Comment handling), so it must never be escaped on
+                        // write either. `BytesText::new` escapes (quick-xml treats it
+                        // like text content); `from_escaped` writes the bytes verbatim.
+                        // Using `new` here made every `&` in a comment gain one more
+                        // `&amp;` layer on each successive disassemble/reassemble cycle.
+                        writer.write_event(Event::Comment(BytesText::from_escaped(
                             comment_content.as_str(),
                         )))?;
                     }
