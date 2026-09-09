@@ -10,7 +10,7 @@ use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 
 /// Append raw entity reference to buffer (e.g. "quot" -> "&quot;").
 fn append_entity_to_raw(ref_: &quick_xml::events::BytesRef<'_>, raw: &mut String) {
@@ -74,33 +74,6 @@ fn attach_child_to_parent(
     }
 }
 
-/// Parse text content - match quickxml_to_serde behavior for type inference.
-fn parse_text_value(text: &str, leading_zero_as_string: bool) -> Value {
-    let text = text.trim();
-    if text.is_empty() {
-        return Value::String(String::new());
-    }
-    // When leading-zero-as-string is on, any 0-prefixed numeric (including "0")
-    // stays a string - this subsumes the u64 leading-zero branch below.
-    if leading_zero_as_string && text.starts_with('0') {
-        return Value::String(text.to_string());
-    }
-    if let Ok(v) = text.parse::<u64>() {
-        return Value::Number(Number::from(v));
-    }
-    if let Ok(v) = text.parse::<f64>() {
-        if !text.starts_with('0') || text.starts_with("0.") {
-            if let Some(n) = Number::from_f64(v) {
-                return Value::Number(n);
-            }
-        }
-    }
-    if let Ok(v) = text.parse::<bool>() {
-        return Value::Bool(v);
-    }
-    Value::String(text.to_string())
-}
-
 /// Flush accumulated raw text buffer: unescape entities and add to current element.
 fn flush_text_buffer(
     raw: &mut String,
@@ -116,10 +89,19 @@ fn flush_text_buffer(
         return;
     }
     let val_raw = Value::String(text.clone());
-    let val_parsed = parse_text_value(&text, true);
     let Some((_, elem)) = stack.last_mut() else {
         return;
     };
+    // A text run that is entirely whitespace, appended onto content #text/#text-tail
+    // already accumulated for this element, is pure inter-tag formatting (e.g. the
+    // indentation the writer itself inserted between two shard-level tags) - it must
+    // not grow the stored value, or every subsequent parse of the writer's own output
+    // re-absorbs and re-emits it, growing without bound. A whitespace-only *first* run
+    // (the `else` branches below) is still stored as-is: that's the existing, accepted
+    // behavior for e.g. leading indentation before a child element captured as an
+    // element's own #text (see the CDATA/comment-adjacent tests elsewhere in this file).
+    let is_whitespace_only_run = text.trim().is_empty();
+
     if is_after_comment {
         match elem
             .get_mut("#text-tail")
@@ -127,11 +109,13 @@ fn flush_text_buffer(
             .map(str::to_string)
         {
             Some(prev) => {
-                if let Some(b) = val_raw.as_str() {
-                    elem.insert(
-                        "#text-tail".to_string(),
-                        Value::String(format!("{}{}", prev, b)),
-                    );
+                if !is_whitespace_only_run {
+                    if let Some(b) = val_raw.as_str() {
+                        elem.insert(
+                            "#text-tail".to_string(),
+                            Value::String(format!("{}{}", prev, b)),
+                        );
+                    }
                 }
             }
             None => {
@@ -145,8 +129,19 @@ fn flush_text_buffer(
         .and_then(|v| v.as_str())
         .map(str::to_string)
     {
-        if let Some(b) = val_parsed.as_str() {
-            elem.insert("#text".to_string(), Value::String(format!("{}{}", prev, b)));
+        // Was `val_parsed.as_str()`: parse_text_value() trims before type-inferring, so
+        // e.g. a second text run "( " (real trailing space) got silently trimmed to "("
+        // when appended onto an earlier whitespace-only run (typical: leading indent
+        // before a child tag, flushed into #text first). Worse, a purely-numeric/bool
+        // second run (e.g. "42") would infer to a non-string Value, `.as_str()` would
+        // return None, and the whole append would silently no-op, losing it entirely.
+        // val_raw is always Some(the untrimmed text) - matches the #text-tail branch
+        // above and the "first text run" branch below. Guarded by
+        // `is_whitespace_only_run` for the same reason as #text-tail above.
+        if !is_whitespace_only_run {
+            if let Some(b) = val_raw.as_str() {
+                elem.insert("#text".to_string(), Value::String(format!("{}{}", prev, b)));
+            }
         }
     } else {
         elem.insert("#text".to_string(), val_raw);
@@ -432,33 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_text_value_number_bool_and_leading_zero() {
-        assert!(parse_text_value("", true).as_str().map(|s| s.is_empty()) == Some(true));
-        assert!(parse_text_value("42", false).as_i64() == Some(42));
-        assert!(parse_text_value("42", true).as_i64() == Some(42));
-        assert_eq!(parse_text_value("0", true).as_str(), Some("0")); // leading_zero_as_string keeps "0" as string
-        assert!(parse_text_value("0", false).as_i64() == Some(0));
-        assert_eq!(parse_text_value("01", true).as_str(), Some("01"));
-        assert_eq!(parse_text_value("09", true).as_str(), Some("09")); // u64 parses but we keep as string (fall-through)
-        assert!(
-            parse_text_value("2.5", true)
-                .as_f64()
-                .map(|f| (f - 2.5).abs() < 1e-9)
-                == Some(true)
-        );
-        assert!(
-            parse_text_value("0.5", false)
-                .as_f64()
-                .map(|f| (f - 0.5).abs() < 1e-9)
-                == Some(true)
-        );
-        assert_eq!(parse_text_value("0.5", true).as_str(), Some("0.5")); // leading zero kept as string
-        assert!(parse_text_value("true", true).as_bool() == Some(true));
-        assert!(parse_text_value("false", true).as_bool() == Some(false));
-        assert_eq!(parse_text_value("hello", true).as_str(), Some("hello"));
-    }
-
-    #[test]
     fn parse_xml_with_cdata_duplicate_empty_siblings_become_array() {
         // Two empty elements with same name: second triggers remove+insert Array (Event::End path)
         let xml = r#"<r><a/><a/></r>"#;
@@ -466,19 +434,6 @@ mod tests {
         let r = v.get("r").and_then(|r| r.as_object()).unwrap();
         let arr = r.get("a").and_then(|a| a.as_array()).unwrap();
         assert_eq!(arr.len(), 2);
-    }
-
-    #[test]
-    fn parse_text_value_non_finite_float_falls_through_to_string() {
-        // "NaN" parses as f64 but Number::from_f64 returns None - must fall through.
-        assert_eq!(parse_text_value("NaN", false).as_str(), Some("NaN"));
-        assert_eq!(parse_text_value("inf", false).as_str(), Some("inf"));
-    }
-
-    #[test]
-    fn parse_text_value_f64_leading_zero_non_decimal_stays_string() {
-        // "0e5" parses as f64 (0.0) but the guard rejects 0-leading non-decimals.
-        assert_eq!(parse_text_value("0e5", false).as_str(), Some("0e5"));
     }
 
     #[test]

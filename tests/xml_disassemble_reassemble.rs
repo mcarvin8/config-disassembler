@@ -3041,3 +3041,53 @@ async fn comment_then_cdata_stays_stable_across_repeated_round_trips() {
         "both the comment and CDATA content must survive, got: {after_first}"
     );
 }
+
+#[tokio::test]
+async fn trailing_text_after_child_element_keeps_its_own_whitespace() {
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item1</fullName>( </item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("fullName"),
+            Some("unique-id"),
+            true,
+            true,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let reassemble_handler = ReassembleXmlFileHandler::new();
+    reassemble_handler
+        .reassemble(
+            base.join("Fuzz").to_str().unwrap(),
+            Some("fuzz-meta.xml"),
+            true,
+            None,
+        )
+        .await
+        .expect("reassemble");
+
+    let reassembled = std::fs::read_to_string(&source).expect("read reassembled");
+    assert!(
+        reassembled.contains("( "),
+        "trailing text after a child element must keep its own whitespace \
+         (a leading whitespace-only text run before the child must not clobber \
+         it on concatenation), got: {reassembled}"
+    );
+}
