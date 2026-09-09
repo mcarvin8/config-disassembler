@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.8](https://github.com/mcarvin8/config-disassembler/compare/v0.10.7...v0.10.8) - 2026-09-09
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Stop losing/duplicating text mixed with child elements and CDATA ([#134](https://github.com/mcarvin8/config-disassembler/pull/134)) - ([5fad12e](https://github.com/mcarvin8/config-disassembler/commit/5fad12ece2b62f7ac6d5ff6df866e5f698f1efd7))
+
+
 ## [0.10.7](https://github.com/mcarvin8/config-disassembler/compare/v0.10.6...v0.10.7) - 2026-09-09
 
 ### 🐛 Bug Fixes
