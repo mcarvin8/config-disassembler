@@ -277,6 +277,28 @@ mod tests {
     }
 
     #[test]
+    fn append_comment_to_current_noops_on_empty_stack() {
+        // Defensive path: a comment emitted with no open element (unreachable via
+        // quick-xml but the helper still handles it gracefully without panicking).
+        let mut stack: Vec<(String, Map<String, Value>)> = Vec::new();
+        append_comment_to_current(&mut stack, "ignored");
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn append_comment_to_current_sets_and_appends() {
+        // First call sets `#comment`; second call appends (covers both match arms).
+        let mut stack: Vec<(String, Map<String, Value>)> = vec![("r".to_string(), Map::new())];
+        append_comment_to_current(&mut stack, "first");
+        append_comment_to_current(&mut stack, "second");
+        let (_, elem) = stack.last().unwrap();
+        assert_eq!(
+            elem.get("#comment").and_then(|v| v.as_str()),
+            Some("firstsecond")
+        );
+    }
+
+    #[test]
     fn parse_xml_with_cdata_simple_element() {
         let xml = r#"<root><a>hello</a></root>"#;
         let v = parse_xml_with_cdata(xml).unwrap();
