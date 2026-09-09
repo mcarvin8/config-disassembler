@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6](https://github.com/mcarvin8/config-disassembler/compare/v0.10.5...v0.10.6) - 2026-09-09
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Preserve multiple sibling comments under the same element ([#130](https://github.com/mcarvin8/config-disassembler/pull/130)) - ([e9e7d6e](https://github.com/mcarvin8/config-disassembler/commit/e9e7d6e78df9caa391de7d04f8b121e0ae66dda4))
+
+
 ## [0.10.5](https://github.com/mcarvin8/config-disassembler/compare/v0.10.4...v0.10.5) - 2026-09-09
 
 ### 🐛 Bug Fixes
