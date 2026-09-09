@@ -3091,3 +3091,204 @@ async fn trailing_text_after_child_element_keeps_its_own_whitespace() {
          it on concatenation), got: {reassembled}"
     );
 }
+
+#[tokio::test]
+async fn trailing_text_after_child_stays_stable_across_repeated_round_trips() {
+    // Bug: leading whitespace-only text before a child element (e.g. the writer's own
+    // formatting) got permanently concatenated with genuine trailing text after that
+    // child once merged into one #text value, so the writer's own separator collided
+    // with it and doubled on every successive round trip.
+    let _ = env_logger::try_init();
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    // Shape the writer itself produces: leading whitespace before the child, real
+    // content directly after it with no separating tag.
+    std::fs::write(
+        &source,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<FuzzRoot xmlns=\"http://soap.sforce.com/2006/04/metadata\"><item>\n        <fullName>Item1</fullName>\n    #</item></FuzzRoot>",
+    )
+    .expect("write fixture");
+
+    async fn roundtrip(source: &std::path::Path, base: &std::path::Path) {
+        let mut disassemble = DisassembleXmlFileHandler::new();
+        disassemble
+            .disassemble(
+                source.to_str().unwrap(),
+                Some("fullName"),
+                Some("unique-id"),
+                true,
+                true,
+                ".xmldisassemblerignore",
+                "xml",
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("disassemble");
+
+        let reassemble_handler = ReassembleXmlFileHandler::new();
+        reassemble_handler
+            .reassemble(
+                base.join("Fuzz").to_str().unwrap(),
+                Some("fuzz-meta.xml"),
+                true,
+                None,
+            )
+            .await
+            .expect("reassemble");
+    }
+
+    roundtrip(&source, base).await;
+    let after_first = std::fs::read_to_string(&source).expect("read after first round trip");
+    assert!(
+        after_first.contains('#'),
+        "real trailing content must survive, got: {after_first}"
+    );
+
+    roundtrip(&source, base).await;
+    let after_second = std::fs::read_to_string(&source).expect("read after second round trip");
+
+    roundtrip(&source, base).await;
+    let after_third = std::fs::read_to_string(&source).expect("read after third round trip");
+
+    assert_eq!(
+        after_first, after_second,
+        "must not grow extra blank lines on a second round trip"
+    );
+    assert_eq!(
+        after_second, after_third,
+        "must stay stable indefinitely, not just for one extra round trip"
+    );
+}
+
+#[tokio::test]
+async fn real_text_before_cdata_survives_disassemble_reassemble() {
+    // Bug: the old `elem.contains_key("#cdata")` branch unconditionally overwrote
+    // #text on every subsequent text flush once #cdata was set, silently discarding
+    // any real #text content that had been captured *before* the CDATA event ran
+    // (e.g. <a>real<![CDATA[x]]>tail</a> - "real" is flushed before #cdata exists,
+    // then the trailing "tail" flush, seeing #cdata now present, blindly replaced it).
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName></item><item><fullName>Item1</fullName><alpha>real<![CDATA[x]]>tail</alpha></item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("fullName"),
+            Some("unique-id"),
+            true,
+            true,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let reassemble_handler = ReassembleXmlFileHandler::new();
+    reassemble_handler
+        .reassemble(
+            base.join("Fuzz").to_str().unwrap(),
+            Some("fuzz-meta.xml"),
+            true,
+            None,
+        )
+        .await
+        .expect("reassemble");
+
+    let reassembled = std::fs::read_to_string(&source).expect("read reassembled");
+    assert!(
+        reassembled.contains("real")
+            && reassembled.contains("<![CDATA[x]]>")
+            && reassembled.contains("tail"),
+        "text before AND after CDATA on the same element must both survive, got: {reassembled}"
+    );
+}
+
+#[tokio::test]
+async fn real_text_after_leading_whitespace_before_child_stays_stable() {
+    // Bug: replacing a whitespace-only prior #text with the current run's raw value
+    // (the fix for the previous bug) still embedded that current run's own leading
+    // whitespace verbatim, which is indistinguishable from formatting when the run
+    // reached the parser as a single unbroken slice with no intervening tag. The
+    // writer's own unconditional separator after the child-elements block then
+    // collided with that baked-in leading whitespace and doubled it on every
+    // successive round trip.
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName><alpha></alpha></item><item><fullName>Item1</fullName>(<![CDATA[]]></item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    async fn roundtrip(source: &std::path::Path, base: &std::path::Path) {
+        let mut disassemble = DisassembleXmlFileHandler::new();
+        disassemble
+            .disassemble(
+                source.to_str().unwrap(),
+                Some("fullName"),
+                Some("unique-id"),
+                true,
+                true,
+                ".xmldisassemblerignore",
+                "xml",
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("disassemble");
+
+        let reassemble_handler = ReassembleXmlFileHandler::new();
+        reassemble_handler
+            .reassemble(
+                base.join("Fuzz").to_str().unwrap(),
+                Some("fuzz-meta.xml"),
+                true,
+                None,
+            )
+            .await
+            .expect("reassemble");
+    }
+
+    roundtrip(&source, base).await;
+    let after_first = std::fs::read_to_string(&source).expect("read after first round trip");
+    assert!(
+        after_first.contains('('),
+        "real trailing content must survive, got: {after_first}"
+    );
+
+    roundtrip(&source, base).await;
+    let after_second = std::fs::read_to_string(&source).expect("read after second round trip");
+
+    roundtrip(&source, base).await;
+    let after_third = std::fs::read_to_string(&source).expect("read after third round trip");
+
+    assert_eq!(
+        after_first, after_second,
+        "must not grow extra blank lines on a second round trip"
+    );
+    assert_eq!(
+        after_second, after_third,
+        "must stay stable indefinitely, not just for one extra round trip"
+    );
+}

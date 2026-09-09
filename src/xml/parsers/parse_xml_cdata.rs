@@ -110,7 +110,18 @@ fn flush_text_buffer(
         {
             Some(prev) => {
                 if !is_whitespace_only_run {
-                    if let Some(b) = val_raw.as_str() {
+                    if prev.trim().is_empty() {
+                        // The accumulated #text-tail so far is itself pure formatting
+                        // (e.g. indentation the writer inserted between two tags with
+                        // nothing meaningful between them yet) - see the #text branch
+                        // below for the full explanation of why this must replace
+                        // rather than concatenate, and why the *leading* whitespace of
+                        // the replacement itself is trimmed too.
+                        elem.insert(
+                            "#text-tail".to_string(),
+                            Value::String(text.trim_start().to_string()),
+                        );
+                    } else if let Some(b) = val_raw.as_str() {
                         elem.insert(
                             "#text-tail".to_string(),
                             Value::String(format!("{}{}", prev, b)),
@@ -122,13 +133,22 @@ fn flush_text_buffer(
                 elem.insert("#text-tail".to_string(), val_raw);
             }
         }
-    } else if elem.contains_key("#cdata") {
-        elem.insert("#text".to_string(), val_raw);
     } else if let Some(prev) = elem
         .get("#text")
         .and_then(|v| v.as_str())
         .map(str::to_string)
     {
+        // This branch also covers what used to be a separate `elem.contains_key
+        // ("#cdata")` case that unconditionally overwrote #text - e.g. for
+        // `<a>real<![CDATA[x]]>tail</a>`, "real" is flushed into #text as the first
+        // run *before* the CDATA event runs (#cdata isn't set yet), so the old
+        // dedicated branch's blind `insert` on the trailing "tail" flush silently
+        // discarded "real" the moment #cdata became present. Falling through to this
+        // append-or-replace logic uniformly (whether or not #cdata is set) handles
+        // both orderings correctly: cdata-then-trailing-whitespace still lands in
+        // #text exactly as before (no prior #text to preserve), and
+        // text-then-cdata-then-trailing-whitespace now keeps the earlier real text.
+        //
         // Was `val_parsed.as_str()`: parse_text_value() trims before type-inferring, so
         // e.g. a second text run "( " (real trailing space) got silently trimmed to "("
         // when appended onto an earlier whitespace-only run (typical: leading indent
@@ -138,8 +158,36 @@ fn flush_text_buffer(
         // val_raw is always Some(the untrimmed text) - matches the #text-tail branch
         // above and the "first text run" branch below. Guarded by
         // `is_whitespace_only_run` for the same reason as #text-tail above.
+        //
+        // Additionally: if `prev` (the #text accumulated so far) is itself pure
+        // whitespace - typically indentation flushed before a child element, which on
+        // its own would have been stripped later as insignificant (strip_whitespace.rs)
+        // - concatenating real content onto it permanently bakes that whitespace into
+        // the merged value, where the later stripping pass can no longer tell it apart
+        // from real content and never removes it. On the next disassemble/reassemble
+        // cycle the writer regenerates its own equivalent separator whitespace *in
+        // addition* to this now-permanent prefix, so the file gains one more copy of
+        // it every round trip. Replacing rather than concatenating in this case
+        // (identical reasoning for #text-tail above) drops the meaningless prefix
+        // instead of durably fusing it to the data.
+        //
+        // The replacement itself is also trimmed on its *leading* edge only (trailing
+        // whitespace is real - see the "( " test above): this run reached the parser
+        // as a single, unbroken slice of character data with no intervening tag (that's
+        // exactly why it's here, in the "already have a #text" branch, rather than
+        // being its own separate flush), so any leading whitespace on it is exactly as
+        // indistinguishable from formatting as `prev` was. Left untrimmed, the writer's
+        // own unconditional separator after the child-elements block collides with this
+        // run's baked-in leading whitespace and doubles up on every subsequent
+        // disassemble/reassemble cycle - the same unbounded-growth failure mode as
+        // `prev` itself, just one write/read cycle later.
         if !is_whitespace_only_run {
-            if let Some(b) = val_raw.as_str() {
+            if prev.trim().is_empty() {
+                elem.insert(
+                    "#text".to_string(),
+                    Value::String(text.trim_start().to_string()),
+                );
+            } else if let Some(b) = val_raw.as_str() {
                 elem.insert("#text".to_string(), Value::String(format!("{}{}", prev, b)));
             }
         }
