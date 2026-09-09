@@ -2794,3 +2794,69 @@ async fn disassemble_with_explicit_base_dir_resolves_relative_path() {
         "disassembled output directory must exist"
     );
 }
+
+#[tokio::test]
+async fn mixed_content_element_with_real_child_and_direct_cdata_or_comment_round_trips() {
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName><!--note--></item><item><fullName>Item1</fullName><![CDATA[#]]></item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("fullName"),
+            Some("unique-id"),
+            true,
+            true,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let item0 = std::fs::read_to_string(base.join("Fuzz").join("item").join("Item0.item-meta.xml"))
+        .expect("read Item0 shard");
+    assert!(
+        item0.contains("<!--note-->"),
+        "direct comment sibling of a real child element must survive disassembly, got: {item0}"
+    );
+
+    let item1 = std::fs::read_to_string(base.join("Fuzz").join("item").join("Item1.item-meta.xml"))
+        .expect("read Item1 shard");
+    assert!(
+        item1.contains("<![CDATA[#]]>"),
+        "direct CDATA sibling of a real child element must survive disassembly, got: {item1}"
+    );
+
+    let reassemble_handler = ReassembleXmlFileHandler::new();
+    reassemble_handler
+        .reassemble(
+            base.join("Fuzz").to_str().unwrap(),
+            Some("fuzz-meta.xml"),
+            true,
+            None,
+        )
+        .await
+        .expect("reassemble");
+
+    let reassembled = std::fs::read_to_string(&source).expect("read reassembled");
+    assert!(
+        reassembled.contains("<![CDATA[#]]>"),
+        "CDATA must survive the full round trip, got: {reassembled}"
+    );
+    assert!(
+        reassembled.contains("<!--note-->"),
+        "comment must survive the full round trip, got: {reassembled}"
+    );
+}
