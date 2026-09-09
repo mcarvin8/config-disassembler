@@ -2919,3 +2919,58 @@ async fn comment_with_ampersand_does_not_double_escape_across_round_trips() {
         "a second round trip must not add any escaping - comments are raw, not re-escaped on read"
     );
 }
+
+#[tokio::test]
+async fn multiple_sibling_comments_under_the_same_element_are_all_preserved() {
+    let _ = env_logger::try_init();
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName><alpha><!--first--><!--second--></alpha></item></FuzzRoot>"#;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let base = temp_dir.path();
+    let source = base.join("Fuzz.fuzz-meta.xml");
+    std::fs::write(&source, xml).expect("write fixture");
+
+    let mut disassemble = DisassembleXmlFileHandler::new();
+    disassemble
+        .disassemble(
+            source.to_str().unwrap(),
+            Some("fullName"),
+            Some("unique-id"),
+            true,
+            true,
+            ".xmldisassemblerignore",
+            "xml",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("disassemble");
+
+    let shard = std::fs::read_to_string(base.join("Fuzz").join("item").join("Item0.item-meta.xml"))
+        .expect("read Item0 shard");
+    assert!(
+        shard.contains("first") && shard.contains("second"),
+        "both sibling comments must survive disassembly, got: {shard}"
+    );
+
+    let reassemble_handler = ReassembleXmlFileHandler::new();
+    reassemble_handler
+        .reassemble(
+            base.join("Fuzz").to_str().unwrap(),
+            Some("fuzz-meta.xml"),
+            true,
+            None,
+        )
+        .await
+        .expect("reassemble");
+
+    let reassembled = std::fs::read_to_string(&source).expect("read reassembled");
+    assert!(
+        reassembled.contains("first") && reassembled.contains("second"),
+        "both sibling comments must survive the full round trip, got: {reassembled}"
+    );
+}
