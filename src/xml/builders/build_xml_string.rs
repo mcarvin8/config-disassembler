@@ -77,6 +77,12 @@ fn write_element<W: std::io::Write>(
             }
             writer.write_event(Event::Start(start))?;
 
+            let has_mixed_content = !cdata_content.is_empty()
+                || !text_content.is_empty()
+                || !raw_text_content.is_empty()
+                || !comment_content.is_empty()
+                || !text_tail_content.is_empty();
+
             if is_compact
                 && child_elements.len() == 1
                 && matches!(child_elements[0].1, Value::Object(_))
@@ -87,99 +93,117 @@ fn write_element<W: std::io::Write>(
                 // indent/newline in between, matching the original formatting.
                 let (child_name, child_value) = child_elements[0];
                 write_element(writer, child_name, child_value, indent_level)?;
-            } else if !child_elements.is_empty() {
-                writer.write_event(Event::Text(BytesText::new(
-                    format!("\n{}", child_indent).as_str(),
-                )))?;
+            } else {
+                if !child_elements.is_empty() {
+                    writer.write_event(Event::Text(BytesText::new(
+                        format!("\n{}", child_indent).as_str(),
+                    )))?;
 
-                let child_count = child_elements.len();
-                for (idx, (child_name, child_value)) in child_elements.iter().enumerate() {
-                    let is_last = idx == child_count - 1;
-                    match child_value {
-                        Value::Array(arr) => {
-                            let arr_len = arr.len();
-                            for (i, item) in arr.iter().enumerate() {
-                                let arr_last = i == arr_len - 1;
-                                write_element(writer, child_name, item, indent_level + 1)?;
-                                if !arr_last {
+                    let child_count = child_elements.len();
+                    for (idx, (child_name, child_value)) in child_elements.iter().enumerate() {
+                        let is_last = idx == child_count - 1;
+                        match child_value {
+                            Value::Array(arr) => {
+                                let arr_len = arr.len();
+                                for (i, item) in arr.iter().enumerate() {
+                                    let arr_last = i == arr_len - 1;
+                                    write_element(writer, child_name, item, indent_level + 1)?;
+                                    if !arr_last {
+                                        writer.write_event(Event::Text(BytesText::new(
+                                            format!("\n{}", child_indent).as_str(),
+                                        )))?;
+                                    }
+                                }
+                                if !is_last {
                                     writer.write_event(Event::Text(BytesText::new(
                                         format!("\n{}", child_indent).as_str(),
                                     )))?;
                                 }
                             }
-                            if !is_last {
-                                writer.write_event(Event::Text(BytesText::new(
-                                    format!("\n{}", child_indent).as_str(),
-                                )))?;
+                            Value::Object(_) => {
+                                write_element(writer, child_name, child_value, indent_level + 1)?;
+                                if !is_last {
+                                    writer.write_event(Event::Text(BytesText::new(
+                                        format!("\n{}", child_indent).as_str(),
+                                    )))?;
+                                }
                             }
-                        }
-                        Value::Object(_) => {
-                            write_element(writer, child_name, child_value, indent_level + 1)?;
-                            if !is_last {
-                                writer.write_event(Event::Text(BytesText::new(
-                                    format!("\n{}", child_indent).as_str(),
+                            _ => {
+                                writer.write_event(Event::Start(BytesStart::new(
+                                    child_name.as_str(),
                                 )))?;
-                            }
-                        }
-                        _ => {
-                            writer
-                                .write_event(Event::Start(BytesStart::new(child_name.as_str())))?;
-                            writer.write_event(Event::Text(BytesText::new(
-                                value_to_string(child_value).as_str(),
-                            )))?;
-                            writer.write_event(Event::End(BytesEnd::new(child_name.as_str())))?;
-                            if !is_last {
                                 writer.write_event(Event::Text(BytesText::new(
-                                    format!("\n{}", child_indent).as_str(),
+                                    value_to_string(child_value).as_str(),
                                 )))?;
+                                writer
+                                    .write_event(Event::End(BytesEnd::new(child_name.as_str())))?;
+                                if !is_last {
+                                    writer.write_event(Event::Text(BytesText::new(
+                                        format!("\n{}", child_indent).as_str(),
+                                    )))?;
+                                }
                             }
                         }
                     }
-                }
 
-                writer.write_event(Event::Text(BytesText::new(
-                    format!("\n{}", indent).as_str(),
-                )))?;
-            } else if !cdata_content.is_empty()
-                || !text_content.is_empty()
-                || !raw_text_content.is_empty()
-                || !comment_content.is_empty()
-                || !text_tail_content.is_empty()
-            {
-                // Add newline+indent before content when no leading text (keeps CDATA/comment on separate line)
-                if text_content.is_empty()
-                    && raw_text_content.is_empty()
-                    && comment_content.is_empty()
-                {
-                    writer.write_event(Event::Text(BytesText::new(
-                        format!("\n{}", child_indent).as_str(),
-                    )))?;
-                }
-                // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
-                if !text_content.is_empty() {
-                    writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
-                }
-                // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
-                // literal " in YAML is not converted to &quot; but < > & are still safe.
-                if !raw_text_content.is_empty() {
-                    writer.write_event(Event::Text(BytesText::from_escaped(partial_escape(
-                        raw_text_content.as_str(),
-                    ))))?;
-                }
-                if !comment_content.is_empty() {
-                    writer.write_event(Event::Comment(BytesText::new(comment_content.as_str())))?;
-                }
-                if !text_tail_content.is_empty() {
-                    writer.write_event(Event::Text(BytesText::new(text_tail_content.as_str())))?;
-                }
-                if !cdata_content.is_empty() {
-                    writer.write_event(Event::CData(BytesCData::new(cdata_content.as_str())))?;
-                }
-                // Add newline+indent before closing tag only for CDATA (keeps compact for text-only)
-                if !cdata_content.is_empty() {
                     writer.write_event(Event::Text(BytesText::new(
                         format!("\n{}", indent).as_str(),
                     )))?;
+                }
+
+                // A single element can carry both real child elements *and* its own
+                // direct mixed content (e.g. `<item><fullName>X</fullName><![CDATA[..]]></item>`).
+                // child_elements and the various *_content locals are mutually
+                // populated from disjoint keys (see the filter_map above), so this
+                // must run independently of the child_elements branch rather than as
+                // an `else if` - otherwise a real child element sibling silently
+                // discards any #text/#cdata/#comment/#text-tail on the same element.
+                if has_mixed_content {
+                    // Add newline+indent before content when no leading text and no
+                    // child elements already provided one (keeps CDATA/comment on
+                    // their own line without doubling up on the child_elements
+                    // branch's own trailing newline+indent above).
+                    if child_elements.is_empty()
+                        && text_content.is_empty()
+                        && raw_text_content.is_empty()
+                        && comment_content.is_empty()
+                    {
+                        writer.write_event(Event::Text(BytesText::new(
+                            format!("\n{}", child_indent).as_str(),
+                        )))?;
+                    }
+                    // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
+                    if !text_content.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
+                    }
+                    // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
+                    // literal " in YAML is not converted to &quot; but < > & are still safe.
+                    if !raw_text_content.is_empty() {
+                        writer.write_event(Event::Text(BytesText::from_escaped(
+                            partial_escape(raw_text_content.as_str()),
+                        )))?;
+                    }
+                    if !comment_content.is_empty() {
+                        writer.write_event(Event::Comment(BytesText::new(
+                            comment_content.as_str(),
+                        )))?;
+                    }
+                    if !text_tail_content.is_empty() {
+                        writer
+                            .write_event(Event::Text(BytesText::new(text_tail_content.as_str())))?;
+                    }
+                    if !cdata_content.is_empty() {
+                        writer
+                            .write_event(Event::CData(BytesCData::new(cdata_content.as_str())))?;
+                    }
+                    // Add newline+indent before closing tag only for CDATA (keeps compact
+                    // for text-only), and only when child_elements didn't already add its
+                    // own trailing newline+indent above.
+                    if !cdata_content.is_empty() && child_elements.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(
+                            format!("\n{}", indent).as_str(),
+                        )))?;
+                    }
                 }
             }
 
