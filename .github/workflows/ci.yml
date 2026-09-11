@@ -33,15 +33,23 @@ jobs:
           # installed `cargo`, which then fails with
           # `error: unexpected argument 'test' found / Usage: rustup-init`.
           cache-bin: false
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
       - name: Run tests
         if: matrix.os != 'ubuntu-latest'
-        run: cargo test --all-features --workspace
+        run: cargo nextest run --all-features --workspace
+      - name: Run doctests
+        if: matrix.os != 'ubuntu-latest'
+        run: cargo test --doc --all-features --workspace
       - name: Install cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest'
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
         if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
+        run: |
+          cargo llvm-cov --no-report --all-features --workspace --ignore-filename-regex 'main\.rs' nextest
+          cargo llvm-cov --no-report --all-features --workspace --ignore-filename-regex 'main\.rs' --doc
+          cargo llvm-cov report --lcov --output-path lcov.info
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v7
