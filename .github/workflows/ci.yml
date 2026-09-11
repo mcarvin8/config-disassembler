@@ -46,10 +46,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate code coverage
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo llvm-cov --no-report --all-features --workspace --ignore-filename-regex 'main\.rs' nextest
-          cargo llvm-cov --no-report --all-features --workspace --ignore-filename-regex 'main\.rs' --doc
-          cargo llvm-cov report --lcov --output-path lcov.info
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs' nextest
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v7

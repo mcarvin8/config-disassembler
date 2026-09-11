@@ -53,7 +53,7 @@ Releases are automated after changes land on `main`:
 You can optionally run this command locally to run tests and generate coverage:
 
 ```bash
-cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs' nextest
 ```
 
 ## Developing
@@ -119,7 +119,7 @@ match the CI formatting and lint expectations.
 - Run all tests with code coverage (install cargo-llvm-cov first):
 
   ```shell
-  cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
+  cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs' nextest
   ```
 
 - Run mutation testing locally (install `cargo-mutants` first):
