@@ -27,7 +27,9 @@ To ensure your changes are properly categorized in the changelog, please follow
 
 All pull requests run automated checks:
 
-- The test suite runs with all features on Ubuntu, Windows, and macOS.
+- The test suite runs via `cargo-nextest` with all features on Ubuntu, Windows,
+  and macOS. Doctests are run separately with `cargo test --doc` since nextest
+  does not support them.
 - Ubuntu also generates coverage using cargo-llvm-cov and uploads the report to
   Codecov.
 - Rustfmt checks formatting with `cargo fmt --all --check`.
@@ -51,7 +53,7 @@ Releases are automated after changes land on `main`:
 You can optionally run this command locally to run tests and generate coverage:
 
 ```bash
-cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs' nextest
 ```
 
 ## Developing
@@ -63,15 +65,15 @@ This is no different than other Rust projects.
 ```shell
 git clone https://github.com/mcarvin8/config-disassembler
 cd config-disassembler
-cargo test --all-features --workspace
+cargo nextest run --all-features --workspace
 ```
 
 ## Testing
 
-Run all tests:
+Run all tests (install `cargo-nextest` first):
 
 ```bash
-cargo test --all-features --workspace
+cargo nextest run --all-features --workspace
 ```
 
 - **Unit tests** - In-module tests for format parsing, disassembly,
@@ -108,16 +110,16 @@ match the CI formatting and lint expectations.
   cargo clippy --all-targets --all-features --workspace
   ```
 
-- Run all tests:
+- Run all tests (install `cargo-nextest` first):
 
   ```shell
-  cargo test --all-features --workspace
+  cargo nextest run --all-features --workspace
   ```
 
 - Run all tests with code coverage (install cargo-llvm-cov first):
 
   ```shell
-  cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs'
+  cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --ignore-filename-regex 'main\.rs' nextest
   ```
 
 - Run mutation testing locally (install `cargo-mutants` first):
