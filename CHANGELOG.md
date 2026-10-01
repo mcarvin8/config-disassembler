@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.9](https://github.com/mcarvin8/config-disassembler/compare/v0.10.8...v0.10.9) - 2026-10-01
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(ci)* Migrate test runner to cargo-nextest ([#136](https://github.com/mcarvin8/config-disassembler/pull/136)) - ([f289a55](https://github.com/mcarvin8/config-disassembler/commit/f289a55e06938a8df863f2273a9018f131d4a356))
+
+### Build
+
+
+- Bump actions-rust-lang/setup-rust-toolchain ([#139](https://github.com/mcarvin8/config-disassembler/pull/139)) - ([5e6b401](https://github.com/mcarvin8/config-disassembler/commit/5e6b4018025aa6847e0274005f995273a89e7c48))
+
+
 ## [0.10.8](https://github.com/mcarvin8/config-disassembler/compare/v0.10.7...v0.10.8) - 2026-09-09
 
 ### 🐛 Bug Fixes
