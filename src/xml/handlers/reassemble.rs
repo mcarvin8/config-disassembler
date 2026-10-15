@@ -571,13 +571,10 @@ fn convert_to_format(content: &str, target_format: &str) -> String {
     match target_format.to_ascii_lowercase().as_str() {
         "json" => {
             match serde_saphyr::from_str::<serde_json::Value>(content) {
-                Ok(val) => match serde_json::to_string_pretty(&val) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        log::warn!("sidecar reassemble: JSON serialization failed ({e}); using raw content");
-                        content.to_string()
-                    }
-                },
+                // Serializing a serde_json::Value cannot fail.
+                Ok(val) => {
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| content.to_string())
+                }
                 Err(e) => {
                     log::warn!("sidecar reassemble: could not parse content for JSON conversion ({e}); using raw content");
                     content.to_string()
@@ -1025,11 +1022,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_to_format_json_serialize_failure_falls_back_to_raw() {
+    fn convert_to_format_non_string_key_falls_back_to_raw() {
         // YAML permits compound (sequence) mapping keys via explicit-key
-        // syntax; JSON object keys must be strings, so serializing this
-        // value with serde_json fails and the raw content must come back
-        // unchanged (the `Err(e)` arm of the inner match).
+        // syntax; JSON object keys must be strings, so parsing this into a
+        // serde_json::Value fails and the raw content must come back unchanged.
         let yaml_with_sequence_key = "? [a, b]\n: value\n";
         assert_eq!(
             convert_to_format(yaml_with_sequence_key, "json"),
