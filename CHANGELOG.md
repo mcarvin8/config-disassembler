@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/mcarvin8/config-disassembler/compare/v0.10.9...v0.11.0) - 2026-10-15
+
+### 🐛 Bug Fixes
+
+
+- [**breaking**] Replace serde_yaml with serde-saphyr ([#142](https://github.com/mcarvin8/config-disassembler/pull/142)) - ([8b8c63f](https://github.com/mcarvin8/config-disassembler/commit/8b8c63fb2160c2c9dc22a412657cbd3f8d3d378d))
+
+
 ## [0.10.9](https://github.com/mcarvin8/config-disassembler/compare/v0.10.8...v0.10.9) - 2026-10-01
 
 ### ⚙️ Miscellaneous Tasks
