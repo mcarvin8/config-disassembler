@@ -258,7 +258,7 @@ impl Format {
             Format::Json => Ok(serde_json::from_str(input)?),
             Format::Json5 => Ok(json5::from_str(input)?),
             Format::Jsonc => parse_jsonc(input),
-            Format::Yaml => Ok(serde_yaml::from_str(input)?),
+            Format::Yaml => Ok(serde_saphyr::from_str(input)?),
             Format::Toon => toon_format::decode_default(input)
                 .map_err(|e| Error::Invalid(format!("toon parse error: {e}"))),
             Format::Toml => Ok(toml::from_str(input)?),
@@ -275,7 +275,7 @@ impl Format {
             // JSON is a valid JSONC document. Comments from input files are
             // treated as syntax and are not preserved in the value model.
             Format::Jsonc => serde_json::to_string_pretty(value)?,
-            Format::Yaml => serde_yaml::to_string(value)?,
+            Format::Yaml => serde_saphyr::to_string(value)?,
             Format::Toon => toon_format::encode_default(value)
                 .map_err(|e| Error::Invalid(format!("toon serialize error: {e}")))?,
             Format::Toml => serialize_toml(value)?,

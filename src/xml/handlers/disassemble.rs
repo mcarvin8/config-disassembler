@@ -757,7 +757,7 @@ async fn extract_sidecar_elements(
 fn detect_content_format(text: &str) -> Option<String> {
     if serde_json::from_str::<serde_json::Value>(text).is_ok() {
         Some("json".to_string())
-    } else if serde_yaml::from_str::<serde_yaml::Value>(text).is_ok() {
+    } else if serde_saphyr::from_str::<serde_json::Value>(text).is_ok() {
         Some("yaml".to_string())
     } else {
         None
@@ -774,33 +774,23 @@ fn detect_content_format(text: &str) -> Option<String> {
 /// Falls back to raw text with a warning when the content cannot be parsed.
 fn convert_sidecar_content(text: &str, extension: &str) -> String {
     match extension.to_ascii_lowercase().as_str() {
-        "json" => {
-            // Parse into serde_yaml::Value first (the native representation) then
-            // serialize to JSON. Going directly to serde_json::Value fails for
-            // complex YAML in serde_yaml 0.9 due to cross-crate numeric type conflicts.
-            match serde_yaml::from_str::<serde_yaml::Value>(text) {
-                Ok(val) => match serde_json::to_string_pretty(&val) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        log::warn!("sidecar: JSON serialization failed ({e}); using raw text");
-                        text.to_string()
-                    }
-                },
-                Err(e) => {
-                    log::warn!(
-                        "sidecar: could not parse content for JSON conversion ({e}); using raw text"
-                    );
-                    text.to_string()
-                }
+        "json" => match serde_saphyr::from_str::<serde_json::Value>(text) {
+            // Serializing a serde_json::Value cannot fail.
+            Ok(val) => serde_json::to_string_pretty(&val).unwrap_or_else(|_| text.to_string()),
+            Err(e) => {
+                log::warn!(
+                    "sidecar: could not parse content for JSON conversion ({e}); using raw text"
+                );
+                text.to_string()
             }
-        }
+        },
         "yaml" | "yml" => {
             // Only convert when the source is strict JSON — YAML content passes through
             // unchanged to avoid re-serialization changing quote style or formatting.
             if serde_json::from_str::<serde_json::Value>(text).is_ok() {
-                match serde_yaml::from_str::<serde_yaml::Value>(text)
+                match serde_json::from_str::<serde_json::Value>(text)
                     .ok()
-                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                    .and_then(|v| serde_saphyr::to_string(&v).ok())
                 {
                     Some(yaml) => yaml,
                     None => {
@@ -1091,7 +1081,7 @@ mod tests {
     #[test]
     fn convert_sidecar_content_yaml_to_json() {
         // Uses nested YAML matching the fixture shape (quoted strings, string-keyed
-        // mappings, dotted version strings) to catch serde_yaml→serde_json cross-crate
+        // mappings, dotted version strings) to catch YAML→serde_json
         // numeric type failures that affect simple-key tests but not complex YAML.
         let yaml = "openapi: 3.0.1\ninfo:\n  title: \"@AuraEnabled Apex method APIs\"\n  version: 1.0.0\npaths:\n  /uploadFile:\n    post:\n      operationId: uploadFile\n      responses:\n        \"200\":\n          description: OK\n";
         let out = convert_sidecar_content(yaml, "json");
@@ -1116,7 +1106,8 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&out).is_err(),
             "output must be YAML format, not raw JSON: {out}"
         );
-        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        let val: serde_json::Value =
+            serde_saphyr::from_str(&out).expect("output must be valid YAML");
         assert_eq!(val["key"], "value");
         assert_eq!(val["num"], 42);
     }
@@ -1150,13 +1141,13 @@ mod tests {
     fn convert_sidecar_content_yml_extension_same_as_yaml() {
         let json = r#"{"x":true}"#;
         let out = convert_sidecar_content(json, "yml");
-        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        let val: serde_json::Value = serde_saphyr::from_str(&out).unwrap();
         assert_eq!(val["x"], true);
     }
 
     #[test]
     fn convert_sidecar_content_yaml_passes_through_unchanged() {
-        // YAML content with a yaml extension must NOT be re-serialized — serde_yaml changes
+        // YAML content with a yaml extension must NOT be re-serialized — re-serializing changes
         // double quotes to single quotes, breaking byte-for-byte round-trip assertions.
         let yaml = "title: \"@AuraEnabled Apex method APIs\"\nversion: 1.0.0\n";
         assert_eq!(convert_sidecar_content(yaml, "yaml"), yaml);
@@ -1178,11 +1169,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_sidecar_content_json_serialize_failure_falls_back_to_raw() {
-        // YAML permits compound (sequence) mapping keys via "? - a\n  - b"
-        // explicit-key syntax; JSON object keys must be strings, so
-        // serializing this value with serde_json fails and the raw text must
-        // be returned unchanged (the `Err(e)` arm of the inner match).
+    fn convert_sidecar_content_non_string_key_falls_back_to_raw() {
+        // YAML permits compound (sequence) mapping keys via explicit-key
+        // syntax; JSON object keys must be strings, so parsing this into a
+        // serde_json::Value fails and the raw text must be returned unchanged.
         let yaml_with_sequence_key = "? [a, b]\n: value\n";
         assert_eq!(
             convert_sidecar_content(yaml_with_sequence_key, "json"),

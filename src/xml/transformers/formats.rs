@@ -3,7 +3,7 @@
 use crate::xml::types::XmlElement;
 
 pub async fn transform_to_yaml(parsed_xml: &XmlElement) -> String {
-    serde_yaml::to_string(parsed_xml).unwrap_or_default()
+    serde_saphyr::to_string(parsed_xml).unwrap_or_default()
 }
 
 pub async fn transform_to_json5(parsed_xml: &XmlElement) -> String {

@@ -562,7 +562,7 @@ impl Default for ReassembleXmlFileHandler {
 
 /// Convert `content` (in whatever format the sidecar file uses) to `target_format`.
 ///
-/// - `"json"` → parse via serde_yaml (superset of JSON) then emit as pretty JSON
+/// - `"json"` → parse as YAML (superset of JSON) then emit as pretty JSON
 /// - `"yaml"` / `"yml"` → only convert when content is strict JSON; YAML passes through
 /// - anything else → pass through unchanged
 ///
@@ -570,14 +570,11 @@ impl Default for ReassembleXmlFileHandler {
 fn convert_to_format(content: &str, target_format: &str) -> String {
     match target_format.to_ascii_lowercase().as_str() {
         "json" => {
-            match serde_yaml::from_str::<serde_yaml::Value>(content) {
-                Ok(val) => match serde_json::to_string_pretty(&val) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        log::warn!("sidecar reassemble: JSON serialization failed ({e}); using raw content");
-                        content.to_string()
-                    }
-                },
+            match serde_saphyr::from_str::<serde_json::Value>(content) {
+                // Serializing a serde_json::Value cannot fail.
+                Ok(val) => {
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| content.to_string())
+                }
                 Err(e) => {
                     log::warn!("sidecar reassemble: could not parse content for JSON conversion ({e}); using raw content");
                     content.to_string()
@@ -586,9 +583,9 @@ fn convert_to_format(content: &str, target_format: &str) -> String {
         }
         "yaml" | "yml" => {
             if serde_json::from_str::<serde_json::Value>(content).is_ok() {
-                match serde_yaml::from_str::<serde_yaml::Value>(content)
+                match serde_json::from_str::<serde_json::Value>(content)
                     .ok()
-                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                    .and_then(|v| serde_saphyr::to_string(&v).ok())
                 {
                     Some(yaml) => yaml,
                     None => {
@@ -990,7 +987,8 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&out).is_err(),
             "output must be YAML format, not raw JSON: {out}"
         );
-        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        let val: serde_json::Value =
+            serde_saphyr::from_str(&out).expect("output must be valid YAML");
         assert_eq!(val["key"], "value");
         assert_eq!(val["num"], 42);
     }
@@ -999,7 +997,7 @@ mod tests {
     fn convert_to_format_yml_extension_same_as_yaml() {
         let json = r#"{"x":true}"#;
         let out = convert_to_format(json, "yml");
-        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        let val: serde_json::Value = serde_saphyr::from_str(&out).unwrap();
         assert_eq!(val["x"], true);
     }
 
@@ -1024,11 +1022,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_to_format_json_serialize_failure_falls_back_to_raw() {
+    fn convert_to_format_non_string_key_falls_back_to_raw() {
         // YAML permits compound (sequence) mapping keys via explicit-key
-        // syntax; JSON object keys must be strings, so serializing this
-        // value with serde_json fails and the raw content must come back
-        // unchanged (the `Err(e)` arm of the inner match).
+        // syntax; JSON object keys must be strings, so parsing this into a
+        // serde_json::Value fails and the raw content must come back unchanged.
         let yaml_with_sequence_key = "? [a, b]\n: value\n";
         assert_eq!(
             convert_to_format(yaml_with_sequence_key, "json"),
