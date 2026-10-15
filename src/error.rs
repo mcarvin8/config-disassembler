@@ -17,7 +17,9 @@ pub enum Error {
     /// Failed to parse JSON5.
     Json5(json5::Error),
     /// Failed to parse YAML.
-    Yaml(serde_yaml::Error),
+    Yaml(serde_saphyr::Error),
+    /// Failed to serialize YAML.
+    YamlSer(serde_saphyr::SerializeError),
     /// Failed to parse TOML.
     TomlDe(toml::de::Error),
     /// Could not determine the file format from a path.
@@ -37,6 +39,7 @@ impl fmt::Display for Error {
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Json5(e) => write!(f, "json5 error: {e}"),
             Error::Yaml(e) => write!(f, "yaml error: {e}"),
+            Error::YamlSer(e) => write!(f, "yaml serialize error: {e}"),
             Error::TomlDe(e) => write!(f, "toml parse error: {e}"),
             Error::UnknownFormat(p) => {
                 write!(
@@ -59,6 +62,7 @@ impl std::error::Error for Error {
             Error::Json(e) => Some(e),
             Error::Json5(e) => Some(e),
             Error::Yaml(e) => Some(e),
+            Error::YamlSer(e) => Some(e),
             Error::TomlDe(e) => Some(e),
             _ => None,
         }
@@ -83,9 +87,15 @@ impl From<json5::Error> for Error {
     }
 }
 
-impl From<serde_yaml::Error> for Error {
-    fn from(e: serde_yaml::Error) -> Self {
+impl From<serde_saphyr::Error> for Error {
+    fn from(e: serde_saphyr::Error) -> Self {
         Error::Yaml(e)
+    }
+}
+
+impl From<serde_saphyr::SerializeError> for Error {
+    fn from(e: serde_saphyr::SerializeError) -> Self {
+        Error::YamlSer(e)
     }
 }
 
@@ -118,11 +128,16 @@ mod tests {
         assert!(json_err.to_string().contains("json"));
         assert!(json_err.source().is_some());
 
-        let yaml_err: Error = serde_yaml::from_str::<serde_json::Value>("\t- :: bad")
+        let yaml_err: Error = serde_saphyr::from_str::<serde_json::Value>("key: [unclosed")
             .unwrap_err()
             .into();
         assert!(yaml_err.to_string().contains("yaml"));
         assert!(yaml_err.source().is_some());
+
+        let yaml_ser_err: Error =
+            <serde_saphyr::SerializeError as serde::ser::Error>::custom("bad").into();
+        assert!(yaml_ser_err.to_string().contains("yaml serialize"));
+        assert!(yaml_ser_err.source().is_some());
 
         let json5_err: Error = json5::from_str::<serde_json::Value>("{ not json5")
             .unwrap_err()

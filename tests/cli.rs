@@ -197,7 +197,7 @@ async fn full_disassemble_reassemble_via_cli() {
     ])
     .await;
     let parsed: serde_json::Value =
-        serde_yaml::from_str(&fs::read_to_string(&rebuilt).unwrap()).unwrap();
+        serde_saphyr::from_str(&fs::read_to_string(&rebuilt).unwrap()).unwrap();
     let expected: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&input).unwrap()).unwrap();
     assert_eq!(parsed, expected);

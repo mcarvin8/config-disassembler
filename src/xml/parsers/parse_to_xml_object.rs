@@ -22,7 +22,7 @@ pub async fn parse_to_xml_object(file_path: &str) -> Option<XmlElement> {
     let content = fs::read_to_string(file_path).await.ok()?;
 
     if file_path.to_lowercase().ends_with(".yaml") || file_path.to_lowercase().ends_with(".yml") {
-        return serde_yaml::from_str(&content).ok();
+        return serde_saphyr::from_str(&content).ok();
     }
 
     if file_path.to_lowercase().ends_with(".json5") {

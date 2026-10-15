@@ -562,7 +562,7 @@ impl Default for ReassembleXmlFileHandler {
 
 /// Convert `content` (in whatever format the sidecar file uses) to `target_format`.
 ///
-/// - `"json"` → parse via serde_yaml (superset of JSON) then emit as pretty JSON
+/// - `"json"` → parse as YAML (superset of JSON) then emit as pretty JSON
 /// - `"yaml"` / `"yml"` → only convert when content is strict JSON; YAML passes through
 /// - anything else → pass through unchanged
 ///
@@ -570,7 +570,7 @@ impl Default for ReassembleXmlFileHandler {
 fn convert_to_format(content: &str, target_format: &str) -> String {
     match target_format.to_ascii_lowercase().as_str() {
         "json" => {
-            match serde_yaml::from_str::<serde_yaml::Value>(content) {
+            match serde_saphyr::from_str::<serde_json::Value>(content) {
                 Ok(val) => match serde_json::to_string_pretty(&val) {
                     Ok(json) => json,
                     Err(e) => {
@@ -586,9 +586,9 @@ fn convert_to_format(content: &str, target_format: &str) -> String {
         }
         "yaml" | "yml" => {
             if serde_json::from_str::<serde_json::Value>(content).is_ok() {
-                match serde_yaml::from_str::<serde_yaml::Value>(content)
+                match serde_json::from_str::<serde_json::Value>(content)
                     .ok()
-                    .and_then(|v| serde_yaml::to_string(&v).ok())
+                    .and_then(|v| serde_saphyr::to_string(&v).ok())
                 {
                     Some(yaml) => yaml,
                     None => {
@@ -990,7 +990,8 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&out).is_err(),
             "output must be YAML format, not raw JSON: {out}"
         );
-        let val: serde_json::Value = serde_yaml::from_str(&out).expect("output must be valid YAML");
+        let val: serde_json::Value =
+            serde_saphyr::from_str(&out).expect("output must be valid YAML");
         assert_eq!(val["key"], "value");
         assert_eq!(val["num"], 42);
     }
@@ -999,7 +1000,7 @@ mod tests {
     fn convert_to_format_yml_extension_same_as_yaml() {
         let json = r#"{"x":true}"#;
         let out = convert_to_format(json, "yml");
-        let val: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        let val: serde_json::Value = serde_saphyr::from_str(&out).unwrap();
         assert_eq!(val["x"], true);
     }
 
