@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/mcarvin8/config-disassembler/compare/v0.11.0...v0.11.1) - 2026-10-30
+
+### 🐛 Bug Fixes
+
+
+- *(deps)* Bump tokio to 1.54.1 for RUSTSEC-2026-0386 ([#146](https://github.com/mcarvin8/config-disassembler/pull/146)) - ([6e6b0e9](https://github.com/mcarvin8/config-disassembler/commit/6e6b0e928f2f43ae317fe33c93d2338c2880307c))
+
+
 ## [0.11.0](https://github.com/mcarvin8/config-disassembler/compare/v0.10.9...v0.11.0) - 2026-10-15
 
 ### 🐛 Bug Fixes
