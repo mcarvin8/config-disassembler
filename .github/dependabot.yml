@@ -4,9 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "build(cargo)"
     groups:
       cargo:
         patterns:
@@ -15,9 +14,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
     commit-message:
-      prefix: "build"
+      prefix: "build(github-actions)"
     groups:
       github-actions:
         patterns:
