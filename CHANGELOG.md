@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/mcarvin8/config-disassembler/compare/v0.11.1...v0.11.2) - 2026-11-02
+
+### ⚙️ Miscellaneous Tasks
+
+
+- Update dependabot commit prefixes - ([0257e3b](https://github.com/mcarvin8/config-disassembler/commit/0257e3b0d6142b6e410898b7a0542b92c042e978))
+
+### Build
+
+
+- *(cargo)* Bump the cargo group across 1 directory with 6 updates ([#148](https://github.com/mcarvin8/config-disassembler/pull/148)) - ([c962740](https://github.com/mcarvin8/config-disassembler/commit/c962740995160beef9ff75213e1c1163ce957064))
+
+
 ## [0.11.1](https://github.com/mcarvin8/config-disassembler/compare/v0.11.0...v0.11.1) - 2026-10-30
 
 ### 🐛 Bug Fixes
