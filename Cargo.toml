@@ -37,4 +37,17 @@ serde-saphyr = "2"
 
 [dev-dependencies]
 walkdir = "2"
+# Renamed so bench code imports plain `criterion`. Outside CodSpeed's runner
+# the compat crate behaves exactly like upstream criterion, so `cargo bench`
+# works locally as usual; under `cargo codspeed run` it reports to CodSpeed.
+criterion = { package = "codspeed-criterion-compat", version = "6", features = ["async_tokio"] }
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+
+# Benchmarks (see benches/README.md). harness = false hands main() to criterion.
+[[bench]]
+name = "xml_micro"
+harness = false
+
+[[bench]]
+name = "xml_macro"
+harness = false
