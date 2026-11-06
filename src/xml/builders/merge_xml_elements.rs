@@ -325,6 +325,8 @@ mod tests {
             ],
             // Root content that isn't an object is skipped.
             vec![json!({"R": "text"}), json!({"R": {"a": 1}})],
+            // Nothing to merge: both return None.
+            vec![],
         ];
         for (i, elements) in cases.iter().enumerate() {
             let expected = ordered(&reference::merge(elements));
