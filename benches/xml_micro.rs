@@ -8,7 +8,8 @@ use std::hint::black_box;
 
 use config_disassembler::xml::build_xml_string;
 use config_disassembler::xml::parsers::{
-    parse_unique_id_element, parse_xml_from_str, short_hash_for_element,
+    extract_xml_declaration_from_raw, parse_unique_id_element, parse_xml_from_str,
+    short_hash_for_element,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
@@ -76,6 +77,27 @@ fn unique_ids(c: &mut Criterion) {
     group.finish();
 }
 
+/// The per-shard work `parse_to_xml_object` does on reassemble, minus file I/O:
+/// parse the shard and extract its XML declaration. Reassemble runs this once
+/// per shard, so fixed per-call costs (like compiling a regex each call, which
+/// this bench was added to guard against) multiply by the shard count.
+fn parse_shards(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_shards");
+    for n in SIZES {
+        let shards = support::field_permission_shards(n);
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &shards, |b, shards| {
+            b.iter(|| {
+                for shard in shards {
+                    black_box(parse_xml_from_str(black_box(shard), FILE_NAME));
+                    black_box(extract_xml_declaration_from_raw(black_box(shard)));
+                }
+            })
+        });
+    }
+    group.finish();
+}
+
 fn build(c: &mut Criterion) {
     let mut group = c.benchmark_group("build_xml_string");
     for n in SIZES {
@@ -89,5 +111,5 @@ fn build(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, parse, unique_ids, build);
+criterion_group!(benches, parse, parse_shards, unique_ids, build);
 criterion_main!(benches);

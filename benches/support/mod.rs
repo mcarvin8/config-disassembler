@@ -88,6 +88,21 @@ pub fn permission_set_xml(n: usize) -> String {
     s
 }
 
+/// `n` small shard files' contents, shaped like what `disassemble` writes for a
+/// permission set's `<fieldPermissions>` (declaration + root + one element).
+/// Reassemble parses thousands of these per component, so per-shard fixed
+/// costs dominate there in a way whole-document benches can't show.
+pub fn field_permission_shards(n: usize) -> Vec<String> {
+    (1..=n)
+        .map(|i| {
+            let obj = (i % 200) + 1;
+            format!(
+                "{XML_HEADER}<PermissionSet{NS}>\n    <fieldPermissions>\n        <editable>true</editable>\n        <field>Sample_Object_{obj:03}__c.Sample_Field_{i:06}__c</field>\n        <readable>true</readable>\n    </fieldPermissions>\n</PermissionSet>\n"
+            )
+        })
+        .collect()
+}
+
 /// Writes `files` permission sets of size `n` into `dir` -- the many-small-files
 /// shape that exercises the directory-mode concurrent fan-out in
 /// `DisassembleXmlFileHandler::handle_directory`.
