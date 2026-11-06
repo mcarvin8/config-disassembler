@@ -249,7 +249,7 @@ fn find_id_in_subtree(element: &XmlElement, unique_id_elements: &str) -> Option<
 /// with `<actionName>View</actionName>` - still produce distinct filenames
 /// reflecting their distinct content.
 ///
-/// Resolved configured-field values are passed through [`sanitize_path_segment`]
+/// Resolved configured-field values are passed through `sanitize_path_segment`
 /// before being returned so any path-illegal characters in the source value
 /// (e.g. `/` in an `EntitlementProcess` `milestoneName`) are mapped to a
 /// safe placeholder. Hash-fallback values are pure hex and pass through the
