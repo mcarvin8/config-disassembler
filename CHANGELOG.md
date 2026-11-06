@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4](https://github.com/mcarvin8/config-disassembler/compare/v0.11.3...v0.11.4) - 2026-11-06
+
+### 📚 Documentation
+
+
+- Add CodSpeed badge - ([5abbdd5](https://github.com/mcarvin8/config-disassembler/commit/5abbdd5d7398db5a15bc1404da11fdfc45e70e06))
+
+### ⚡ Performance
+
+
+- *(xml)* Strip whitespace in place and merge shards by move ([#154](https://github.com/mcarvin8/config-disassembler/pull/154)) - ([c558973](https://github.com/mcarvin8/config-disassembler/commit/c55897384548b60f583306996a076340df309b7b))
+
+
 ## [0.11.3](https://github.com/mcarvin8/config-disassembler/compare/v0.11.2...v0.11.3) - 2026-11-06
 
 ### ⚡ Performance
