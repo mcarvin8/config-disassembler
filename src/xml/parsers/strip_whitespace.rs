@@ -61,23 +61,20 @@ fn is_empty_text_node(key: &str, value: &Value) -> bool {
         && value.as_str().map(|s| s.trim().is_empty()).unwrap_or(false)
 }
 
-fn clean_array(arr: &[Value]) -> Vec<Value> {
-    arr.iter()
-        .filter_map(|entry| {
-            let cleaned = strip_whitespace_text_nodes(entry);
-            match &cleaned {
-                Value::Object(m) if m.is_empty() => None,
-                _ => Some(cleaned),
-            }
-        })
-        .collect()
+fn clean_array_in_place(arr: &mut Vec<Value>) {
+    arr.retain_mut(|entry| {
+        strip_whitespace_text_nodes_in_place(entry);
+        !matches!(entry, Value::Object(m) if m.is_empty())
+    });
 }
 
-fn clean_object(obj: &Map<String, Value>) -> Map<String, Value> {
-    let mut result = Map::new();
+fn clean_object_in_place(obj: &mut Map<String, Value>) {
+    // Computed from the element as parsed, before any entry is dropped below.
     let has_cdata = obj.contains_key("#cdata");
     let has_comment = obj.contains_key("#comment");
-    for (key, value) in obj {
+    // `retain` visits entries in order and keeps survivors in their original
+    // positions, so key order matches what rebuilding a fresh map produced.
+    obj.retain(|key, value| {
         // Preserve whitespace-only #text when element has #cdata (needed for round-trip)
         // Preserve whitespace-only #text and #text-tail when element has #comment
         if is_empty_text_node(key, value)
@@ -85,28 +82,38 @@ fn clean_object(obj: &Map<String, Value>) -> Map<String, Value> {
             && !(key == "#text" && has_comment)
             && !(key == "#text-tail" && has_comment)
         {
-            continue;
+            return false;
         }
-        let cleaned = strip_whitespace_text_nodes(value);
-        if !cleaned.is_null()
+        strip_whitespace_text_nodes_in_place(value);
+        !value.is_null()
             || key == "#text"
             || key == "#cdata"
             || key == "#comment"
             || key == "#text-tail"
-        {
-            result.insert(key.clone(), cleaned);
-        }
+    });
+}
+
+/// Remove meaningless whitespace-only #text nodes from the XML structure, in place.
+///
+/// Same result as [`strip_whitespace_text_nodes`] without building a second copy
+/// of the tree -- every parse (each source file on disassemble, each shard on
+/// reassemble) goes through this, so the copy was paid on every file.
+pub fn strip_whitespace_text_nodes_in_place(node: &mut Value) {
+    match node {
+        Value::Array(arr) => clean_array_in_place(arr),
+        Value::Object(obj) => clean_object_in_place(obj),
+        _ => {}
     }
-    result
 }
 
 /// Remove meaningless whitespace-only #text nodes from the XML structure.
+///
+/// Returns a cleaned copy and leaves `node` untouched. Prefer
+/// [`strip_whitespace_text_nodes_in_place`] when the input isn't needed afterwards.
 pub fn strip_whitespace_text_nodes(node: &Value) -> Value {
-    match node {
-        Value::Array(arr) => Value::Array(clean_array(arr)),
-        Value::Object(obj) => Value::Object(clean_object(obj)),
-        other => other.clone(),
-    }
+    let mut cleaned = node.clone();
+    strip_whitespace_text_nodes_in_place(&mut cleaned);
+    cleaned
 }
 
 #[cfg(test)]

@@ -11,4 +11,6 @@ pub use parse_unique_id::{parse_unique_id_element, short_hash_for_element};
 pub use parse_xml::{
     extract_xml_declaration_from_raw, extract_xmlns_from_raw, parse_xml, parse_xml_from_str,
 };
-pub use strip_whitespace::{mark_compact_elements, strip_whitespace_text_nodes};
+pub use strip_whitespace::{
+    mark_compact_elements, strip_whitespace_text_nodes, strip_whitespace_text_nodes_in_place,
+};
