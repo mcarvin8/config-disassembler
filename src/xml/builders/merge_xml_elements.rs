@@ -33,8 +33,7 @@ fn merge_array_value(target: &mut Map<String, Value>, key: String, items: Vec<Va
         arr.extend(items);
     } else {
         let existing = target.remove(&key).unwrap();
-        let mut combined = Vec::with_capacity(items.len() + 1);
-        combined.push(existing);
+        let mut combined = vec![existing];
         combined.extend(items);
         target.insert(key, Value::Array(combined));
     }
