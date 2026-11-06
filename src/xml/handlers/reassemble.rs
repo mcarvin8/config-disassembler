@@ -12,6 +12,66 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use tokio::fs;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
+/// Upper bound on shard files being read + parsed at once across the **whole
+/// process**, not per call. Callers such as sf-decomposer run dozens of
+/// `reassemble` calls concurrently; a per-call bound would multiply by that
+/// count and could exhaust file descriptors (Linux's default soft limit is
+/// 1024). Parsing is CPU-bound, so anything well above the core count only
+/// buys I/O overlap.
+const SHARD_PARSE_CONCURRENCY: usize = 32;
+static SHARD_PARSE_PERMITS: Semaphore = Semaphore::const_new(SHARD_PARSE_CONCURRENCY);
+
+/// `true` for a regular file, following symlinks like the `Path::is_file` this
+/// replaces. Uses the file type the directory listing already returned instead
+/// of a blocking `stat` per entry on an async worker; only symlinks (and the
+/// rare platform that can't report a type) pay for a real metadata call.
+async fn is_regular_file(entry: &fs::DirEntry, path: &Path) -> bool {
+    match entry.file_type().await {
+        Ok(file_type) if !file_type.is_symlink() => file_type.is_file(),
+        _ => fs::metadata(path)
+            .await
+            .map(|meta| meta.is_file())
+            .unwrap_or(false),
+    }
+}
+
+/// Read + parse every shard in `files` concurrently (bounded by
+/// [`SHARD_PARSE_PERMITS`]) and return the results **in input order**, so the
+/// merged output is byte-identical to parsing them one by one. `None` marks a
+/// shard that failed to read or parse, exactly as the sequential path skipped it.
+async fn parse_shards_in_order(
+    files: Vec<String>,
+) -> Result<Vec<Option<XmlElement>>, Box<dyn std::error::Error + Send + Sync>> {
+    // 0 or 1 shards: nothing to overlap, skip the JoinSet setup cost.
+    if files.len() <= 1 {
+        let mut out = Vec::with_capacity(files.len());
+        for file in files {
+            out.push(parse_to_xml_object(&file).await);
+        }
+        return Ok(out);
+    }
+
+    let mut results: Vec<Option<XmlElement>> = vec![None; files.len()];
+    let mut join_set = JoinSet::new();
+    for (index, file) in files.into_iter().enumerate() {
+        join_set.spawn(async move {
+            let _permit = SHARD_PARSE_PERMITS
+                .acquire()
+                .await
+                .expect("static semaphore is never closed");
+            (index, parse_to_xml_object(&file).await)
+        });
+    }
+    while let Some(joined) = join_set.join_next().await {
+        let (index, parsed) =
+            joined.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        results[index] = parsed;
+    }
+    Ok(results)
+}
 
 /// Read a `.key_order.json` file (if present) and parse it as a list of root key names.
 async fn read_key_order(path: &Path) -> Option<Vec<String>> {
@@ -399,42 +459,69 @@ impl ReassembleXmlFileHandler {
             // for future per-rule base_paths without another signature change.
             let is_base = is_at_base_path(&dir_path, &base_segments);
 
+            // Pass 1: classify entries in sorted order. Shard files are queued for the
+            // concurrent parse below; each slot remembers its position so `parsed` ends
+            // up in exactly the order the old one-file-at-a-time loop produced.
+            enum Slot {
+                Shard(usize),
+                Dir(PathBuf, String),
+            }
+            let mut slots = Vec::with_capacity(entries.len());
+            let mut shard_files = Vec::new();
             for entry in entries {
                 let path = entry.path();
                 let file_path = normalize_path_unix(&path.to_string_lossy()).to_string();
-
-                if path.is_file() {
+                if is_regular_file(&entry, &path).await {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !name.starts_with('.') && self.is_parsable_file(name) {
-                        if let Some(parsed_obj) = parse_to_xml_object(&file_path).await {
-                            parsed.push(parsed_obj);
-                        }
+                        slots.push(Slot::Shard(shard_files.len()));
+                        shard_files.push(file_path);
                     }
                 } else {
-                    // Anything not a regular file is treated as a directory; symlinks and
-                    // other exotic entries simply recurse via read_dir below.
-                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let matched_segment = if is_base {
-                        base_segments
-                            .iter()
-                            .find(|(_, seg_name, _)| seg_name == dir_name)
-                            .cloned()
-                    } else {
-                        None
-                    };
-                    if let Some((_, segment_name, extract_inner)) = matched_segment {
-                        let segment_element = self
-                            .collect_segment_as_array(&file_path, &segment_name, extract_inner)
-                            .await?;
-                        if let Some(el) = segment_element {
-                            parsed.push(el);
+                    slots.push(Slot::Dir(path, file_path));
+                }
+            }
+
+            // Pass 2: read + parse every shard in this directory concurrently. This was a
+            // sequential `.await` per file, which left one large component (e.g. a
+            // permission set with thousands of shards) on a single core for its whole
+            // reassemble.
+            let mut shard_results = parse_shards_in_order(shard_files).await?;
+
+            // Pass 3: assemble in the original order; subdirectories recurse as before.
+            for slot in slots {
+                let (path, file_path) = match slot {
+                    Slot::Shard(index) => {
+                        if let Some(parsed_obj) = shard_results[index].take() {
+                            parsed.push(parsed_obj);
                         }
-                    } else {
-                        let sub_parsed = self
-                            .process_files_in_directory(file_path, base_segments.clone())
-                            .await?;
-                        parsed.extend(sub_parsed);
+                        continue;
                     }
+                    Slot::Dir(path, file_path) => (path, file_path),
+                };
+                // Anything not a regular file is treated as a directory; symlinks and
+                // other exotic entries simply recurse via read_dir below.
+                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let matched_segment = if is_base {
+                    base_segments
+                        .iter()
+                        .find(|(_, seg_name, _)| seg_name == dir_name)
+                        .cloned()
+                } else {
+                    None
+                };
+                if let Some((_, segment_name, extract_inner)) = matched_segment {
+                    let segment_element = self
+                        .collect_segment_as_array(&file_path, &segment_name, extract_inner)
+                        .await?;
+                    if let Some(el) = segment_element {
+                        parsed.push(el);
+                    }
+                } else {
+                    let sub_parsed = self
+                        .process_files_in_directory(file_path, base_segments.clone())
+                        .await?;
+                    parsed.extend(sub_parsed);
                 }
             }
 
@@ -456,18 +543,22 @@ impl ReassembleXmlFileHandler {
         while let Some(entry) = read_dir.next_entry().await? {
             let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if path.is_file() && !name.starts_with('.') && self.is_parsable_file(name) {
-                xml_files.push(normalize_path_unix(&path.to_string_lossy()));
+            if !name.starts_with('.')
+                && self.is_parsable_file(name)
+                && is_regular_file(&entry, &path).await
+            {
+                xml_files.push(normalize_path_unix(&path.to_string_lossy()).to_string());
             }
         }
         xml_files.sort();
 
         let mut root_contents = Vec::new();
         let mut first_xml: Option<(String, Option<Value>)> = None;
-        for file_path in &xml_files {
+        // Parsed concurrently, consumed in sorted order (see parse_shards_in_order).
+        for parsed in parse_shards_in_order(xml_files).await? {
             // parse_to_xml_object always yields a JSON object on success; treat any other
             // shape (including parse failure) as a skip without branching explicitly.
-            let Some(parsed) = parse_to_xml_object(file_path).await else {
+            let Some(parsed) = parsed else {
                 continue;
             };
             let obj_owned = parsed.as_object().cloned().unwrap_or_default();
@@ -920,6 +1011,75 @@ mod tests {
     fn is_at_base_path_false_for_empty_segments() {
         let segs: Vec<(String, String, bool)> = Vec::new();
         assert!(!is_at_base_path("/anywhere", &segs));
+    }
+
+    #[tokio::test]
+    async fn parse_shards_in_order_keeps_input_order_and_marks_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut files = Vec::new();
+        for i in 0..100 {
+            // Every 10th entry points at a file that doesn't exist -> None, in place.
+            let path = tmp.path().join(format!("{i:03}.xml"));
+            if i % 10 != 0 {
+                tokio::fs::write(&path, format!("<Root><n>{i}</n></Root>"))
+                    .await
+                    .unwrap();
+            }
+            files.push(path.to_string_lossy().to_string());
+        }
+
+        let results = parse_shards_in_order(files).await.unwrap();
+
+        assert_eq!(results.len(), 100);
+        for (i, result) in results.iter().enumerate() {
+            if i % 10 == 0 {
+                assert!(result.is_none(), "missing shard {i} should be None");
+            } else {
+                let n = result.as_ref().unwrap()["Root"]["n"]["#text"]
+                    .as_str()
+                    .unwrap();
+                assert_eq!(n, i.to_string(), "shard {i} out of order");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reassemble_many_shards_preserves_sorted_order() {
+        // Well above SHARD_PARSE_CONCURRENCY, on a multi-thread runtime, so shards
+        // finish parsing out of order; the merged output must still follow the
+        // sorted file names.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Bench");
+        tokio::fs::create_dir(&dir).await.unwrap();
+        for i in 0..200 {
+            // Uneven shard sizes make completion order differ from input order.
+            let padding = "x".repeat((i * 7919) % 4096);
+            tokio::fs::write(
+                dir.join(format!("{i:04}.field-meta.xml")),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Root><fields><n>{i}</n><pad>{padding}</pad></fields></Root>"
+                ),
+            )
+            .await
+            .unwrap();
+        }
+
+        ReassembleXmlFileHandler::new()
+            .reassemble(dir.to_str().unwrap(), Some("xml"), false, None)
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("Bench.xml"))
+            .await
+            .unwrap();
+        let order: Vec<usize> = output
+            .match_indices("<n>")
+            .map(|(at, _)| {
+                let rest = &output[at + 3..];
+                rest[..rest.find('<').unwrap()].parse().unwrap()
+            })
+            .collect();
+        assert_eq!(order, (0..200).collect::<Vec<_>>());
     }
 
     // Pins the `delete ! in is_some_and(|s| !s.is_empty())` mutant at line 299.
