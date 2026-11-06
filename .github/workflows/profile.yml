@@ -155,7 +155,9 @@ jobs:
               echo "| $phase | $wall | $user | $sys | $rss |"
             done
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$OUT/summary-baseline.md"
+          # Job summaries aren't readable through the API; print to the log too.
+          cat "$OUT/summary-baseline.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: CPU profile (perf)
         run: |
@@ -189,13 +191,39 @@ jobs:
               echo '```'
               echo
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$OUT/summary-cpu.md"
+          cat "$OUT/summary-cpu.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Memory profile (heaptrack)
+      # Uploaded before the heavier, optional heap profile so a heaptrack
+      # failure can never cost the perf data.
+      - name: Upload CPU profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: profile-cpu-${{ env.PROFILE }}-${{ env.FORMAT }}
+          path: |
+            ${{ runner.temp }}/out/*.svg
+            ${{ runner.temp }}/out/*.txt
+            ${{ runner.temp }}/out/*.md
+            ${{ runner.temp }}/out/*.folded
+          retention-days: 30
+          if-no-files-found: warn
+
+      # heaptrack records every allocation. On the `large` fixture its data and
+      # memory outgrew the hosted runner (the runner itself was shut down). The
+      # `medium` fixture has the same shapes at a fraction of the size, which is
+      # enough to see *what* is live at the peak. Optional: never fails the job.
+      - name: Generate medium fixtures (heap profile)
+        run: npx --yes tsx scripts/gen-perf-fixtures.ts --profile medium --out "$RUNNER_TEMP/fixtures-medium"
+        working-directory: sf-decomposer
+
+      - name: Memory profile (heaptrack, medium)
+        continue-on-error: true
+        timeout-minutes: 15
         run: |
           BIN=target/release/examples/replay_workload
-          OUT="$RUNNER_TEMP/out"
-          cp -r "$RUNNER_TEMP/fixtures" "$RUNNER_TEMP/mem"
+          OUT="$RUNNER_TEMP/heap"; mkdir -p "$OUT"
+          cp -r "$RUNNER_TEMP/fixtures-medium" "$RUNNER_TEMP/mem"
           for phase in decompose recompose; do
             heaptrack -o "$OUT/heaptrack-$phase" "$BIN" "$phase" "$RUNNER_TEMP/mem" --format "$FORMAT" \
               > /dev/null 2>&1
@@ -205,7 +233,7 @@ jobs:
           done
           {
             for phase in decompose recompose; do
-              echo "## $phase: heap peak"
+              echo "## $phase: heap peak (medium fixture)"
               echo
               echo '```'
               grep -E 'peak heap memory consumption|total memory leaked|calls to allocation functions' \
@@ -217,17 +245,17 @@ jobs:
               echo '```'
               echo
             done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$OUT/summary-heap.md"
+          cat "$OUT/summary-heap.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload profiles
+      - name: Upload heap profiles
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: profile-${{ env.PROFILE }}-${{ env.FORMAT }}
+          name: profile-heap-medium-${{ env.FORMAT }}
           path: |
-            ${{ runner.temp }}/out/*.svg
-            ${{ runner.temp }}/out/*.txt
-            ${{ runner.temp }}/out/*.folded
-            ${{ runner.temp }}/out/heaptrack-*.zst
+            ${{ runner.temp }}/heap/*.txt
+            ${{ runner.temp }}/heap/*.md
+            ${{ runner.temp }}/heap/heaptrack-*.zst
           retention-days: 30
           if-no-files-found: warn
