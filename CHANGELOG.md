@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.5](https://github.com/mcarvin8/config-disassembler/compare/v0.11.4...v0.11.5) - 2026-11-06
+
+### ⚡ Performance
+
+
+- *(xml)* Compile declaration and xmlns regexes once ([#156](https://github.com/mcarvin8/config-disassembler/pull/156)) - ([b61d48d](https://github.com/mcarvin8/config-disassembler/commit/b61d48d843b2a8ca625f8a8bb69c5673746cbe55))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(profile)* Profile the crate under sf-decomposer's real workload ([#155](https://github.com/mcarvin8/config-disassembler/pull/155)) - ([1a50974](https://github.com/mcarvin8/config-disassembler/commit/1a50974e560e45062143d891603282fecc38b6d4))
+
+
 ## [0.11.4](https://github.com/mcarvin8/config-disassembler/compare/v0.11.3...v0.11.4) - 2026-11-06
 
 ### 📚 Documentation
