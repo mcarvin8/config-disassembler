@@ -13,7 +13,10 @@ name: Profile
 #   - unprofiled wall time and max RSS per phase (/usr/bin/time -v), to check
 #     the replay is representative of sf-decomposer's perf comment
 #   - perf: top functions by self time, by inclusive time, and a flamegraph SVG
-#   - heaptrack: peak heap consumption and the call sites behind it
+#
+# Heap profiling (heaptrack) was tried and removed: recording every allocation
+# got the hosted runner shut down even on the `medium` fixture. Max RSS per
+# phase is still reported by the unprofiled baseline.
 
 on:
   workflow_dispatch:
@@ -100,13 +103,13 @@ jobs:
         with:
           tool: inferno
 
-      - name: Install perf and heaptrack
+      - name: Install perf
         run: |
           sudo apt-get update -qq
           # Package layout differs across runner images: newer Ubuntu ships a
           # `linux-perf` package; older ones need the kernel-matched
           # linux-tools package. Try both; whichever yields a working binary wins.
-          sudo apt-get install -y -qq heaptrack linux-tools-common
+          sudo apt-get install -y -qq linux-tools-common
           sudo apt-get install -y -qq linux-perf \
             || sudo apt-get install -y -qq "linux-tools-$(uname -r)" \
             || sudo apt-get install -y -qq linux-tools-azure || true
@@ -194,8 +197,6 @@ jobs:
           } > "$OUT/summary-cpu.md"
           cat "$OUT/summary-cpu.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # Uploaded before the heavier, optional heap profile so a heaptrack
-      # failure can never cost the perf data.
       - name: Upload CPU profiles
         if: always()
         uses: actions/upload-artifact@v7
@@ -206,56 +207,5 @@ jobs:
             ${{ runner.temp }}/out/*.txt
             ${{ runner.temp }}/out/*.md
             ${{ runner.temp }}/out/*.folded
-          retention-days: 30
-          if-no-files-found: warn
-
-      # heaptrack records every allocation. On the `large` fixture its data and
-      # memory outgrew the hosted runner (the runner itself was shut down). The
-      # `medium` fixture has the same shapes at a fraction of the size, which is
-      # enough to see *what* is live at the peak. Optional: never fails the job.
-      - name: Generate medium fixtures (heap profile)
-        run: npx --yes tsx scripts/gen-perf-fixtures.ts --profile medium --out "$RUNNER_TEMP/fixtures-medium"
-        working-directory: sf-decomposer
-
-      - name: Memory profile (heaptrack, medium)
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          BIN=target/release/examples/replay_workload
-          OUT="$RUNNER_TEMP/heap"; mkdir -p "$OUT"
-          cp -r "$RUNNER_TEMP/fixtures-medium" "$RUNNER_TEMP/mem"
-          for phase in decompose recompose; do
-            heaptrack -o "$OUT/heaptrack-$phase" "$BIN" "$phase" "$RUNNER_TEMP/mem" --format "$FORMAT" \
-              > /dev/null 2>&1
-            heaptrack_print -f "$OUT"/heaptrack-$phase.*zst --print-peaks 1 --print-allocators 0 \
-              --print-temporary 0 --print-leaks 0 --peak-limit 15 \
-              > "$OUT/heaptrack-$phase.txt" 2>&1 || true
-          done
-          {
-            for phase in decompose recompose; do
-              echo "## $phase: heap peak (medium fixture)"
-              echo
-              echo '```'
-              grep -E 'peak heap memory consumption|total memory leaked|calls to allocation functions' \
-                "$OUT/heaptrack-$phase.txt" || true
-              echo
-              # The PEAK MEMORY CONSUMERS section: biggest contributors at the peak.
-              sed -n '/PEAK MEMORY CONSUMERS/,/^$/p;/PEAK MEMORY CONSUMERS/,+60p' "$OUT/heaptrack-$phase.txt" \
-                | head -n 60
-              echo '```'
-              echo
-            done
-          } > "$OUT/summary-heap.md"
-          cat "$OUT/summary-heap.md" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload heap profiles
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: profile-heap-medium-${{ env.FORMAT }}
-          path: |
-            ${{ runner.temp }}/heap/*.txt
-            ${{ runner.temp }}/heap/*.md
-            ${{ runner.temp }}/heap/heaptrack-*.zst
           retention-days: 30
           if-no-files-found: warn
