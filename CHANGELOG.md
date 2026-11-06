@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6](https://github.com/mcarvin8/config-disassembler/compare/v0.11.5...v0.11.6) - 2026-11-06
+
+### ⚡ Performance
+
+
+- *(xml)* Write each shard with one blocking-pool task ([#158](https://github.com/mcarvin8/config-disassembler/pull/158)) - ([1cd2068](https://github.com/mcarvin8/config-disassembler/commit/1cd20681bf21eabbb91ae69724752a4e860efa0e))
+
+
 ## [0.11.5](https://github.com/mcarvin8/config-disassembler/compare/v0.11.4...v0.11.5) - 2026-11-06
 
 ### ⚡ Performance
