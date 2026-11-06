@@ -1,0 +1,218 @@
+name: Profile
+
+# Profiles the crate under sf-decomposer's real workload (see
+# examples/replay_workload.rs) instead of micro benches: the CPU-only
+# `xml_micro` benches got 25-36% faster in #154 while sf-decomposer's
+# end-to-end CPU time didn't move, so the hot path is somewhere they don't
+# measure. This job answers "where does the time / memory actually go".
+#
+# Fixtures come from sf-decomposer's own deterministic generator
+# (scripts/gen-perf-fixtures.ts), so the shapes match its perf suite.
+#
+# Outputs (job summary + artifact):
+#   - unprofiled wall time and max RSS per phase (/usr/bin/time -v), to check
+#     the replay is representative of sf-decomposer's perf comment
+#   - perf: top functions by self time, by inclusive time, and a flamegraph SVG
+#   - heaptrack: peak heap consumption and the call sites behind it
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: sf-decomposer fixture profile
+        type: choice
+        default: large
+        options: [small, medium, large, xlarge, manyfiles]
+      format:
+        description: Shard format passed to disassemble
+        type: choice
+        default: xml
+        options: [xml, json, json5, yaml]
+      sf_decomposer_ref:
+        description: sf-decomposer ref to take the fixture generator from
+        type: string
+        default: main
+  # Run on PRs that change the profiling setup itself, so it can be iterated
+  # on before it exists on main (workflow_dispatch only sees main's copy).
+  pull_request:
+    paths:
+      - examples/replay_workload.rs
+      - .github/workflows/profile.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: profile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROFILE: ${{ inputs.profile || 'large' }}
+  FORMAT: ${{ inputs.format || 'xml' }}
+  CARGO_TERM_COLOR: never
+  # Frame pointers so perf can unwind with --call-graph fp (cheap, small
+  # perf.data); line tables so symbols resolve to source lines.
+  RUSTFLAGS: -C force-frame-pointers=yes
+  CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+
+jobs:
+  profile:
+    name: Profile (${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout sf-decomposer (fixture generator)
+        uses: actions/checkout@v7
+        with:
+          repository: mcarvin8/sf-decomposer
+          ref: ${{ inputs.sf_decomposer_ref || 'main' }}
+          path: sf-decomposer
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Generate fixtures
+        # The generator only uses node built-ins, so no `npm ci` is needed.
+        run: |
+          npx --yes tsx scripts/gen-perf-fixtures.ts --profile "$PROFILE" --out "$RUNNER_TEMP/fixtures"
+        working-directory: sf-decomposer
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+
+      - name: Install inferno (flamegraphs)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: inferno
+
+      - name: Install perf and heaptrack
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" heaptrack \
+            || sudo apt-get install -y -qq linux-tools-common linux-tools-azure heaptrack
+          # /usr/bin/perf refuses to run when the tools package doesn't match
+          # the running kernel exactly; call the versioned binary directly.
+          PERF="$(ls /usr/lib/linux-tools/*/perf | head -n1)"
+          echo "PERF=$PERF" >> "$GITHUB_ENV"
+          "$PERF" --version
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+
+      - name: Build replay
+        run: cargo build --release --example replay_workload
+
+      - name: Unprofiled baseline (wall time, max RSS)
+        run: |
+          BIN=target/release/examples/replay_workload
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          cp -r "$RUNNER_TEMP/fixtures" "$RUNNER_TEMP/base"
+          for phase in decompose recompose; do
+            /usr/bin/time -v "$BIN" "$phase" "$RUNNER_TEMP/base" --format "$FORMAT" \
+              2> "$OUT/time-$phase.txt"
+          done
+          {
+            echo "## Unprofiled baseline (profile=$PROFILE, format=$FORMAT)"
+            echo
+            echo "Compare with sf-decomposer's perf comment rows \`$PROFILE.$FORMAT.decompose\` / \`.recompose\`."
+            echo
+            echo '| Phase | Wall | User CPU (s) | Sys CPU (s) | Max RSS (MB) |'
+            echo '|---|---:|---:|---:|---:|'
+            for phase in decompose recompose; do
+              f="$OUT/time-$phase.txt"
+              wall=$(grep 'Elapsed (wall clock)' "$f" | awk '{print $NF}')
+              user=$(grep 'User time' "$f" | awk '{print $NF}')
+              sys=$(grep 'System time' "$f" | awk '{print $NF}')
+              rss=$(grep 'Maximum resident' "$f" | awk '{printf "%.1f", $NF/1024}')
+              echo "| $phase | $wall | $user | $sys | $rss |"
+            done
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CPU profile (perf)
+        run: |
+          BIN=target/release/examples/replay_workload
+          OUT="$RUNNER_TEMP/out"
+          cp -r "$RUNNER_TEMP/fixtures" "$RUNNER_TEMP/cpu"
+          for phase in decompose recompose; do
+            "$PERF" record -F 499 -g --call-graph fp -o "$OUT/perf-$phase.data" -- \
+              "$BIN" "$phase" "$RUNNER_TEMP/cpu" --format "$FORMAT" 2>/dev/null
+            "$PERF" report -i "$OUT/perf-$phase.data" --stdio --no-children --sort symbol \
+              --percent-limit 0.5 2>/dev/null > "$OUT/top-self-$phase.txt"
+            "$PERF" report -i "$OUT/perf-$phase.data" --stdio --children --sort symbol \
+              --percent-limit 2 -g none 2>/dev/null > "$OUT/top-inclusive-$phase.txt"
+            "$PERF" script -i "$OUT/perf-$phase.data" 2>/dev/null \
+              | inferno-collapse-perf > "$OUT/$phase.folded"
+            inferno-flamegraph --title "$phase ($PROFILE, $FORMAT)" < "$OUT/$phase.folded" \
+              > "$OUT/flamegraph-$phase.svg"
+          done
+          {
+            for phase in decompose recompose; do
+              echo "## $phase: top functions by self time"
+              echo
+              echo '```'
+              grep -E '^\s+[0-9.]+%' "$OUT/top-self-$phase.txt" | head -n 30
+              echo '```'
+              echo
+              echo "## $phase: top functions by inclusive time"
+              echo
+              echo '```'
+              grep -E '^\s+[0-9.]+%' "$OUT/top-inclusive-$phase.txt" | head -n 30
+              echo '```'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Memory profile (heaptrack)
+        run: |
+          BIN=target/release/examples/replay_workload
+          OUT="$RUNNER_TEMP/out"
+          cp -r "$RUNNER_TEMP/fixtures" "$RUNNER_TEMP/mem"
+          for phase in decompose recompose; do
+            heaptrack -o "$OUT/heaptrack-$phase" "$BIN" "$phase" "$RUNNER_TEMP/mem" --format "$FORMAT" \
+              > /dev/null 2>&1
+            heaptrack_print -f "$OUT"/heaptrack-$phase.*zst --print-peaks 1 --print-allocators 0 \
+              --print-temporary 0 --print-leaks 0 --peak-limit 15 \
+              > "$OUT/heaptrack-$phase.txt" 2>&1 || true
+          done
+          {
+            for phase in decompose recompose; do
+              echo "## $phase: heap peak"
+              echo
+              echo '```'
+              grep -E 'peak heap memory consumption|total memory leaked|calls to allocation functions' \
+                "$OUT/heaptrack-$phase.txt" || true
+              echo
+              # The PEAK MEMORY CONSUMERS section: biggest contributors at the peak.
+              sed -n '/PEAK MEMORY CONSUMERS/,/^$/p;/PEAK MEMORY CONSUMERS/,+60p' "$OUT/heaptrack-$phase.txt" \
+                | head -n 60
+              echo '```'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: profile-${{ env.PROFILE }}-${{ env.FORMAT }}
+          path: |
+            ${{ runner.temp }}/out/*.svg
+            ${{ runner.temp }}/out/*.txt
+            ${{ runner.temp }}/out/*.folded
+            ${{ runner.temp }}/out/heaptrack-*.zst
+          retention-days: 30
+          if-no-files-found: warn
