@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/mcarvin8/config-disassembler/compare/v0.11.2...v0.11.3) - 2026-11-06
+
+### ⚡ Performance
+
+
+- *(xml)* Parse reassemble shards concurrently ([#152](https://github.com/mcarvin8/config-disassembler/pull/152)) - ([aa9e44e](https://github.com/mcarvin8/config-disassembler/commit/aa9e44e6405def8090b142c05978a4a10c01ee49))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(bench)* Add criterion benches and CodSpeed workflow ([#150](https://github.com/mcarvin8/config-disassembler/pull/150)) - ([32a558a](https://github.com/mcarvin8/config-disassembler/commit/32a558a7760557c76b963ee6e17aba050ebec9ab))
+
+
 ## [0.11.2](https://github.com/mcarvin8/config-disassembler/compare/v0.11.1...v0.11.2) - 2026-11-02
 
 ### ⚙️ Miscellaneous Tasks
