@@ -1,61 +1,62 @@
 //! Merge multiple XML elements into one.
+//!
+//! The work is done by the owned (`*_owned`) functions, which move every value
+//! from the parsed shards into the merged tree. Reassemble calls those directly,
+//! so it never holds a second full copy of the document while merging or
+//! reordering. The borrowing [`merge_xml_elements`] / [`reorder_root_keys`] keep
+//! the public API and clone their input once before delegating.
+//!
+//! Key order must match the original clone-based implementation byte for byte.
+//! Each branch below makes the same `Map` calls in the same order -- including
+//! `remove` + `insert` in the array branch, which with serde_json's
+//! `preserve_order` is a *swap*-remove that moves keys. The test module keeps the
+//! original implementation as a reference and checks the two agree.
 
 use serde_json::{Map, Value};
 
 use crate::xml::types::XmlElement;
 
-fn is_mergeable_object(value: &Value) -> bool {
-    value.is_object() && !value.is_array()
-}
-
-fn merge_element_content(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+fn merge_element_content(target: &mut Map<String, Value>, source: Map<String, Value>) {
     for (key, value) in source {
-        if value.is_array() {
-            merge_array_value(target, key, value.as_array().unwrap());
-        } else if is_mergeable_object(value) {
-            merge_object_value(target, key, value.as_object().unwrap());
-        } else {
-            merge_primitive_value(target, key, value);
+        match value {
+            Value::Array(items) => merge_array_value(target, key, items),
+            Value::Object(map) => merge_object_value(target, key, map),
+            primitive => merge_primitive_value(target, key, primitive),
         }
     }
 }
 
-fn merge_array_value(target: &mut Map<String, Value>, key: &str, value: &[Value]) {
-    if !target.contains_key(key) {
-        target.insert(key.to_string(), Value::Array(value.to_vec()));
-    } else if let Some(Value::Array(arr)) = target.get_mut(key) {
-        arr.extend(value.iter().cloned());
+fn merge_array_value(target: &mut Map<String, Value>, key: String, items: Vec<Value>) {
+    if !target.contains_key(&key) {
+        target.insert(key, Value::Array(items));
+    } else if let Some(Value::Array(arr)) = target.get_mut(&key) {
+        arr.extend(items);
     } else {
-        let existing = target.remove(key).unwrap();
-        target.insert(
-            key.to_string(),
-            Value::Array(
-                [vec![existing], value.to_vec()]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            ),
-        );
+        let existing = target.remove(&key).unwrap();
+        let mut combined = vec![existing];
+        combined.extend(items);
+        target.insert(key, Value::Array(combined));
     }
 }
 
-fn merge_object_value(target: &mut Map<String, Value>, key: &str, value: &Map<String, Value>) {
-    if let Some(Value::Array(arr)) = target.get_mut(key) {
-        arr.push(Value::Object(value.clone()));
-    } else if let Some(existing) = target.get(key) {
-        let existing = existing.clone();
-        target.insert(
-            key.to_string(),
-            Value::Array(vec![existing, Value::Object(value.clone())]),
-        );
-    } else {
-        target.insert(key.to_string(), Value::Object(value.clone()));
+fn merge_object_value(target: &mut Map<String, Value>, key: String, map: Map<String, Value>) {
+    match target.get_mut(&key) {
+        Some(Value::Array(arr)) => arr.push(Value::Object(map)),
+        // Replacing the value of an existing key keeps the key's position, like
+        // inserting over an existing key does.
+        Some(existing) => {
+            let previous = std::mem::take(existing);
+            *existing = Value::Array(vec![previous, Value::Object(map)]);
+        }
+        None => {
+            target.insert(key, Value::Object(map));
+        }
     }
 }
 
-fn merge_primitive_value(target: &mut Map<String, Value>, key: &str, value: &Value) {
-    if !target.contains_key(key) {
-        target.insert(key.to_string(), value.clone());
+fn merge_primitive_value(target: &mut Map<String, Value>, key: String, value: Value) {
+    if !target.contains_key(&key) {
+        target.insert(key, value);
     }
 }
 
@@ -67,12 +68,12 @@ fn default_xml_declaration() -> Value {
 }
 
 fn build_final_xml_element(
-    declaration: Option<&Value>,
+    declaration: Option<Value>,
     root_key: &str,
     content: Map<String, Value>,
 ) -> XmlElement {
     let mut result = Map::new();
-    let decl = declaration.cloned().unwrap_or_else(default_xml_declaration);
+    let decl = declaration.unwrap_or_else(default_xml_declaration);
     result.insert("?xml".to_string(), decl);
     result.insert(root_key.to_string(), Value::Object(content));
     Value::Object(result)
@@ -80,27 +81,54 @@ fn build_final_xml_element(
 
 /// Reorder the root element's child keys to match the given order.
 /// Keys not in `key_order` are appended at the end.
+///
+/// Returns `None` when `element` isn't an object with a non-`?xml` root key whose
+/// value is an object. See [`reorder_root_keys_owned`] to avoid the copy.
 pub fn reorder_root_keys(element: &XmlElement, key_order: &[String]) -> Option<XmlElement> {
     let obj = element.as_object()?;
-    let root_key = obj.keys().find(|k| *k != "?xml")?.clone();
-    let root_content = obj.get(&root_key)?.as_object()?;
+    let root_key = obj.keys().find(|k| *k != "?xml")?;
+    obj.get(root_key)?.as_object()?;
+    Some(reorder_root_keys_owned(element.clone(), key_order))
+}
+
+/// Owned version of [`reorder_root_keys`]: moves the root's children into their
+/// new order instead of cloning them. An `element` without the expected shape is
+/// returned unchanged (the case where [`reorder_root_keys`] returns `None`).
+pub fn reorder_root_keys_owned(element: XmlElement, key_order: &[String]) -> XmlElement {
+    let mut obj = match element {
+        Value::Object(obj) => obj,
+        other => return other,
+    };
+    let Some(root_key) = obj.keys().find(|k| *k != "?xml").cloned() else {
+        return Value::Object(obj);
+    };
+    let mut root_content = match obj.get_mut(&root_key) {
+        Some(Value::Object(content)) => std::mem::take(content),
+        _ => return Value::Object(obj),
+    };
+
     let mut reordered = Map::new();
     for key in key_order {
-        if let Some(v) = root_content.get(key) {
-            reordered.insert(key.clone(), v.clone());
+        // A key listed twice keeps its first position (re-inserting an existing
+        // key never moves it), so only the first occurrence needs taking.
+        if !reordered.contains_key(key) {
+            if let Some(value) = root_content.get_mut(key) {
+                reordered.insert(key.clone(), std::mem::take(value));
+            }
         }
     }
     for (key, value) in root_content {
-        if !reordered.contains_key(key) {
-            reordered.insert(key.clone(), value.clone());
+        if !reordered.contains_key(&key) {
+            reordered.insert(key, value);
         }
     }
+
     let mut result = Map::new();
-    if let Some(decl) = obj.get("?xml") {
-        result.insert("?xml".to_string(), decl.clone());
+    if let Some(decl) = obj.get_mut("?xml") {
+        result.insert("?xml".to_string(), std::mem::take(decl));
     }
     result.insert(root_key, Value::Object(reordered));
-    Some(Value::Object(result))
+    Value::Object(result)
 }
 
 /// Merge multiple XML elements into one.
@@ -108,8 +136,14 @@ pub fn reorder_root_keys(element: &XmlElement, key_order: &[String]) -> Option<X
 /// Scans elements for the first non-`?xml` root key; tolerates leading entries
 /// that are empty or declaration-only (e.g. a partially-written disassembled file),
 /// which previously caused the whole merge to return `None` and the caller to
-/// emit an empty `<root>` document.
+/// emit an empty `<root>` document. See [`merge_xml_elements_owned`] to avoid the copy.
 pub fn merge_xml_elements(elements: &[XmlElement]) -> Option<XmlElement> {
+    merge_xml_elements_owned(elements.to_vec())
+}
+
+/// Owned version of [`merge_xml_elements`]: consumes the parsed elements and
+/// moves their content into the merged tree instead of cloning it.
+pub fn merge_xml_elements_owned(elements: Vec<XmlElement>) -> Option<XmlElement> {
     if elements.is_empty() {
         log::error!("No elements to merge.");
         return None;
@@ -119,16 +153,20 @@ pub fn merge_xml_elements(elements: &[XmlElement]) -> Option<XmlElement> {
         .iter()
         .find_map(|el| el.as_object()?.keys().find(|k| *k != "?xml").cloned())?;
 
-    let declaration = elements.iter().find_map(|el| el.as_object()?.get("?xml"));
-
+    let mut declaration: Option<Value> = None;
     let mut merged_content = Map::new();
     for element in elements {
-        if let Some(obj) = element.as_object() {
-            if let Some(root_content) = obj.get(&root_key) {
-                if let Some(content_obj) = root_content.as_object() {
-                    merge_element_content(&mut merged_content, content_obj);
-                }
+        let Value::Object(mut obj) = element else {
+            continue;
+        };
+        // First element carrying a declaration wins.
+        if declaration.is_none() {
+            if let Some(decl) = obj.get_mut("?xml") {
+                declaration = Some(std::mem::take(decl));
             }
+        }
+        if let Some(Value::Object(content)) = obj.get_mut(&root_key) {
+            merge_element_content(&mut merged_content, std::mem::take(content));
         }
     }
 
@@ -143,6 +181,209 @@ pub fn merge_xml_elements(elements: &[XmlElement]) -> Option<XmlElement> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---- reference implementation -------------------------------------------
+    // The original clone-based merge / reorder, kept as the oracle for the owned
+    // versions above.
+    mod reference {
+        use serde_json::{Map, Value};
+
+        fn merge_element_content(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+            for (key, value) in source {
+                if value.is_array() {
+                    merge_array_value(target, key, value.as_array().unwrap());
+                } else if value.is_object() {
+                    merge_object_value(target, key, value.as_object().unwrap());
+                } else if !target.contains_key(key) {
+                    target.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+
+        fn merge_array_value(target: &mut Map<String, Value>, key: &str, value: &[Value]) {
+            if !target.contains_key(key) {
+                target.insert(key.to_string(), Value::Array(value.to_vec()));
+            } else if let Some(Value::Array(arr)) = target.get_mut(key) {
+                arr.extend(value.iter().cloned());
+            } else {
+                let existing = target.remove(key).unwrap();
+                target.insert(
+                    key.to_string(),
+                    Value::Array(
+                        [vec![existing], value.to_vec()]
+                            .into_iter()
+                            .flatten()
+                            .collect(),
+                    ),
+                );
+            }
+        }
+
+        fn merge_object_value(
+            target: &mut Map<String, Value>,
+            key: &str,
+            value: &Map<String, Value>,
+        ) {
+            if let Some(Value::Array(arr)) = target.get_mut(key) {
+                arr.push(Value::Object(value.clone()));
+            } else if let Some(existing) = target.get(key) {
+                let existing = existing.clone();
+                target.insert(
+                    key.to_string(),
+                    Value::Array(vec![existing, Value::Object(value.clone())]),
+                );
+            } else {
+                target.insert(key.to_string(), Value::Object(value.clone()));
+            }
+        }
+
+        pub fn merge(elements: &[Value]) -> Option<Value> {
+            if elements.is_empty() {
+                return None;
+            }
+            let root_key = elements
+                .iter()
+                .find_map(|el| el.as_object()?.keys().find(|k| *k != "?xml").cloned())?;
+            let declaration = elements.iter().find_map(|el| el.as_object()?.get("?xml"));
+            let mut merged = Map::new();
+            for element in elements {
+                if let Some(content) = element
+                    .as_object()
+                    .and_then(|o| o.get(&root_key))
+                    .and_then(Value::as_object)
+                {
+                    merge_element_content(&mut merged, content);
+                }
+            }
+            let mut result = Map::new();
+            let decl = declaration
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"@version": "1.0", "@encoding": "UTF-8"}));
+            result.insert("?xml".to_string(), decl);
+            result.insert(root_key, Value::Object(merged));
+            Some(Value::Object(result))
+        }
+
+        pub fn reorder(element: &Value, key_order: &[String]) -> Option<Value> {
+            let obj = element.as_object()?;
+            let root_key = obj.keys().find(|k| *k != "?xml")?.clone();
+            let root_content = obj.get(&root_key)?.as_object()?;
+            let mut reordered = Map::new();
+            for key in key_order {
+                if let Some(v) = root_content.get(key) {
+                    reordered.insert(key.clone(), v.clone());
+                }
+            }
+            for (key, value) in root_content {
+                if !reordered.contains_key(key) {
+                    reordered.insert(key.clone(), value.clone());
+                }
+            }
+            let mut result = Map::new();
+            if let Some(decl) = obj.get("?xml") {
+                result.insert("?xml".to_string(), decl.clone());
+            }
+            result.insert(root_key, Value::Object(reordered));
+            Some(Value::Object(result))
+        }
+    }
+
+    /// Serialised form: `Value`'s `==` ignores map key order, so compare strings.
+    fn ordered(value: &Option<Value>) -> String {
+        serde_json::to_string(value).unwrap()
+    }
+
+    #[test]
+    fn owned_merge_matches_reference_including_key_order() {
+        let cases: Vec<Vec<Value>> = vec![
+            // Scalar then array for the same key: the swap-remove branch, which
+            // moves keys -- the order the owned version must reproduce.
+            vec![
+                json!({"R": {"a": "1", "b": "2", "c": "3"}}),
+                json!({"R": {"a": ["x", "y"], "d": "4"}}),
+            ],
+            // Object then object: existing key keeps its position.
+            vec![
+                json!({"?xml": {"@version": "1.0"}, "R": {"o": {"k": 1}, "z": "z"}}),
+                json!({"R": {"o": {"k": 2}, "p": "p"}}),
+                json!({"R": {"o": {"k": 3}}}),
+            ],
+            // Array accumulation, primitive first-wins, mixed shapes.
+            vec![
+                json!({"R": {"items": [{"n": 1}], "label": "first"}}),
+                json!({"R": {"items": [{"n": 2}, {"n": 3}], "label": "second"}}),
+                json!({"R": {"items": {"n": 4}}}),
+            ],
+            // Leading declaration-only / empty / foreign-root / non-object entries.
+            vec![
+                json!({"?xml": {"@version": "1.0", "@encoding": "UTF-8"}}),
+                json!({}),
+                json!("not an object"),
+                json!({"Other": {"x": 1}}),
+                json!({"R": {"x": "kept"}}),
+                json!({"?xml": {"@version": "ignored"}, "R": {"y": "also"}}),
+            ],
+            // Root content that isn't an object is skipped.
+            vec![json!({"R": "text"}), json!({"R": {"a": 1}})],
+            // Nothing to merge: both return None.
+            vec![],
+        ];
+        for (i, elements) in cases.iter().enumerate() {
+            let expected = ordered(&reference::merge(elements));
+            assert_eq!(
+                ordered(&merge_xml_elements_owned(elements.clone())),
+                expected,
+                "case {i}"
+            );
+            assert_eq!(
+                ordered(&merge_xml_elements(elements)),
+                expected,
+                "borrowing wrapper, case {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn owned_reorder_matches_reference_including_key_order() {
+        let order = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        let doc = json!({
+            "?xml": {"@version": "1.0"},
+            "R": {"c": 3, "a": [1, 2], "b": {"x": 1}, "d": "4"}
+        });
+        let cases = [
+            order(&["a", "b", "c", "d"]),
+            order(&["d", "missing", "a"]),
+            order(&["b", "b", "a"]), // duplicate key keeps its first position
+            order(&[]),
+        ];
+        for key_order in &cases {
+            let expected = ordered(&reference::reorder(&doc, key_order));
+            assert_eq!(
+                ordered(&reorder_root_keys(&doc, key_order)),
+                expected,
+                "{key_order:?}"
+            );
+            assert_eq!(
+                ordered(&Some(reorder_root_keys_owned(doc.clone(), key_order))),
+                expected,
+                "owned {key_order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reorder_owned_returns_unexpected_shapes_unchanged() {
+        let key_order = vec!["a".to_string()];
+        for value in [
+            json!("text"),
+            json!({}),
+            json!({"?xml": {"@version": "1.0"}}),
+            json!({"R": "not an object"}),
+        ] {
+            assert!(reorder_root_keys(&value, &key_order).is_none(), "{value}");
+            assert_eq!(reorder_root_keys_owned(value.clone(), &key_order), value);
+        }
+    }
 
     #[test]
     fn merge_empty_returns_none() {

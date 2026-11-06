@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::xml::parsers::parse_xml_cdata;
-use crate::xml::parsers::{mark_compact_elements, strip_whitespace_text_nodes};
+use crate::xml::parsers::{mark_compact_elements, strip_whitespace_text_nodes_in_place};
 use crate::xml::types::XmlElement;
 
 /// Parses an XML file from a path.
@@ -54,8 +54,8 @@ pub fn parse_xml_from_str(content: &str, file_path: &str) -> Option<XmlElement> 
         mark_compact_elements(value);
     }
 
-    let cleaned = strip_whitespace_text_nodes(&parsed);
-    Some(cleaned)
+    strip_whitespace_text_nodes_in_place(&mut parsed);
+    Some(parsed)
 }
 
 /// Extract xmlns attribute from raw XML (quickxml_to_serde drops it).

@@ -1,6 +1,6 @@
 //! Reassemble XML from disassembled directory.
 
-use crate::xml::builders::{build_xml_string, merge_xml_elements, reorder_root_keys};
+use crate::xml::builders::{build_xml_string, merge_xml_elements_owned, reorder_root_keys_owned};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
@@ -352,7 +352,8 @@ impl ReassembleXmlFileHandler {
         // merge_xml_elements only returns None when every parsed element is empty or
         // declaration-only (no usable root). Treat that the same as "nothing parsed"
         // rather than emitting an `<root></root>` stub.
-        let Some(mut merged) = merge_xml_elements(&parsed_objects) else {
+        // Moves the parsed shards into the merged tree (no second copy of the document).
+        let Some(mut merged) = merge_xml_elements_owned(parsed_objects) else {
             log::error!(
                 "No usable root element found while merging files under {}. A reassembled XML file was not created.",
                 file_path
@@ -390,11 +391,8 @@ impl ReassembleXmlFileHandler {
 
         // Apply stored key order so reassembled XML matches original document order.
         let key_order_path = Path::new(&file_path).join(".key_order.json");
-        if let Some(reordered) = read_key_order(&key_order_path)
-            .await
-            .and_then(|order| reorder_root_keys(&merged, &order))
-        {
-            merged = reordered;
+        if let Some(order) = read_key_order(&key_order_path).await {
+            merged = reorder_root_keys_owned(merged, &order);
         }
 
         let mut final_xml = build_xml_string(&merged);

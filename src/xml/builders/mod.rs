@@ -8,4 +8,6 @@ pub use build_disassembled_file::build_disassembled_file;
 pub use build_disassembled_files::build_disassembled_files_unified;
 pub use build_xml_string::build_xml_string;
 pub use extract_root_attributes::extract_root_attributes;
-pub use merge_xml_elements::{merge_xml_elements, reorder_root_keys};
+pub use merge_xml_elements::{
+    merge_xml_elements, merge_xml_elements_owned, reorder_root_keys, reorder_root_keys_owned,
+};
