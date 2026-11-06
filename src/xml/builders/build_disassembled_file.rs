@@ -6,8 +6,6 @@ use crate::xml::transformers::transform_format;
 use crate::xml::types::BuildDisassembledFileOptions;
 use serde_json::{Map, Value};
 use std::path::Path;
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 pub async fn build_disassembled_file(
     options: BuildDisassembledFileOptions<'_>,
@@ -55,8 +53,6 @@ pub async fn build_disassembled_file(
 
     let output_path = target_directory.join(&file_name);
 
-    fs::create_dir_all(&target_directory).await?;
-
     let root_attrs_obj = root_attributes.as_object().cloned().unwrap_or_default();
     let mut inner = root_attrs_obj.clone();
 
@@ -88,20 +84,24 @@ pub async fn build_disassembled_file(
         build_xml_string(&wrapped_xml)
     };
 
-    // Tokio's `write_all` only guarantees the bytes are queued in the
-    // runtime's userspace buffer; it does NOT guarantee they have reached
-    // the OS or that the file is visible to subsequent readers. Without
-    // an explicit `flush` + `shutdown`, callers that immediately read the
-    // disassembled tree (test harnesses, multi-step pipelines) can race
-    // and observe a partially-written directory - the failure mode is a
-    // "missing" shard whose write was queued but not yet flushed when
-    // the directory was scanned. `shutdown` fully closes the handle and
-    // waits for the underlying file to be flushed, eliminating the race.
-    let mut file = fs::File::create(&output_path).await?;
-    file.write_all(output_string.as_bytes()).await?;
-    file.flush().await?;
-    file.shutdown().await?;
-    log::debug!("Created disassembled file: {}", output_path.display());
+    // One trip to the blocking pool per shard. `tokio::fs` runs every call
+    // (`create_dir_all`, `File::create`, `write_all`, `flush`, `shutdown`) as
+    // its own blocking task, so a shard used to cost four or five thread
+    // hand-offs; across the thousands of shards in a large component that
+    // showed up in profiles as kernel scheduling / futex time rivalling all of
+    // disassemble's actual work.
+    //
+    // `std::fs::write` returns only after the data has been handed to the OS
+    // and the file is closed, so a caller that reads the tree right after
+    // disassemble can't observe a partially written shard -- the race the old
+    // explicit `flush` + `shutdown` existed to prevent.
+    let log_path = output_path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        std::fs::create_dir_all(&target_directory)?;
+        std::fs::write(&output_path, output_string)
+    })
+    .await??;
+    log::debug!("Created disassembled file: {}", log_path.display());
 
     Ok(())
 }
@@ -205,7 +205,7 @@ mod tests {
         opts.content = json!(42);
         opts.root_attributes = json!({ "marker": "kept" });
         build_disassembled_file(opts).await.unwrap();
-        let out = fs::read_to_string(temp.path().join("single.xml"))
+        let out = tokio::fs::read_to_string(temp.path().join("single.xml"))
             .await
             .unwrap();
         assert!(out.contains("<Root"), "expected Root element, got: {out}");
