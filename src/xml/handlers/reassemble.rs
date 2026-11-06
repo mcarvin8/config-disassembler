@@ -1043,6 +1043,54 @@ mod tests {
         }
     }
 
+    // `is_regular_file` must follow symlinks like the `Path::is_file` it replaced:
+    // a symlinked shard is parsed as a shard (not recursed into as a directory,
+    // which would fail), and a symlinked directory is still recursed into.
+    // Unix-only: creating symlinks on Windows needs elevated privileges.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reassemble_follows_symlinked_shards_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        tokio::fs::create_dir_all(outside.join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(outside.join("b.xml"), "<Root><n>b</n></Root>")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            outside.join("nested").join("c.xml"),
+            "<Root><n>c</n></Root>",
+        )
+        .await
+        .unwrap();
+
+        let dir = tmp.path().join("Bench");
+        tokio::fs::create_dir(&dir).await.unwrap();
+        tokio::fs::write(dir.join("a.xml"), "<Root><n>a</n></Root>")
+            .await
+            .unwrap();
+        symlink(outside.join("b.xml"), dir.join("b.xml")).unwrap();
+        symlink(outside.join("nested"), dir.join("c_dir")).unwrap();
+
+        ReassembleXmlFileHandler::new()
+            .reassemble(dir.to_str().unwrap(), Some("xml"), false, None)
+            .await
+            .unwrap();
+
+        let output = tokio::fs::read_to_string(tmp.path().join("Bench.xml"))
+            .await
+            .unwrap();
+        let a = output.find("<n>a</n>").expect("regular shard a");
+        let b = output.find("<n>b</n>").expect("symlinked shard b");
+        let c = output
+            .find("<n>c</n>")
+            .expect("shard c under symlinked dir");
+        assert!(a < b && b < c, "sorted order a, b, c_dir/: {output}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reassemble_many_shards_preserves_sorted_order() {
         // Well above SHARD_PARSE_CONCURRENCY, on a multi-thread runtime, so shards

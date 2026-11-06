@@ -198,6 +198,21 @@ exclude_re = [
     # black-box test (this crate only asserts on the resulting files) can ever
     # distinguish the two. See PR mcarvin8/config-disassembler#99.
     "src/xml/handlers/disassemble\\.rs:.*replace <= with > in DisassembleXmlFileHandler::handle_directory",
+    # Same shape in reassemble's `parse_shards_in_order`: `if files.len() <= 1` only
+    # picks between parsing 0/1 shards inline and spawning them on a JoinSet. Both
+    # paths parse every shard and return results in input order, so flipping `<=`
+    # to `>` changes which path a given directory takes but never the output.
+    # Ordering itself is pinned by `parse_shards_in_order_keeps_input_order_and_marks_failures`
+    # and `reassemble_many_shards_preserves_sorted_order`.
+    "src/xml/handlers/reassemble\\.rs:.*replace <= with > in parse_shards_in_order",
+    # `is_regular_file`'s `!file_type.is_symlink()` guard is a fast path: non-symlinks
+    # answer from the DirEntry's file type, everything else falls back to a
+    # `metadata` call (which follows symlinks). Replacing the guard with `false`
+    # sends every entry down the fallback, which returns the same `is_file()`
+    # answer for regular files and directories -- slower, never different. The
+    # `true` / `delete !` mutants are NOT equivalent (symlinks would stop being
+    # followed) and are killed by `reassemble_follows_symlinked_shards_and_directories`.
+    "src/xml/handlers/reassemble\\.rs:.*replace match guard !file_type\\.is_symlink\\(\\) with false in is_regular_file",
 ]
 
 # Give the suite extra wall-clock budget under mutation; minimums prevent flaky
