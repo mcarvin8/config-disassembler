@@ -1,0 +1,69 @@
+name: Benchmarks
+
+# CPU-simulation benchmarks via CodSpeed (https://codspeed.io). CodSpeed runs
+# each benchmark under an instruction-level CPU simulation instead of timing
+# it on the wall clock, so results are close to deterministic on shared
+# GitHub runners. It compares every PR against the base branch and posts the
+# diff as a PR comment / check -- no baseline bookkeeping in this repo.
+#
+# Only `xml_micro` (pure CPU: parse, unique-id/hash, build) runs here. The
+# `xml_macro` benches (real filesystem I/O + tokio fan-out) are excluded on
+# purpose: simulation does not count syscalls and runs threads serially, so it
+# can't measure what those benches exist for. Run them locally with
+# `cargo bench --bench xml_macro`; end-to-end wall time, CPU time, parallelism
+# and peak RSS are also tracked downstream by sf-decomposer's perf suite.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # Lets CodSpeed trigger backfill runs on past commits to seed history.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  codspeed:
+    name: CodSpeed (xml_micro)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OIDC login to CodSpeed; no CODSPEED_TOKEN secret needed for a public repo.
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          # Same reasoning as ci.yml: let Swatinem/rust-cache own caching.
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # See ci.yml: restoring ~/.cargo/bin can clobber the rustup proxy.
+          cache-bin: false
+
+      - name: Install cargo-codspeed
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-codspeed
+
+      - name: Build benchmarks
+        run: cargo codspeed build --bench xml_micro
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cargo codspeed run --bench xml_micro
