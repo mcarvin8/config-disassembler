@@ -1,5 +1,8 @@
 //! Parse XML file from path into XmlElement structure.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde_json::Value;
 use tokio::fs;
 
@@ -58,31 +61,42 @@ pub fn parse_xml_from_str(content: &str, file_path: &str) -> Option<XmlElement> 
     Some(parsed)
 }
 
+// Compiled once per process. These used to be built with `Regex::new` on
+// every call; `extract_xml_declaration_from_raw` runs once per shard on
+// reassemble (via `parse_to_xml_object`), so a large component compiled
+// thousands of regexes -- profiling sf-decomposer's workload showed regex
+// compilation as the single largest share of reassemble CPU.
+static XMLNS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"xmlns="([^"]*)""#).expect("valid regex"));
+static DECLARATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<\?xml\s+([^?]+)\?>"#).expect("valid regex"));
+static VERSION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"version="([^"]*)""#).expect("valid regex"));
+static ENCODING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"encoding="([^"]*)""#).expect("valid regex"));
+static STANDALONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"standalone="([^"]*)""#).expect("valid regex"));
+
 /// Extract xmlns attribute from raw XML (quickxml_to_serde drops it).
 /// Returns Some(value) if found, None otherwise.
 pub fn extract_xmlns_from_raw(xml_content: &str) -> Option<String> {
-    let re = regex::Regex::new(r#"xmlns="([^"]*)""#).ok()?;
-    re.captures(xml_content).map(|c| c[1].to_string())
+    XMLNS_RE.captures(xml_content).map(|c| c[1].to_string())
 }
 
 /// Extract XML declaration from raw XML (quickxml_to_serde drops it).
 /// Returns a Value object like {"@version": "1.0", "@encoding": "UTF-8", "@standalone": "yes"}
 /// for use in build_xml_string. None if no declaration found.
 pub fn extract_xml_declaration_from_raw(xml_content: &str) -> Option<XmlElement> {
-    let decl_re = regex::Regex::new(r#"<\?xml\s+([^?]+)\?>"#).ok()?;
-    let decl_content = decl_re.captures(xml_content)?.get(1)?.as_str();
+    let decl_content = DECLARATION_RE.captures(xml_content)?.get(1)?.as_str();
     let mut decl = serde_json::Map::new();
-    let version_re = regex::Regex::new(r#"version="([^"]*)""#).ok()?;
     {
-        let cap = version_re.captures(decl_content)?;
+        let cap = VERSION_RE.captures(decl_content)?;
         decl.insert("@version".to_string(), Value::String(cap[1].to_string()));
     }
-    let encoding_re = regex::Regex::new(r#"encoding="([^"]*)""#).ok()?;
-    if let Some(cap) = encoding_re.captures(decl_content) {
+    if let Some(cap) = ENCODING_RE.captures(decl_content) {
         decl.insert("@encoding".to_string(), Value::String(cap[1].to_string()));
     }
-    let standalone_re = regex::Regex::new(r#"standalone="([^"]*)""#).ok()?;
-    if let Some(cap) = standalone_re.captures(decl_content) {
+    if let Some(cap) = STANDALONE_RE.captures(decl_content) {
         decl.insert("@standalone".to_string(), Value::String(cap[1].to_string()));
     }
     Some(Value::Object(decl))
