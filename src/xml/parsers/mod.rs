@@ -5,6 +5,7 @@ mod parse_xml;
 mod parse_xml_cdata;
 mod strip_whitespace;
 
+pub(crate) use parse_element::parse_element_collect;
 pub use parse_element::parse_element_unified;
 pub use parse_to_xml_object::parse_to_xml_object;
 pub use parse_unique_id::{parse_unique_id_element, short_hash_for_element};

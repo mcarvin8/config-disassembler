@@ -1,8 +1,10 @@
 //! Build disassembled files from source XML file.
 
-use crate::xml::builders::{build_disassembled_file, extract_root_attributes};
+use crate::xml::builders::{
+    build_disassembled_file, extract_root_attributes, render_disassembled_file, write_shards,
+};
 use crate::xml::parsers::{
-    extract_xml_declaration_from_raw, parse_element_unified, parse_unique_id_element,
+    extract_xml_declaration_from_raw, parse_element_collect, parse_unique_id_element,
     short_hash_for_element,
 };
 use crate::xml::types::{
@@ -12,8 +14,6 @@ use crate::xml::utils::normalize_path_unix;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use tokio::fs;
-
-const BATCH_SIZE: usize = 20;
 
 fn get_root_info(parsed_xml: &Value) -> Option<(String, Value)> {
     let obj = parsed_xml.as_object()?;
@@ -170,55 +170,60 @@ async fn disassemble_element_keys(
 
         // Pre-resolve a collision-safe unique-id for every sibling so the
         // nested write path can never silently overwrite a peer. Computed
-        // once per (key, sibling-group) and reused across the chunk loop.
+        // once per (key, sibling-group) and reused by the loop below.
         let resolved_ids = resolve_collision_safe_ids(&elements, unique_id_elements, key, strategy);
 
-        for (chunk_offset, chunk) in elements.chunks(BATCH_SIZE).enumerate() {
-            for (within_chunk, element) in chunk.iter().enumerate() {
-                let global_idx = chunk_offset * BATCH_SIZE + within_chunk;
-                let precomputed = resolved_ids.get(global_idx).and_then(Option::as_deref);
-                let result = parse_element_unified(XmlElementParams {
-                    element: element.clone(),
-                    disassembled_path,
-                    unique_id_elements,
-                    root_element_name,
-                    root_attributes: root_attributes.clone(),
-                    key,
-                    leaf_content: Value::Object(Map::new()),
-                    leaf_count,
-                    has_nested_elements,
-                    format,
-                    xml_declaration: xml_declaration.cloned(),
-                    strategy,
-                    precomputed_unique_id: precomputed,
-                })
-                .await;
+        // Every sibling's shard is rendered first, then the whole group is written
+        // with ONE blocking-pool task (see `write_shards`) instead of one task --
+        // and one `create_dir_all` path walk -- per shard. Elements are moved into
+        // their shard rather than cloned again: `elements` is already a copy.
+        let mut shards = Vec::new();
+        for (idx, element) in elements.into_iter().enumerate() {
+            let precomputed = resolved_ids.get(idx).and_then(Option::as_deref);
+            let (result, shard) = parse_element_collect(XmlElementParams {
+                element,
+                disassembled_path,
+                unique_id_elements,
+                root_element_name,
+                root_attributes: root_attributes.clone(),
+                key,
+                leaf_content: Value::Object(Map::new()),
+                leaf_count,
+                has_nested_elements,
+                format,
+                xml_declaration: xml_declaration.cloned(),
+                strategy,
+                precomputed_unique_id: precomputed,
+            })
+            .await;
 
-                if let Some(arr) = result.leaf_content.as_object().and_then(|o| o.get(key)) {
-                    match leaf_content.get_mut(key).and_then(|v| v.as_array_mut()) {
-                        Some(existing_arr) => {
-                            if let Some(new_arr) = arr.as_array() {
-                                existing_arr.extend(new_arr.iter().cloned());
-                            }
-                        }
-                        None => {
-                            leaf_content.insert(key.clone(), arr.clone());
-                        }
-                    }
-                }
-
-                if strategy == "grouped-by-tag" {
-                    if let Some(groups) = result.nested_groups {
-                        for (tag, arr) in groups {
-                            nested_groups.entry(tag).or_default().extend(arr);
+            if let Some(arr) = result.leaf_content.as_object().and_then(|o| o.get(key)) {
+                match leaf_content.get_mut(key).and_then(|v| v.as_array_mut()) {
+                    Some(existing_arr) => {
+                        if let Some(new_arr) = arr.as_array() {
+                            existing_arr.extend(new_arr.iter().cloned());
                         }
                     }
+                    None => {
+                        leaf_content.insert(key.clone(), arr.clone());
+                    }
                 }
-
-                leaf_count = result.leaf_count;
-                has_nested_elements = result.has_nested_elements;
             }
+
+            if strategy == "grouped-by-tag" {
+                if let Some(groups) = result.nested_groups {
+                    for (tag, arr) in groups {
+                        nested_groups.entry(tag).or_default().extend(arr);
+                    }
+                }
+            }
+
+            leaf_count = result.leaf_count;
+            has_nested_elements = result.has_nested_elements;
+            shards.extend(shard);
         }
+        // Best-effort, like the one-shard-at-a-time writes this replaces.
+        let _ = write_shards(shards).await;
     }
 
     (leaf_content, nested_groups, leaf_count, has_nested_elements)
@@ -321,11 +326,14 @@ async fn write_nested_groups(
 
         if let Some(r) = rule {
             if r.mode == "split" {
+                // Render every split file for this tag, then write them with one
+                // blocking-pool task (see `write_shards`).
+                let mut shards = Vec::with_capacity(arr.len());
                 for (idx, item) in arr.iter().enumerate() {
                     let name = split_mode_filename_stem(item, &r.field, idx);
                     let file_name = format!("{}.{}-meta.{}", name, tag, options.format);
-                    let _ =
-                        build_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
+                    shards.push(
+                        render_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
                             content: item.clone(),
                             disassembled_path: options.disassembled_path,
                             output_file_name: Some(&file_name),
@@ -339,8 +347,10 @@ async fn write_nested_groups(
                             unique_id_elements: None,
                             precomputed_unique_id: None,
                         })
-                        .await;
+                        .await,
+                    );
                 }
+                let _ = write_shards(shards).await;
             } else if r.mode == "group" {
                 let mut by_key: HashMap<String, Vec<Value>> = HashMap::new();
                 for item in arr {
@@ -350,11 +360,13 @@ async fn write_nested_groups(
                 // Sort keys for deterministic cross-platform output order
                 let mut sorted_keys: Vec<_> = by_key.keys().cloned().collect();
                 sorted_keys.sort();
+                // Same batching as split mode: render every group file, write once.
+                let mut shards = Vec::with_capacity(sorted_keys.len());
                 for key in sorted_keys {
                     let group = by_key.remove(&key).unwrap();
                     let file_name = format!("{}.{}-meta.{}", key, tag, options.format);
-                    let _ =
-                        build_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
+                    shards.push(
+                        render_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
                             content: Value::Array(group),
                             disassembled_path: options.disassembled_path,
                             output_file_name: Some(&file_name),
@@ -368,8 +380,10 @@ async fn write_nested_groups(
                             unique_id_elements: None,
                             precomputed_unique_id: None,
                         })
-                        .await;
+                        .await,
+                    );
                 }
+                let _ = write_shards(shards).await;
             } else {
                 fallback_write_one_file(tag, arr, path_segment, options).await;
             }
