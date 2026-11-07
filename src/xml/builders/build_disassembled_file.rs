@@ -5,11 +5,67 @@ use crate::xml::parsers::parse_unique_id_element;
 use crate::xml::transformers::transform_format;
 use crate::xml::types::BuildDisassembledFileOptions;
 use serde_json::{Map, Value};
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
+/// A disassembled file rendered in memory: where it goes and what it contains.
+pub(crate) struct RenderedShard {
+    pub(crate) directory: PathBuf,
+    pub(crate) path: PathBuf,
+    pub(crate) contents: String,
+}
+
+/// Build and write a single disassembled file.
 pub async fn build_disassembled_file(
     options: BuildDisassembledFileOptions<'_>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    write_shards(vec![render_disassembled_file(options).await]).await
+}
+
+/// Write rendered shards with ONE blocking-pool task, creating each distinct
+/// directory once.
+///
+/// `tokio::fs` runs every call as its own blocking task, and writing shards one
+/// at a time also repeated `create_dir_all` (a full path walk) for every shard
+/// even though they share a directory. Profiling sf-decomposer's workload after
+/// #158 still showed kernel scheduling (task switches, futex wakes) and ext4
+/// directory lookups as the largest remaining cost of disassemble. Callers
+/// render a batch of siblings first and hand it here in one go.
+///
+/// Every shard is attempted even if an earlier one fails (callers write
+/// best-effort, as they did one shard at a time); the first error is returned.
+/// `std::fs::write` returns only after the file is written and closed, so a
+/// reader that scans the tree right after disassemble never sees a partial shard.
+pub(crate) async fn write_shards(
+    shards: Vec<RenderedShard>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let directories: BTreeSet<&Path> = shards.iter().map(|s| s.directory.as_path()).collect();
+        let mut first_error = None;
+        for directory in directories {
+            if let Err(e) = std::fs::create_dir_all(directory) {
+                first_error.get_or_insert(e);
+            }
+        }
+        for shard in &shards {
+            match std::fs::write(&shard.path, &shard.contents) {
+                Ok(()) => log::debug!("Created disassembled file: {}", shard.path.display()),
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    })
+    .await??;
+    Ok(())
+}
+
+/// Render a disassembled file (target path + serialized contents) without
+/// touching the file system. See [`write_shards`].
+pub(crate) async fn render_disassembled_file(
+    options: BuildDisassembledFileOptions<'_>,
+) -> RenderedShard {
     let BuildDisassembledFileOptions {
         content,
         disassembled_path,
@@ -53,14 +109,17 @@ pub async fn build_disassembled_file(
 
     let output_path = target_directory.join(&file_name);
 
-    let root_attrs_obj = root_attributes.as_object().cloned().unwrap_or_default();
-    let mut inner = root_attrs_obj.clone();
+    let mut inner = match root_attributes {
+        Value::Object(attrs) => attrs,
+        _ => Map::new(),
+    };
 
+    // `content` is owned here, so move it into the shard instead of cloning it.
     if let Some(wk) = wrap_key {
-        inner.insert(wk.to_string(), content.clone());
-    } else if let Some(obj) = content.as_object() {
+        inner.insert(wk.to_string(), content);
+    } else if let Value::Object(obj) = content {
         for (k, v) in obj {
-            inner.insert(k.clone(), v.clone());
+            inner.insert(k, v);
         }
     }
 
@@ -84,26 +143,11 @@ pub async fn build_disassembled_file(
         build_xml_string(&wrapped_xml)
     };
 
-    // One trip to the blocking pool per shard. `tokio::fs` runs every call
-    // (`create_dir_all`, `File::create`, `write_all`, `flush`, `shutdown`) as
-    // its own blocking task, so a shard used to cost four or five thread
-    // hand-offs; across the thousands of shards in a large component that
-    // showed up in profiles as kernel scheduling / futex time rivalling all of
-    // disassemble's actual work.
-    //
-    // `std::fs::write` returns only after the data has been handed to the OS
-    // and the file is closed, so a caller that reads the tree right after
-    // disassemble can't observe a partially written shard -- the race the old
-    // explicit `flush` + `shutdown` existed to prevent.
-    let log_path = output_path.clone();
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        std::fs::create_dir_all(&target_directory)?;
-        std::fs::write(&output_path, output_string)
-    })
-    .await??;
-    log::debug!("Created disassembled file: {}", log_path.display());
-
-    Ok(())
+    RenderedShard {
+        directory: target_directory,
+        path: output_path,
+        contents: output_string,
+    }
 }
 
 #[cfg(test)]
@@ -215,5 +259,54 @@ mod tests {
             "expected root metadata value, got: {out}"
         );
         assert!(!out.contains("42"));
+    }
+
+    fn shard(dir: &std::path::Path, name: &str, contents: &str) -> RenderedShard {
+        RenderedShard {
+            directory: dir.to_path_buf(),
+            path: dir.join(name),
+            contents: contents.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_shards_creates_every_directory_and_writes_every_shard() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("fieldPermissions");
+        let b = temp.path().join("objectPermissions").join("nested");
+        let shards = vec![
+            shard(&a, "one.xml", "1"),
+            shard(&b, "two.xml", "2"),
+            shard(&a, "three.xml", "3"),
+        ];
+
+        write_shards(shards).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(a.join("one.xml")).unwrap(), "1");
+        assert_eq!(std::fs::read_to_string(b.join("two.xml")).unwrap(), "2");
+        assert_eq!(std::fs::read_to_string(a.join("three.xml")).unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn write_shards_keeps_going_after_a_failure_and_reports_it() {
+        let temp = tempfile::tempdir().unwrap();
+        // A regular file where a shard directory should be: creating that
+        // directory, and writing into it, both fail.
+        let blocked = temp.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let good = temp.path().join("good");
+        let shards = vec![
+            shard(&blocked, "lost.xml", "x"),
+            shard(&good, "kept.xml", "kept"),
+        ];
+
+        let result = write_shards(shards).await;
+
+        assert!(result.is_err(), "the failed shard must be reported");
+        assert_eq!(
+            std::fs::read_to_string(good.join("kept.xml")).unwrap(),
+            "kept",
+            "shards after a failure are still written"
+        );
     }
 }
