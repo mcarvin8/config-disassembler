@@ -261,6 +261,20 @@ mod tests {
         assert!(!out.contains("42"));
     }
 
+    #[tokio::test]
+    async fn non_object_root_attributes_render_no_attributes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_str().unwrap();
+        let mut opts = opts_base(path);
+        opts.root_attributes = Value::Null;
+
+        build_disassembled_file(opts).await.unwrap();
+
+        let out = std::fs::read_to_string(temp.path().join("out.xml")).unwrap();
+        assert!(out.contains("<Root>"), "expected a bare <Root>, got: {out}");
+        assert!(out.contains("<a>b</a>"), "expected the content, got: {out}");
+    }
+
     fn shard(dir: &std::path::Path, name: &str, contents: &str) -> RenderedShard {
         RenderedShard {
             directory: dir.to_path_buf(),

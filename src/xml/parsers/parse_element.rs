@@ -16,7 +16,7 @@ fn is_nested_object(element: &Value) -> bool {
 
 /// Parse one element during disassembly, writing its shard immediately when it
 /// takes the unique-id nested path. Internally, disassembly uses
-/// [`parse_element_collect`] to batch those writes instead.
+/// `parse_element_collect` (crate-internal) to batch those writes instead.
 pub async fn parse_element_unified(params: XmlElementParams<'_>) -> UnifiedParseResult {
     let (result, shard) = parse_element_collect(params).await;
     if let Some(shard) = shard {
@@ -103,4 +103,56 @@ pub(crate) async fn parse_element_collect(
         },
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn params<'a>(element: Value, dir: &'a str) -> XmlElementParams<'a> {
+        XmlElementParams {
+            element,
+            disassembled_path: dir,
+            unique_id_elements: Some("name"),
+            root_element_name: "Root",
+            root_attributes: json!({}),
+            key: "items",
+            leaf_content: Value::Object(Map::new()),
+            leaf_count: 0,
+            has_nested_elements: false,
+            format: "xml",
+            xml_declaration: None,
+            strategy: "unique-id",
+            precomputed_unique_id: None,
+        }
+    }
+
+    // The public entry point keeps its write-as-you-go behaviour even though
+    // disassembly itself now batches through `parse_element_collect`.
+    #[tokio::test]
+    async fn parse_element_unified_writes_the_shard_of_a_nested_element() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_str().unwrap();
+
+        let result =
+            parse_element_unified(params(json!({ "name": "Alpha", "value": "1" }), dir)).await;
+
+        assert!(result.has_nested_elements);
+        let shard = temp.path().join("items").join("Alpha.items-meta.xml");
+        let written = std::fs::read_to_string(&shard).expect("shard written");
+        assert!(written.contains("<name>Alpha</name>"), "{written}");
+    }
+
+    #[tokio::test]
+    async fn parse_element_unified_writes_nothing_for_a_leaf_element() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().to_str().unwrap();
+
+        let result = parse_element_unified(params(json!("just text"), dir)).await;
+
+        assert_eq!(result.leaf_count, 1);
+        assert!(!result.has_nested_elements);
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
 }
