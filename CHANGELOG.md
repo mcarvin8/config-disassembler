@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.7](https://github.com/mcarvin8/config-disassembler/compare/v0.11.6...v0.11.7) - 2026-11-07
+
+### ⚡ Performance
+
+
+- *(xml)* Write each sibling group's shards with one blocking task ([#162](https://github.com/mcarvin8/config-disassembler/pull/162)) - ([a5cfc9c](https://github.com/mcarvin8/config-disassembler/commit/a5cfc9cfde1c04eb3699cbaf4d09d8a5025dd8c7))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(profile)* Add same-runner A/B mode (compare_ref) ([#160](https://github.com/mcarvin8/config-disassembler/pull/160)) - ([e5fa34c](https://github.com/mcarvin8/config-disassembler/commit/e5fa34c7469b64e232bd5f177be6ade5f084cd7e))
+
+
 ## [0.11.6](https://github.com/mcarvin8/config-disassembler/compare/v0.11.5...v0.11.6) - 2026-11-06
 
 ### ⚡ Performance

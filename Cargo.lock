@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "config-disassembler"
-version = "0.11.6"
+version = "0.11.7"
 dependencies = [
  "anyhow",
  "cargo-husky",
