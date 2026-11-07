@@ -14,6 +14,13 @@ name: Profile
 #     the replay is representative of sf-decomposer's perf comment
 #   - perf: top functions by self time, by inclusive time, and a flamegraph SVG
 #
+# Same-runner A/B (set `compare_ref`): builds the replay from `compare_ref` and
+# from the dispatched ref on ONE runner and runs them in alternating order for
+# `rounds` rounds (fresh fixture copy + dropped page cache before every run).
+# Cross-runner comparisons swing by tens of percent on hosted runners; this is
+# what made #158's -35% decompose result conclusive. Reports per-phase medians
+# and how many rounds the dispatched ref won.
+#
 # Heap profiling (heaptrack) was tried and removed: recording every allocation
 # got the hosted runner shut down even on the `medium` fixture. Max RSS per
 # phase is still reported by the unprofiled baseline.
@@ -35,6 +42,14 @@ on:
         description: sf-decomposer ref to take the fixture generator from
         type: string
         default: main
+      compare_ref:
+        description: Same-runner A/B against this ref (e.g. main). Empty = profile only.
+        type: string
+        default: ''
+      rounds:
+        description: A/B rounds (only with compare_ref)
+        type: string
+        default: '6'
   # Run on PRs that change the profiling setup itself, so it can be iterated
   # on before it exists on main (workflow_dispatch only sees main's copy).
   pull_request:
@@ -45,9 +60,11 @@ on:
 permissions:
   contents: read
 
+# PR runs supersede each other; manual dispatches never cancel one another (two
+# dispatches on the same ref, e.g. repeated A/B runs, must both complete).
 concurrency:
-  group: profile-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: profile-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PROFILE: ${{ inputs.profile || 'large' }}
@@ -60,6 +77,7 @@ env:
 
 jobs:
   profile:
+    if: ${{ !inputs.compare_ref }}
     name: Profile (${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -207,5 +225,112 @@ jobs:
             ${{ runner.temp }}/out/*.txt
             ${{ runner.temp }}/out/*.md
             ${{ runner.temp }}/out/*.folded
+          retention-days: 30
+          if-no-files-found: warn
+
+  ab:
+    name: Same-runner A/B (${{ inputs.compare_ref }} vs ${{ github.ref_name }}, ${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
+    if: ${{ inputs.compare_ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ROUNDS: ${{ inputs.rounds || '6' }}
+      BASE_REF: ${{ inputs.compare_ref }}
+      HEAD_REF: ${{ github.ref_name }}
+    steps:
+      - name: Checkout head (dispatched ref)
+        uses: actions/checkout@v7
+        with:
+          path: head
+          persist-credentials: false
+
+      - name: Checkout base (compare_ref)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.compare_ref }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout sf-decomposer (fixture generator)
+        uses: actions/checkout@v7
+        with:
+          repository: mcarvin8/sf-decomposer
+          ref: ${{ inputs.sf_decomposer_ref || 'main' }}
+          path: sf-decomposer
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Generate fixtures
+        run: npx --yes tsx scripts/gen-perf-fixtures.ts --profile "$PROFILE" --out "$RUNNER_TEMP/fixtures"
+        working-directory: sf-decomposer
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+
+      - name: Build both replays
+        run: |
+          for side in base head; do
+            if [ ! -f "$side/examples/replay_workload.rs" ]; then
+              echo "::error::$side has no examples/replay_workload.rs (compare_ref must include #155)"; exit 1
+            fi
+            (cd "$side" && cargo build --release --example replay_workload)
+            cp "$side/target/release/examples/replay_workload" "$RUNNER_TEMP/replay-$side"
+          done
+
+      - name: Alternating rounds on one runner
+        run: |
+          OUT="$RUNNER_TEMP/ab"; mkdir -p "$OUT"
+          TSV="$OUT/ab.tsv"
+          printf 'round\tref\tphase\twall_s\tuser_s\tsys_s\tmaxrss_mb\n' > "$TSV"
+          run_one() { # side round
+            local side=$1 round=$2 work="$RUNNER_TEMP/work-$1"
+            rm -rf "$work"; cp -r "$RUNNER_TEMP/fixtures" "$work"
+            sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            for phase in decompose recompose; do
+              /usr/bin/time -f '%e\t%U\t%S\t%M' -o "$RUNNER_TEMP/t" \
+                "$RUNNER_TEMP/replay-$side" "$phase" "$work" --format "$FORMAT" 2>/dev/null
+              IFS=$'\t' read -r e u s m < "$RUNNER_TEMP/t"
+              printf '%s\t%s\t%s\t%s\t%s\t%s\t%.1f\n' "$round" "$side" "$phase" "$e" "$u" "$s" "$(echo "$m/1024" | bc -l)" >> "$TSV"
+            done
+          }
+          # One untimed warm-up each, then alternate which side goes first.
+          run_one base 0; run_one head 0
+          for r in $(seq 1 "$ROUNDS"); do
+            if [ $((r % 2)) -eq 1 ]; then run_one base "$r"; run_one head "$r"; else run_one head "$r"; run_one base "$r"; fi
+          done
+          cat "$TSV"
+          echo
+          python3 - "$TSV" > "$OUT/summary-ab.md" <<'PY'
+          import csv, os, statistics, sys
+          rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter='\t') if r['round'] != '0']
+          env = os.environ
+          print(f"## Same-runner A/B: `{env['BASE_REF']}` (base) vs `{env['HEAD_REF']}` (head)\n")
+          print(f"profile={env['PROFILE']}, format={env['FORMAT']}, {env['ROUNDS']} alternating rounds after a warm-up; medians.\n")
+          print('| phase | metric | base | head | change | head better in |')
+          print('|---|---|---:|---:|---:|---:|')
+          for phase in ('decompose', 'recompose'):
+              for metric in ('wall_s', 'user_s', 'sys_s', 'maxrss_mb'):
+                  base = {r['round']: float(r[metric]) for r in rows if r['ref'] == 'base' and r['phase'] == phase}
+                  head = {r['round']: float(r[metric]) for r in rows if r['ref'] == 'head' and r['phase'] == phase}
+                  b, h = statistics.median(base.values()), statistics.median(head.values())
+                  wins = sum(1 for k in base if head[k] < base[k])
+                  change = f'{(h / b - 1) * 100:+.1f}%' if b else 'n/a'
+                  print(f'| {phase} | {metric} | {b:.2f} | {h:.2f} | {change} | {wins}/{len(base)} |')
+          PY
+          cat "$OUT/summary-ab.md" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload A/B results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ab-${{ env.PROFILE }}-${{ env.FORMAT }}
+          path: ${{ runner.temp }}/ab/
           retention-days: 30
           if-no-files-found: warn
