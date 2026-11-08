@@ -239,16 +239,18 @@ fn build_xml_from_object(
     // Use Writer::new (no indent) so leaf elements stay compact and match fixture format
     let mut writer = Writer::new(Vec::new());
 
+    // The root is BORROWED for serialization. It used to be `.cloned()` out of
+    // `element` first -- a deep copy of the whole document, live alongside the
+    // original for the entire write; heap-profiling sf-decomposer's workload
+    // showed it as the largest avoidable share of reassemble's heap peak.
+    let empty_root = Value::Object(Map::new());
     let (declaration, root_key, root_value) = if let Some(decl) = element.get("?xml") {
         let root_key = element
             .keys()
             .find(|k| *k != "?xml")
             .cloned()
             .unwrap_or_else(|| "root".to_string());
-        let root_value = element
-            .get(&root_key)
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
+        let root_value = element.get(&root_key).unwrap_or(&empty_root);
         (Some(decl), root_key, root_value)
     } else {
         let root_key = element
@@ -256,10 +258,7 @@ fn build_xml_from_object(
             .next()
             .cloned()
             .unwrap_or_else(|| "root".to_string());
-        let root_value = element
-            .get(&root_key)
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
+        let root_value = element.get(&root_key).unwrap_or(&empty_root);
         (None, root_key, root_value)
     };
 
@@ -274,10 +273,14 @@ fn build_xml_from_object(
         writer.write_event(Event::Text(BytesText::new("\n")))?;
     }
 
-    write_element(&mut writer, &root_key, &root_value, 0)?;
+    write_element(&mut writer, &root_key, root_value, 0)?;
 
-    let result = String::from_utf8(writer.into_inner())?;
-    Ok(result.trim_end().to_string())
+    // Trim trailing whitespace in place rather than copying the whole output
+    // into a new String (`trim_end().to_string()`).
+    let mut result = String::from_utf8(writer.into_inner())?;
+    let trimmed_len = result.trim_end().len();
+    result.truncate(trimmed_len);
+    Ok(result)
 }
 
 /// Build XML string from XmlElement.
