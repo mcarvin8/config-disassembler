@@ -15,10 +15,16 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use tokio::fs;
 
-fn get_root_info(parsed_xml: &Value) -> Option<(String, Value)> {
-    let obj = parsed_xml.as_object()?;
+/// Split a parsed document into its root element's name and the root element
+/// itself, MOVING the root out rather than cloning it: the parsed document is
+/// not used again, and heap-profiling sf-decomposer's workload showed the clone
+/// as about a fifth of disassemble's peak heap (a second copy of the whole tree).
+fn get_root_info(parsed_xml: Value) -> Option<(String, Value)> {
+    let Value::Object(mut obj) = parsed_xml else {
+        return None;
+    };
     let root_element_name = obj.keys().find(|k| *k != "?xml")?.clone();
-    let root_element = obj.get(&root_element_name)?.clone();
+    let root_element = obj.remove(&root_element_name)?;
     Some((root_element_name, root_element))
 }
 
@@ -138,7 +144,7 @@ fn is_nested_for_unique_id(element: &Value) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn disassemble_element_keys(
-    root_element: &Value,
+    root_element: Value,
     key_order: &[String],
     disassembled_path: &str,
     root_element_name: &str,
@@ -153,19 +159,24 @@ async fn disassemble_element_keys(
     let mut leaf_count = 0usize;
     let mut has_nested_elements = false;
 
-    let empty_map = Map::new();
-    let root_obj = root_element.as_object().unwrap_or(&empty_map);
+    // The root is owned, so each key's siblings are MOVED out of it instead of
+    // cloned: heap-profiling sf-decomposer's workload showed the per-key sibling
+    // copy as about a fifth of disassemble's peak heap.
+    let mut root_obj = match root_element {
+        Value::Object(obj) => obj,
+        _ => Map::new(),
+    };
 
-    // Iterate root_obj in key_order's ordering: we consume only keys that are present,
-    // which matches the caller's invariant and keeps the loop body branch-free.
-    let ordered: Vec<(&String, &Value)> = key_order
-        .iter()
-        .filter_map(|k| root_obj.get_key_value(k))
-        .collect();
-    for (key, val) in ordered {
-        let elements: Vec<Value> = match val.as_array() {
-            Some(arr) => arr.clone(),
-            None => vec![val.clone()],
+    // Visit keys in key_order's ordering, consuming only keys that are present.
+    // key_order holds each key once (it is root_obj's own key list), so taking a
+    // key's value out the first time it is visited never skips a later visit.
+    for key in key_order {
+        let Some(val) = root_obj.remove(key) else {
+            continue;
+        };
+        let elements: Vec<Value> = match val {
+            Value::Array(arr) => arr,
+            other => vec![other],
         };
 
         // Pre-resolve a collision-safe unique-id for every sibling so the
@@ -451,12 +462,17 @@ pub async fn build_disassembled_files_unified(
         None => return Ok(()),
     };
 
-    let (root_element_name, root_element) = match get_root_info(&parsed_xml) {
+    let (root_element_name, root_element) = match get_root_info(parsed_xml) {
         Some(info) => info,
         None => return Ok(()),
     };
     // The custom parser ignores <?xml ?>; always recover it from raw XML.
     let xml_declaration = extract_xml_declaration_from_raw(&xml_content);
+    // The raw text isn't needed past this point (only whether it ends with a
+    // newline, for the trailing-newline sidecar); release it before the shards
+    // are built instead of holding it for the rest of the call.
+    let ends_with_newline = xml_content.ends_with('\n');
+    drop(xml_content);
 
     let root_attributes = extract_root_attributes(&root_element);
     let key_order: Vec<String> = root_element
@@ -465,7 +481,7 @@ pub async fn build_disassembled_files_unified(
         .unwrap_or_default();
 
     let (leaf_content, nested_groups, leaf_count, has_nested_elements) = disassemble_element_keys(
-        &root_element,
+        root_element,
         &key_order,
         disassembled_path,
         &root_element_name,
@@ -510,17 +526,13 @@ pub async fn build_disassembled_files_unified(
     // change but gets reported as "reordered" by verify_roundtrip.
     let trailing_newline_path =
         std::path::Path::new(disassembled_path).join(".trailing_newline.json");
-    let _ = fs::write(
-        trailing_newline_path,
-        xml_content.ends_with('\n').to_string(),
-    )
-    .await;
+    let _ = fs::write(trailing_newline_path, ends_with_newline.to_string()).await;
 
     if should_write_leaf_file(leaf_count) {
         let final_leaf_content = if strategy == "grouped-by-tag" {
             order_xml_element_keys(&leaf_content, &key_order)
         } else {
-            Value::Object(leaf_content.clone())
+            Value::Object(leaf_content)
         };
 
         let _ = build_disassembled_file(crate::xml::types::BuildDisassembledFileOptions {
@@ -601,15 +613,15 @@ mod tests {
     #[test]
     fn get_root_info_returns_name_and_element() {
         let parsed = json!({ "?xml": {"@version": "1.0"}, "Root": { "child": 1 } });
-        let (name, element) = get_root_info(&parsed).unwrap();
+        let (name, element) = get_root_info(parsed).unwrap();
         assert_eq!(name, "Root");
         assert!(element.as_object().unwrap().contains_key("child"));
     }
 
     #[test]
     fn get_root_info_returns_none_for_non_object_or_decl_only() {
-        assert!(get_root_info(&json!("s")).is_none());
-        assert!(get_root_info(&json!({ "?xml": {} })).is_none());
+        assert!(get_root_info(json!("s")).is_none());
+        assert!(get_root_info(json!({ "?xml": {} })).is_none());
     }
 
     // ---- collision detection (issue #24) -----------------------------------
