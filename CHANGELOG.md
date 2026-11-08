@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.9](https://github.com/mcarvin8/config-disassembler/compare/v0.11.8...v0.11.9) - 2026-11-08
+
+### ⚡ Performance
+
+
+- *(xml)* Serialize without deep-copying the document or its output ([#166](https://github.com/mcarvin8/config-disassembler/pull/166)) - ([fd431c6](https://github.com/mcarvin8/config-disassembler/commit/fd431c627fe8f1ecbad1e6757929bed9e53866f5))
+
+
 ## [0.11.8](https://github.com/mcarvin8/config-disassembler/compare/v0.11.7...v0.11.8) - 2026-11-08
 
 ### ⚡ Performance
