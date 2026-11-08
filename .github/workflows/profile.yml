@@ -21,9 +21,13 @@ name: Profile
 # what made #158's -35% decompose result conclusive. Reports per-phase medians
 # and how many rounds the dispatched ref won.
 #
-# Heap profiling (heaptrack) was tried and removed: recording every allocation
-# got the hosted runner shut down even on the `medium` fixture. Max RSS per
-# phase is still reported by the unprofiled baseline.
+# Heap profile (set `heap`): builds the replay with `--features dhat-heap`, so
+# every allocation goes through dhat, and reports per phase which crate call
+# sites hold the most bytes at the global heap peak (examples/dhat_summary.py).
+# dhat keeps per-call-site totals rather than a record per allocation, so unlike
+# heaptrack (tried earlier; it got the hosted runner shut down even on `medium`)
+# it handles `large`. Compare its heap peak with the baseline's max RSS: the gap
+# is memory the allocator holds rather than live data.
 
 on:
   workflow_dispatch:
@@ -50,6 +54,10 @@ on:
         description: A/B rounds (only with compare_ref)
         type: string
         default: '6'
+      heap:
+        description: Heap profile with dhat instead (what is live at the heap peak, per phase)
+        type: boolean
+        default: false
   # Run on PRs that change the profiling setup itself, so it can be iterated
   # on before it exists on main (workflow_dispatch only sees main's copy).
   pull_request:
@@ -77,7 +85,7 @@ env:
 
 jobs:
   profile:
-    if: ${{ !inputs.compare_ref }}
+    if: ${{ !inputs.compare_ref && !inputs.heap }}
     name: Profile (${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -230,7 +238,7 @@ jobs:
 
   ab:
     name: Same-runner A/B (${{ inputs.compare_ref }} vs ${{ github.ref_name }}, ${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
-    if: ${{ inputs.compare_ref }}
+    if: ${{ inputs.compare_ref && !inputs.heap }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -332,5 +340,80 @@ jobs:
         with:
           name: ab-${{ env.PROFILE }}-${{ env.FORMAT }}
           path: ${{ runner.temp }}/ab/
+          retention-days: 30
+          if-no-files-found: warn
+
+  heap:
+    name: Heap profile (dhat, ${{ inputs.profile || 'large' }}, ${{ inputs.format || 'xml' }})
+    if: ${{ inputs.heap }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout sf-decomposer (fixture generator)
+        uses: actions/checkout@v7
+        with:
+          repository: mcarvin8/sf-decomposer
+          ref: ${{ inputs.sf_decomposer_ref || 'main' }}
+          path: sf-decomposer
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Generate fixtures
+        run: npx --yes tsx scripts/gen-perf-fixtures.ts --profile "$PROFILE" --out "$RUNNER_TEMP/fixtures"
+        working-directory: sf-decomposer
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+
+      - name: Build replay with dhat
+        run: cargo build --release --example replay_workload --features dhat-heap
+
+      - name: Heap profile per phase
+        run: |
+          BIN="$GITHUB_WORKSPACE/target/release/examples/replay_workload"
+          OUT="$RUNNER_TEMP/heap"; mkdir -p "$OUT"
+          cp -r "$RUNNER_TEMP/fixtures" "$RUNNER_TEMP/work"
+          for phase in decompose recompose; do
+            mkdir -p "$OUT/$phase"
+            # dhat writes dhat-heap.json into the working directory.
+            (cd "$OUT/$phase" && "$BIN" "$phase" "$RUNNER_TEMP/work" --format "$FORMAT" 2> stderr.txt)
+            grep -E 'heap:|total' "$OUT/$phase/stderr.txt" || true
+          done
+          {
+            echo "## Heap profile (dhat): profile=$PROFILE, format=$FORMAT"
+            echo
+            for phase in decompose recompose; do
+              echo "### $phase"
+              echo
+              grep -E 'heap:' "$OUT/$phase/stderr.txt" | sed 's/^/    /' || true
+              echo
+              python3 examples/dhat_summary.py "$OUT/$phase/dhat-heap.json" 15
+              echo
+            done
+          } > "$OUT/summary-heap.md"
+          cat "$OUT/summary-heap.md" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload heap profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: heap-${{ env.PROFILE }}-${{ env.FORMAT }}
+          path: ${{ runner.temp }}/heap/
           retention-days: 30
           if-no-files-found: warn

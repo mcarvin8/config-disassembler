@@ -28,6 +28,14 @@ use config_disassembler::xml::{DisassembleXmlFileHandler, ReassembleXmlFileHandl
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+// With `--features dhat-heap`, every allocation goes through dhat, which writes
+// `dhat-heap.json` (viewable in DHAT's dh_view.html) when the profiler drops at
+// the end of main: per allocation site, bytes live at the global heap peak
+// ("gb"), total bytes allocated, etc. See the `heap` job in profile.yml.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 /// sf-decomposer's `CONCURRENCY_LIMITS.METADATA_TYPES`.
 const TYPES_IN_FLIGHT: usize = 3;
 const MANIFEST: &str = ".replay-manifest.json";
@@ -186,6 +194,9 @@ async fn recompose(root: PathBuf) {
 }
 
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _heap_profiler = dhat::Profiler::new_heap();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let usage = "usage: replay_workload <decompose|recompose> <fixture-root> [--format xml|json|json5|yaml]";
     let (Some(phase), Some(root)) = (args.first(), args.get(1)) else {
@@ -210,4 +221,17 @@ fn main() {
         "{phase} total {:.1} ms",
         start.elapsed().as_secs_f64() * 1e3
     );
+
+    #[cfg(feature = "dhat-heap")]
+    {
+        let stats = dhat::HeapStats::get();
+        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+        eprintln!(
+            "{phase} heap: peak {:.1} MB in {} blocks, {:.1} MB allocated in total over {} allocations",
+            mb(stats.max_bytes),
+            stats.max_blocks,
+            stats.total_bytes as f64 / (1024.0 * 1024.0),
+            stats.total_blocks
+        );
+    }
 }

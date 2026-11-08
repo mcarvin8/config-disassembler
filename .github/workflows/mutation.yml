@@ -64,7 +64,12 @@ jobs:
           BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          # No --depth here: the checkout above already has full history, and a
+          # shallow fetch would graft the base branch's new tip with its parents
+          # cut off. Once the base branch moves past the PR's merge commit (e.g.
+          # another PR merges mid-run, or on a re-run), that tip isn't in HEAD's
+          # history, so merge-base found no common ancestor and the job failed.
+          git fetch --no-tags origin "$BASE_REF"
           MERGE_BASE=$(git merge-base HEAD "origin/$BASE_REF")
           git diff "$MERGE_BASE" HEAD -- src tests Cargo.toml Cargo.lock > mutation.diff
           # Track which Rust files changed so we can fall back to --file
