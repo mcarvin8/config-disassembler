@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.8](https://github.com/mcarvin8/config-disassembler/compare/v0.11.7...v0.11.8) - 2026-11-08
+
+### ⚡ Performance
+
+
+- *(xml)* Move the root and sibling arrays out on disassemble instead of cloning ([#163](https://github.com/mcarvin8/config-disassembler/pull/163)) - ([1c32d44](https://github.com/mcarvin8/config-disassembler/commit/1c32d4456f24fff4c3aef4fdee77a20cfd147eb8))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(profile)* Add dhat heap profiling (heap mode) ([#164](https://github.com/mcarvin8/config-disassembler/pull/164)) - ([9d0636a](https://github.com/mcarvin8/config-disassembler/commit/9d0636a2b64be5e985a73f47e6b4819856207dfb))
+
+
 ## [0.11.7](https://github.com/mcarvin8/config-disassembler/compare/v0.11.6...v0.11.7) - 2026-11-07
 
 ### ⚡ Performance
