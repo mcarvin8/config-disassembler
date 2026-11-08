@@ -35,8 +35,16 @@ configparser = { version = "3.1.0", features = ["indexmap"] }
 tempfile = "3"
 serde-saphyr = "2"
 
+[features]
+# Heap-profile the replay example (examples/replay_workload.rs) with dhat:
+# `cargo run --release --example replay_workload --features dhat-heap -- ...`.
+# Used by the `heap` job in .github/workflows/profile.yml. No effect on the library.
+dhat-heap = []
+
 [dev-dependencies]
 walkdir = "2"
+# Heap profiler for the replay example's `dhat-heap` feature (see [features]).
+dhat = "0.3"
 # Renamed so bench code imports plain `criterion`. Outside CodSpeed's runner
 # the compat crate behaves exactly like upstream criterion, so `cargo bench`
 # works locally as usual; under `cargo codspeed run` it reports to CodSpeed.
