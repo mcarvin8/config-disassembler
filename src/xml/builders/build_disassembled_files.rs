@@ -565,6 +565,54 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // disassemble_element_keys now takes the root by value and moves each key's
+    // siblings out of it. Its two defensive branches can't be reached through
+    // build_disassembled_files_unified (the root is always an object there, and
+    // key_order is built from the root's own keys), so exercise them directly.
+    #[tokio::test]
+    async fn disassemble_element_keys_treats_a_non_object_root_as_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let (leaf_content, nested_groups, leaf_count, has_nested) = disassemble_element_keys(
+            json!("just text"),
+            &["a".to_string()],
+            temp.path().to_str().unwrap(),
+            "Root",
+            &json!({}),
+            None,
+            None,
+            "unique-id",
+            "xml",
+        )
+        .await;
+
+        assert!(leaf_content.is_empty());
+        assert!(nested_groups.is_empty());
+        assert_eq!(leaf_count, 0);
+        assert!(!has_nested);
+    }
+
+    #[tokio::test]
+    async fn disassemble_element_keys_skips_keys_missing_from_the_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let (leaf_content, _, leaf_count, _) = disassemble_element_keys(
+            json!({ "present": "x" }),
+            &["missing".to_string(), "present".to_string()],
+            temp.path().to_str().unwrap(),
+            "Root",
+            &json!({}),
+            None,
+            None,
+            "unique-id",
+            "xml",
+        )
+        .await;
+
+        // The absent key is skipped and the present one is still processed.
+        assert_eq!(leaf_count, 1);
+        assert!(leaf_content.contains_key("present"));
+        assert!(!leaf_content.contains_key("missing"));
+    }
+
     #[test]
     fn get_field_value_returns_direct_string() {
         let el = json!({ "field": "value" });
