@@ -4,7 +4,7 @@ use quick_xml::escape::partial_escape;
 use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 use serde_json::{Map, Value};
-use std::io::{self, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use crate::xml::types::XmlElement;
@@ -235,95 +235,32 @@ fn write_element<W: std::io::Write>(
     Ok(())
 }
 
-/// Write adapter that drops trailing whitespace from everything written through it.
+/// Whether `write_element` writes anything for `value`. Only an array whose items
+/// are all (recursively) empty arrays writes nothing; every other value writes at
+/// least its own tags.
+fn writes_output(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(writes_output),
+        _ => true,
+    }
+}
+
+/// Serialize `element` into `out` and return `out`. A non-object `element`
+/// writes nothing.
 ///
-/// Whitespace is held back until non-whitespace follows it; whatever is still held
-/// back when [`TrimEndWriter::finish`] is called is discarded. That gives the same
-/// bytes as building the whole document and calling `str::trim_end`, without
-/// holding the whole document in memory. Only ASCII whitespace is held back, which
-/// is equivalent here: a document always ends with a tag's `>` or the `\n` written
-/// after the declaration, never with non-ASCII whitespace.
-struct TrimEndWriter<W: Write> {
-    inner: W,
-    pending: Vec<u8>,
-}
-
-impl<W: Write> TrimEndWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            pending: Vec::new(),
-        }
-    }
-
-    /// Discard any trailing whitespace still held back and return the inner writer.
-    fn finish(self) -> W {
-        self.inner
-    }
-}
-
-impl<W: Write> Write for TrimEndWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match buf.iter().rposition(|b| !b.is_ascii_whitespace()) {
-            None => self.pending.extend_from_slice(buf),
-            Some(last) => {
-                if !self.pending.is_empty() {
-                    self.inner.write_all(&self.pending)?;
-                    self.pending.clear();
-                }
-                self.inner.write_all(&buf[..=last])?;
-                self.pending.extend_from_slice(&buf[last + 1..]);
-            }
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-/// Serialize `element` into `out`, with trailing whitespace trimmed. Returns `out`.
-/// A non-object `element` writes nothing.
+/// The output never ends with whitespace, so it needs no trimming: it ends with
+/// the `>` of the root's last tag, or -- when the root writes nothing -- with the
+/// declaration, whose `\n` separator is then left out. (It used to be written and
+/// trimmed off the finished `String`, which needs the whole output in memory.)
 fn write_xml<W: Write>(
     element: &XmlElement,
     out: W,
 ) -> Result<W, Box<dyn std::error::Error + Send + Sync>> {
-    let mut out = TrimEndWriter::new(out);
-    if let Value::Object(obj) = element {
-        write_xml_from_object(obj, &mut out)?;
-    }
-    Ok(out.finish())
-}
-
-/// Serialize `element` straight to a file at `path` (created or truncated),
-/// followed by a `\n` when `trailing_newline` is set.
-///
-/// Produces the same bytes as writing `build_xml_string(element)` (plus the
-/// newline), but never holds the serialized document in memory: reassemble used
-/// to keep the whole output twice over (the writer's buffer and the `String`)
-/// alongside the merged tree at its heap peak.
-pub(crate) fn write_xml_file(
-    element: &XmlElement,
-    path: &Path,
-    trailing_newline: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let file = std::fs::File::create(path)?;
-    let mut out = write_xml(element, BufWriter::new(file))?;
-    if trailing_newline {
-        out.write_all(b"\n")?;
-    }
-    // BufWriter's drop flushes but swallows the error; flush explicitly to surface it.
-    out.flush()?;
-    Ok(())
-}
-
-fn write_xml_from_object<W: Write>(
-    element: &Map<String, Value>,
-    out: W,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Use Writer::new (no indent) so leaf elements stay compact and match fixture format
     let mut writer = Writer::new(out);
+    let Value::Object(element) = element else {
+        return Ok(writer.into_inner());
+    };
 
     // The root is BORROWED for serialization. It used to be `.cloned()` out of
     // `element` first -- a deep copy of the whole document, live alongside the
@@ -348,6 +285,7 @@ fn write_xml_from_object<W: Write>(
         (None, root_key, root_value)
     };
 
+    let root_writes_output = writes_output(root_value);
     if let Some(obj) = declaration.and_then(|d| d.as_object()) {
         let version = obj
             .get("@version")
@@ -356,19 +294,51 @@ fn write_xml_from_object<W: Write>(
         let encoding = obj.get("@encoding").and_then(|v| v.as_str());
         let standalone = obj.get("@standalone").and_then(|v| v.as_str());
         writer.write_event(Event::Decl(BytesDecl::new(version, encoding, standalone)))?;
-        writer.write_event(Event::Text(BytesText::new("\n")))?;
+        if root_writes_output {
+            writer.write_event(Event::Text(BytesText::new("\n")))?;
+        }
     }
 
-    write_element(&mut writer, &root_key, root_value, 0)?;
+    if root_writes_output {
+        write_element(&mut writer, &root_key, root_value, 0)?;
+    }
+    Ok(writer.into_inner())
+}
+
+/// Serialize `element` straight to a file at `path` (created or truncated),
+/// followed by a `\n` when `trailing_newline` is set.
+///
+/// Produces the same bytes as writing `build_xml_string(element)` (plus the
+/// newline), but never holds the serialized document in memory: reassemble used
+/// to keep the whole output twice over (the writer's buffer and the `String`)
+/// alongside the merged tree at its heap peak.
+pub(crate) fn write_xml_file(
+    element: &XmlElement,
+    path: &Path,
+    trailing_newline: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::create(path)?;
+    let mut out = write_xml(element, BufWriter::new(file))?;
+    if trailing_newline {
+        out.write_all(b"\n")?;
+    }
+    // BufWriter's drop flushes but swallows the error; flush explicitly to surface it.
+    out.flush()?;
     Ok(())
 }
 
 /// Build XML string from XmlElement.
 pub fn build_xml_string(element: &XmlElement) -> String {
-    write_xml(element, Vec::new())
+    let out = write_xml(element, Vec::new())
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    debug_assert_eq!(
+        out.trim_end().len(),
+        out.len(),
+        "serialized XML must not end with whitespace"
+    );
+    out
 }
 
 #[cfg(test)]
@@ -653,69 +623,6 @@ mod tests {
         assert!(out.contains("v"));
     }
 
-    // ---- TrimEndWriter ------------------------------------------------------
-
-    fn trim_through_writer(chunks: &[&str]) -> String {
-        let mut w = TrimEndWriter::new(Vec::new());
-        for chunk in chunks {
-            w.write_all(chunk.as_bytes()).unwrap();
-        }
-        String::from_utf8(w.finish()).unwrap()
-    }
-
-    #[test]
-    fn trim_end_writer_matches_str_trim_end() {
-        let cases: &[&[&str]] = &[
-            &[],
-            &[""],
-            &["   "],
-            &["a"],
-            &["a  \n"],
-            &["\n  a"],
-            &["a", "  ", "b"],
-            &["a", " \n ", " ", "b", "\n"],
-            &["a \t", "\r\n", "  "],
-            &["<r>", "\n    ", "<c>x</c>", "\n", "</r>", "\n\n"],
-        ];
-        for chunks in cases {
-            let joined: String = chunks.concat();
-            assert_eq!(
-                trim_through_writer(chunks),
-                joined.trim_end(),
-                "chunks: {chunks:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn trim_end_writer_reports_full_length_written() {
-        let mut w = TrimEndWriter::new(Vec::new());
-        assert_eq!(w.write(b"ab  ").unwrap(), 4);
-        assert_eq!(w.write(b"   ").unwrap(), 3);
-        assert_eq!(w.finish(), b"ab");
-    }
-
-    #[test]
-    fn trim_end_writer_flush_reaches_inner_but_keeps_pending_whitespace() {
-        struct Flushed(Vec<u8>, bool);
-        impl Write for Flushed {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.0.extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                self.1 = true;
-                Ok(())
-            }
-        }
-        let mut w = TrimEndWriter::new(Flushed(Vec::new(), false));
-        w.write_all(b"a \n").unwrap();
-        w.flush().unwrap();
-        let inner = w.finish();
-        assert!(inner.1, "flush must be forwarded to the inner writer");
-        assert_eq!(inner.0, b"a", "flush must not emit held-back whitespace");
-    }
-
     // ---- write_xml_file -------------------------------------------------------
 
     fn sample_doc() -> XmlElement {
@@ -783,5 +690,44 @@ mod tests {
         let doc = json!({ "?xml": { "@version": "1.0" }, "root": [] });
         let out = build_xml_string(&doc);
         assert_eq!(out, r#"<?xml version="1.0"?>"#);
+    }
+
+    #[test]
+    fn writes_output_only_false_for_arrays_of_empty_arrays() {
+        assert!(!writes_output(&json!([])));
+        assert!(!writes_output(&json!([[], [[]]])));
+        assert!(writes_output(&json!([[], ["x"]])));
+        assert!(writes_output(&json!([{}])));
+        assert!(writes_output(&json!({})));
+        assert!(writes_output(&json!("")));
+        assert!(writes_output(&json!(null)));
+    }
+
+    #[test]
+    fn declaration_newline_kept_when_root_writes_output() {
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [[], { "a": "1" }] });
+        assert_eq!(
+            build_xml_string(&doc),
+            "<?xml version=\"1.0\"?>\n<root>\n    <a>1</a>\n</root>"
+        );
+    }
+
+    #[test]
+    fn nested_empty_array_root_writes_declaration_only() {
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [[], [[]]] });
+        assert_eq!(build_xml_string(&doc), r#"<?xml version="1.0"?>"#);
+        assert_eq!(build_xml_string(&json!({ "root": [] })), "");
+    }
+
+    #[test]
+    fn write_xml_file_matches_build_xml_string_for_empty_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.xml");
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [] });
+        write_xml_file(&doc, &path, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{}\n", build_xml_string(&doc))
+        );
     }
 }
