@@ -19,6 +19,8 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Fragment reassembly mirrors serde_json's preserve_order map (an IndexMap).
+indexmap = "2"
 json5 = "1"
 toml = "1"
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "fs", "io-util", "sync"] }
