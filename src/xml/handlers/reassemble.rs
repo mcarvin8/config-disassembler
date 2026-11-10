@@ -255,7 +255,7 @@ impl ReassembleXmlFileHandler {
         while let Some(entry) = read_dir.next_entry().await? {
             entries.push(entry);
         }
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_cached_key(|e| e.file_name());
         for entry in entries {
             let process_path = entry.path();
             if !process_path.is_dir() {
@@ -267,7 +267,7 @@ impl ReassembleXmlFileHandler {
             while let Some(e) = sub_read.next_entry().await? {
                 sub_entries.push(e);
             }
-            sub_entries.sort_by_key(|e| e.file_name());
+            sub_entries.sort_by_cached_key(|e| e.file_name());
 
             // Phase 1: drain any sub-directory that matches a nested rule's
             // `path_segment` so it is re-wrapped before the outer merge runs.
@@ -447,18 +447,12 @@ impl ReassembleXmlFileHandler {
             while let Some(entry) = read_dir.next_entry().await? {
                 entries.push(entry);
             }
-            // Sort by full filename for deterministic cross-platform ordering. The
-            // lossy names are compared as borrowed `Cow`s: copying each into a String
-            // (`.to_string()`) doubled the comparator's allocations, which
-            // heap-profiling showed as ~27% of all of reassemble's allocations on a
-            // directory of ~136k shards. Keys are deliberately not cached
-            // (`sort_by_cached_key`): holding every name at once raised max RSS ~9%
-            // on that workload, more than the saved allocations were worth.
-            entries.sort_by(|a, b| {
-                a.file_name()
-                    .to_string_lossy()
-                    .cmp(&b.file_name().to_string_lossy())
-            });
+            // Sort by full filename for deterministic cross-platform ordering. The key
+            // is computed once per entry: building it inside a comparator cost four
+            // allocations per comparison (`file_name()` allocates, then the lossy
+            // copy), which heap-profiling showed as ~27% of all of reassemble's
+            // allocations on a directory of ~136k shards.
+            entries.sort_by_cached_key(|e| e.file_name().to_string_lossy().into_owned());
 
             // We are at the disassembly root for a given rule when our dir_path matches
             // the base_path stored on that rule. Each rule shares the same base_path in
