@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.10](https://github.com/mcarvin8/config-disassembler/compare/v0.11.9...v0.11.10) - 2026-11-10
+
+### ⚡ Performance
+
+
+- *(xml)* Move multi-level segment content instead of cloning it ([#174](https://github.com/mcarvin8/config-disassembler/pull/174)) - ([547b930](https://github.com/mcarvin8/config-disassembler/commit/547b9308c255b0252798ec558b8bdda38ee8c153))
+- *(xml)* Reassemble from serialized fragments instead of a merged tree ([#173](https://github.com/mcarvin8/config-disassembler/pull/173)) - ([027cd6a](https://github.com/mcarvin8/config-disassembler/commit/027cd6ae80d8012aa1427d5a6f9ca2c64086d680))
+- *(xml)* Stop copying text runs in the parser's flush_text_buffer ([#172](https://github.com/mcarvin8/config-disassembler/pull/172)) - ([e37c7d2](https://github.com/mcarvin8/config-disassembler/commit/e37c7d2c86577f4d4460f66ea5b3f8cfb650e517))
+- *(xml)* Compute directory sort keys once per entry on reassemble ([#170](https://github.com/mcarvin8/config-disassembler/pull/170)) - ([81f3e19](https://github.com/mcarvin8/config-disassembler/commit/81f3e199c8db30961ce250263708e21c5879b764))
+- *(xml)* Stream reassembled output to the file instead of a String ([#168](https://github.com/mcarvin8/config-disassembler/pull/168)) - ([50ecfe6](https://github.com/mcarvin8/config-disassembler/commit/50ecfe61e2b18f60e74d22a630c4290a95c09786))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- *(profile)* Report spread and a rank test in the A/B summary ([#171](https://github.com/mcarvin8/config-disassembler/pull/171)) - ([0675df0](https://github.com/mcarvin8/config-disassembler/commit/0675df02e532600e0208f438dd690b0c80a1afe4))
+
+
 ## [0.11.9](https://github.com/mcarvin8/config-disassembler/compare/v0.11.8...v0.11.9) - 2026-11-08
 
 ### ⚡ Performance
