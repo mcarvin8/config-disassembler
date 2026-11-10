@@ -405,14 +405,14 @@ impl ReassembleXmlFileHandler {
         let output_path = self.get_output_path(&file_path, file_extension);
 
         // Serialize straight into the output file rather than building the whole
-        // document as a String first. Serialization is CPU work plus blocking file
-        // I/O, so it runs on the blocking pool; the merged tree moves there too and
-        // is dropped there instead of on a runtime worker.
-        tokio::task::spawn_blocking(move || {
-            write_xml_file(&merged, Path::new(&output_path), trailing_newline)
-        })
-        .await
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;
+        // document as a String first. This runs inline, on the current worker, like
+        // the String-building serializer it replaces. It deliberately does not use
+        // `spawn_blocking`: with many small documents reassembled concurrently, the
+        // extra blocking-pool threads (each with its own allocator arena) cost more
+        // memory than the output buffer saves -- measured as a consistent ~10% max-RSS
+        // regression on sf-decomposer's `manyfiles` workload.
+        write_xml_file(&merged, Path::new(&output_path), trailing_newline)?;
+        drop(merged);
 
         // Remove sidecar files and metadata after successful injection. They are
         // decomposition artifacts: the content is now inside the reassembled XML.
