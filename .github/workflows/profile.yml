@@ -316,13 +316,44 @@ jobs:
           cat "$TSV"
           echo
           python3 - "$TSV" > "$OUT/summary-ab.md" <<'PY'
-          import csv, os, statistics, sys
+          import csv, itertools, math, os, statistics, sys
+
+          def ranks(values):
+              # Midranks (1-based), so tied values share a rank.
+              order = sorted(range(len(values)), key=values.__getitem__)
+              out = [0.0] * len(values)
+              i = 0
+              while i < len(order):
+                  j = i
+                  while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+                      j += 1
+                  for k in range(i, j + 1):
+                      out[order[k]] = (i + j) / 2 + 1
+                  i = j + 1
+              return out
+
+          def mann_whitney_p(base, head):
+              # Two-sided Mann-Whitney U: do the head rounds rank differently from
+              # the base rounds? Exact (every split of the pooled ranks) when that
+              # is cheap, else the normal approximation.
+              n, m = len(base), len(head)
+              r = ranks(list(base) + list(head))
+              head_sum = sum(r[n:])
+              mean = m * (n + m + 1) / 2
+              observed = abs(head_sum - mean)
+              if math.comb(n + m, m) <= 50000:
+                  splits = list(itertools.combinations(r, m))
+                  extreme = sum(1 for s in splits if abs(sum(s) - mean) >= observed - 1e-9)
+                  return extreme / len(splits)
+              sd = math.sqrt(n * m * (n + m + 1) / 12)
+              return math.erfc(observed / sd / math.sqrt(2)) if sd else 1.0
+
           rows = [r for r in csv.DictReader(open(sys.argv[1]), delimiter='\t') if r['round'] != '0']
           env = os.environ
           print(f"## Same-runner A/B: `{env['BASE_REF']}` (base) vs `{env['HEAD_REF']}` (head)\n")
           print(f"profile={env['PROFILE']}, format={env['FORMAT']}, {env['ROUNDS']} alternating rounds after a warm-up; medians.\n")
-          print('| phase | metric | base | head | change | head better in |')
-          print('|---|---|---:|---:|---:|---:|')
+          print('| phase | metric | base | head | change | head better in | base min–max | head min–max | p |')
+          print('|---|---|---:|---:|---:|---:|---:|---:|---:|')
           for phase in ('decompose', 'recompose'):
               for metric in ('wall_s', 'user_s', 'sys_s', 'maxrss_mb'):
                   base = {r['round']: float(r[metric]) for r in rows if r['ref'] == 'base' and r['phase'] == phase}
@@ -330,7 +361,18 @@ jobs:
                   b, h = statistics.median(base.values()), statistics.median(head.values())
                   wins = sum(1 for k in base if head[k] < base[k])
                   change = f'{(h / b - 1) * 100:+.1f}%' if b else 'n/a'
-                  print(f'| {phase} | {metric} | {b:.2f} | {h:.2f} | {change} | {wins}/{len(base)} |')
+                  p = mann_whitney_p(base.values(), head.values())
+                  print(
+                      f'| {phase} | {metric} | {b:.2f} | {h:.2f} | {change} | {wins}/{len(base)} '
+                      f'| {min(base.values()):.2f}–{max(base.values()):.2f} '
+                      f'| {min(head.values()):.2f}–{max(head.values()):.2f} | {p:.3f} |'
+                  )
+          print()
+          print('**Reading this:** `p` is a two-sided Mann–Whitney test over all rounds. '
+                'Above ~0.05, the difference is not distinguishable from run-to-run noise, '
+                'whatever the median says. Check the min–max ranges too: max RSS on `large` '
+                'recompose is bimodal (two clusters about 40 MB apart, on any ref), so its '
+                'median flips with which cluster the rounds land in.')
           PY
           cat "$OUT/summary-ab.md" | tee -a "$GITHUB_STEP_SUMMARY"
 
