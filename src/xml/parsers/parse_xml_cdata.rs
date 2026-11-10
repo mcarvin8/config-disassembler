@@ -75,6 +75,11 @@ fn attach_child_to_parent(
 }
 
 /// Flush accumulated raw text buffer: unescape entities and add to current element.
+///
+/// Runs on every text run between tags, most of them indentation, so it avoids
+/// allocating where the outcome does not need it: a whitespace-only run onto text
+/// the element already has is dropped before unescaping, and appends/replacements
+/// edit the stored string in place instead of copying it out and re-inserting it.
 fn flush_text_buffer(
     raw: &mut String,
     stack: &mut [(String, Map<String, Value>)],
@@ -83,116 +88,101 @@ fn flush_text_buffer(
     if raw.is_empty() {
         return;
     }
-    let text = unescape(raw.as_str()).unwrap_or_default().into_owned();
-    raw.clear();
-    if text.is_empty() {
-        return;
-    }
-    let val_raw = Value::String(text.clone());
     let Some((_, elem)) = stack.last_mut() else {
+        raw.clear();
         return;
     };
+    // Text after a comment accumulates separately, as #text-tail; the rules for
+    // appending to it are the same as for #text.
+    let key = if is_after_comment {
+        "#text-tail"
+    } else {
+        "#text"
+    };
+
     // A text run that is entirely whitespace, appended onto content #text/#text-tail
     // already accumulated for this element, is pure inter-tag formatting (e.g. the
     // indentation the writer itself inserted between two shard-level tags) - it must
     // not grow the stored value, or every subsequent parse of the writer's own output
     // re-absorbs and re-emits it, growing without bound. A whitespace-only *first* run
-    // (the `else` branches below) is still stored as-is: that's the existing, accepted
+    // (the insert at the bottom) is still stored as-is: that's the existing, accepted
     // behavior for e.g. leading indentation before a child element captured as an
     // element's own #text (see the CDATA/comment-adjacent tests elsewhere in this file).
+    //
+    // That drop is decided here, on the raw run, before unescaping: a run that is
+    // whitespace has no entity references, so it unescapes to itself.
+    let has_text = matches!(elem.get(key), Some(Value::String(_)));
+    if has_text && raw.trim().is_empty() {
+        raw.clear();
+        return;
+    }
+
+    let text = unescape(raw.as_str()).unwrap_or_default().into_owned();
+    raw.clear();
+    if text.is_empty() {
+        return;
+    }
     let is_whitespace_only_run = text.trim().is_empty();
 
-    if is_after_comment {
-        match elem
-            .get_mut("#text-tail")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-        {
-            Some(prev) => {
-                if !is_whitespace_only_run {
-                    if prev.trim().is_empty() {
-                        // The accumulated #text-tail so far is itself pure formatting
-                        // (e.g. indentation the writer inserted between two tags with
-                        // nothing meaningful between them yet) - see the #text branch
-                        // below for the full explanation of why this must replace
-                        // rather than concatenate, and why the *leading* whitespace of
-                        // the replacement itself is trimmed too.
-                        elem.insert(
-                            "#text-tail".to_string(),
-                            Value::String(text.trim_start().to_string()),
-                        );
-                    } else if let Some(b) = val_raw.as_str() {
-                        elem.insert(
-                            "#text-tail".to_string(),
-                            Value::String(format!("{}{}", prev, b)),
-                        );
-                    }
+    match elem.get_mut(key) {
+        Some(Value::String(prev)) => {
+            // This branch also covers what used to be a separate `elem.contains_key
+            // ("#cdata")` case that unconditionally overwrote #text - e.g. for
+            // `<a>real<![CDATA[x]]>tail</a>`, "real" is flushed into #text as the first
+            // run *before* the CDATA event runs (#cdata isn't set yet), so the old
+            // dedicated branch's blind `insert` on the trailing "tail" flush silently
+            // discarded "real" the moment #cdata became present. Falling through to this
+            // append-or-replace logic uniformly (whether or not #cdata is set) handles
+            // both orderings correctly: cdata-then-trailing-whitespace still lands in
+            // #text exactly as before (no prior #text to preserve), and
+            // text-then-cdata-then-trailing-whitespace now keeps the earlier real text.
+            //
+            // Was `val_parsed.as_str()`: parse_text_value() trims before type-inferring, so
+            // e.g. a second text run "( " (real trailing space) got silently trimmed to "("
+            // when appended onto an earlier whitespace-only run (typical: leading indent
+            // before a child tag, flushed into #text first). Worse, a purely-numeric/bool
+            // second run (e.g. "42") would infer to a non-string Value, `.as_str()` would
+            // return None, and the whole append would silently no-op, losing it entirely.
+            // The untrimmed `text` is appended as-is, guarded by
+            // `is_whitespace_only_run` (see above).
+            //
+            // Additionally: if `prev` (the #text accumulated so far) is itself pure
+            // whitespace - typically indentation flushed before a child element, which on
+            // its own would have been stripped later as insignificant (strip_whitespace.rs)
+            // - concatenating real content onto it permanently bakes that whitespace into
+            // the merged value, where the later stripping pass can no longer tell it apart
+            // from real content and never removes it. On the next disassemble/reassemble
+            // cycle the writer regenerates its own equivalent separator whitespace *in
+            // addition* to this now-permanent prefix, so the file gains one more copy of
+            // it every round trip. Replacing rather than concatenating in this case
+            // (identically for #text-tail) drops the meaningless prefix instead of
+            // durably fusing it to the data.
+            //
+            // The replacement itself is also trimmed on its *leading* edge only (trailing
+            // whitespace is real - see the "( " test above): this run reached the parser
+            // as a single, unbroken slice of character data with no intervening tag (that's
+            // exactly why it's here, in the "already have a #text" branch, rather than
+            // being its own separate flush), so any leading whitespace on it is exactly as
+            // indistinguishable from formatting as `prev` was. Left untrimmed, the writer's
+            // own unconditional separator after the child-elements block collides with this
+            // run's baked-in leading whitespace and doubles up on every subsequent
+            // disassemble/reassemble cycle - the same unbounded-growth failure mode as
+            // `prev` itself, just one write/read cycle later.
+            //
+            // Both edits happen in place on the stored string, keeping the key's
+            // position (as re-inserting an existing key did).
+            if !is_whitespace_only_run {
+                if prev.trim().is_empty() {
+                    prev.clear();
+                    prev.push_str(text.trim_start());
+                } else {
+                    prev.push_str(&text);
                 }
             }
-            None => {
-                elem.insert("#text-tail".to_string(), val_raw);
-            }
         }
-    } else if let Some(prev) = elem
-        .get("#text")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    {
-        // This branch also covers what used to be a separate `elem.contains_key
-        // ("#cdata")` case that unconditionally overwrote #text - e.g. for
-        // `<a>real<![CDATA[x]]>tail</a>`, "real" is flushed into #text as the first
-        // run *before* the CDATA event runs (#cdata isn't set yet), so the old
-        // dedicated branch's blind `insert` on the trailing "tail" flush silently
-        // discarded "real" the moment #cdata became present. Falling through to this
-        // append-or-replace logic uniformly (whether or not #cdata is set) handles
-        // both orderings correctly: cdata-then-trailing-whitespace still lands in
-        // #text exactly as before (no prior #text to preserve), and
-        // text-then-cdata-then-trailing-whitespace now keeps the earlier real text.
-        //
-        // Was `val_parsed.as_str()`: parse_text_value() trims before type-inferring, so
-        // e.g. a second text run "( " (real trailing space) got silently trimmed to "("
-        // when appended onto an earlier whitespace-only run (typical: leading indent
-        // before a child tag, flushed into #text first). Worse, a purely-numeric/bool
-        // second run (e.g. "42") would infer to a non-string Value, `.as_str()` would
-        // return None, and the whole append would silently no-op, losing it entirely.
-        // val_raw is always Some(the untrimmed text) - matches the #text-tail branch
-        // above and the "first text run" branch below. Guarded by
-        // `is_whitespace_only_run` for the same reason as #text-tail above.
-        //
-        // Additionally: if `prev` (the #text accumulated so far) is itself pure
-        // whitespace - typically indentation flushed before a child element, which on
-        // its own would have been stripped later as insignificant (strip_whitespace.rs)
-        // - concatenating real content onto it permanently bakes that whitespace into
-        // the merged value, where the later stripping pass can no longer tell it apart
-        // from real content and never removes it. On the next disassemble/reassemble
-        // cycle the writer regenerates its own equivalent separator whitespace *in
-        // addition* to this now-permanent prefix, so the file gains one more copy of
-        // it every round trip. Replacing rather than concatenating in this case
-        // (identical reasoning for #text-tail above) drops the meaningless prefix
-        // instead of durably fusing it to the data.
-        //
-        // The replacement itself is also trimmed on its *leading* edge only (trailing
-        // whitespace is real - see the "( " test above): this run reached the parser
-        // as a single, unbroken slice of character data with no intervening tag (that's
-        // exactly why it's here, in the "already have a #text" branch, rather than
-        // being its own separate flush), so any leading whitespace on it is exactly as
-        // indistinguishable from formatting as `prev` was. Left untrimmed, the writer's
-        // own unconditional separator after the child-elements block collides with this
-        // run's baked-in leading whitespace and doubles up on every subsequent
-        // disassemble/reassemble cycle - the same unbounded-growth failure mode as
-        // `prev` itself, just one write/read cycle later.
-        if !is_whitespace_only_run {
-            if prev.trim().is_empty() {
-                elem.insert(
-                    "#text".to_string(),
-                    Value::String(text.trim_start().to_string()),
-                );
-            } else if let Some(b) = val_raw.as_str() {
-                elem.insert("#text".to_string(), Value::String(format!("{}{}", prev, b)));
-            }
+        _ => {
+            elem.insert(key.to_string(), Value::String(text));
         }
-    } else {
-        elem.insert("#text".to_string(), val_raw);
     }
 }
 
@@ -600,5 +590,139 @@ mod tests {
             text, r#"IF(a, "x", "y")"#,
             "space after comma must be preserved"
         );
+    }
+
+    // ---- flush_text_buffer vs the original implementation ---------------------
+
+    /// The original allocation-heavy `flush_text_buffer`, kept as the oracle for
+    /// the in-place version above.
+    fn reference_flush_text_buffer(
+        raw: &mut String,
+        stack: &mut [(String, Map<String, Value>)],
+        is_after_comment: bool,
+    ) {
+        if raw.is_empty() {
+            return;
+        }
+        let text = unescape(raw.as_str()).unwrap_or_default().into_owned();
+        raw.clear();
+        if text.is_empty() {
+            return;
+        }
+        let val_raw = Value::String(text.clone());
+        let Some((_, elem)) = stack.last_mut() else {
+            return;
+        };
+        let is_whitespace_only_run = text.trim().is_empty();
+        if is_after_comment {
+            match elem
+                .get_mut("#text-tail")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            {
+                Some(prev) => {
+                    if !is_whitespace_only_run {
+                        if prev.trim().is_empty() {
+                            elem.insert(
+                                "#text-tail".to_string(),
+                                Value::String(text.trim_start().to_string()),
+                            );
+                        } else if let Some(b) = val_raw.as_str() {
+                            elem.insert(
+                                "#text-tail".to_string(),
+                                Value::String(format!("{}{}", prev, b)),
+                            );
+                        }
+                    }
+                }
+                None => {
+                    elem.insert("#text-tail".to_string(), val_raw);
+                }
+            }
+        } else if let Some(prev) = elem
+            .get("#text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
+            if !is_whitespace_only_run {
+                if prev.trim().is_empty() {
+                    elem.insert(
+                        "#text".to_string(),
+                        Value::String(text.trim_start().to_string()),
+                    );
+                } else if let Some(b) = val_raw.as_str() {
+                    elem.insert("#text".to_string(), Value::String(format!("{}{}", prev, b)));
+                }
+            }
+        } else {
+            elem.insert("#text".to_string(), val_raw);
+        }
+    }
+
+    /// Serialize a map with its key order, so the comparison covers order too.
+    fn ordered(map: &Map<String, Value>) -> Vec<(String, Value)> {
+        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    #[test]
+    fn flush_text_buffer_matches_reference_on_run_sequences() {
+        let runs: &[&str] = &[
+            "",
+            "   ",
+            "\n        ",
+            "\u{a0}",
+            "abc",
+            "  abc",
+            "abc  ",
+            "( ",
+            "42",
+            "&amp;",
+            " &amp; ",
+            "&#32;",
+            "&bogus;",
+            "a&lt;b",
+        ];
+        let starts: Vec<Map<String, Value>> = vec![
+            Map::new(),
+            serde_json::from_str(r##"{"@a":"1"}"##).unwrap(),
+            serde_json::from_str(r##"{"#text":"  ","child":"x"}"##).unwrap(),
+            serde_json::from_str(r##"{"#text":"keep","#cdata":"c"}"##).unwrap(),
+            serde_json::from_str(r##"{"#text-tail":"\n  ","#comment":"c"}"##).unwrap(),
+            serde_json::from_str(r##"{"#text-tail":"tail"}"##).unwrap(),
+            serde_json::from_str(r##"{"#text":5,"#text-tail":true}"##).unwrap(),
+        ];
+        for start in &starts {
+            for first in runs {
+                for second in runs {
+                    for (after_first, after_second) in
+                        [(false, false), (true, true), (false, true), (true, false)]
+                    {
+                        let mut new_stack = vec![("e".to_string(), start.clone())];
+                        let mut ref_stack = vec![("e".to_string(), start.clone())];
+                        for (run, after) in [(first, after_first), (second, after_second)] {
+                            let mut new_raw = run.to_string();
+                            let mut ref_raw = run.to_string();
+                            flush_text_buffer(&mut new_raw, &mut new_stack, after);
+                            reference_flush_text_buffer(&mut ref_raw, &mut ref_stack, after);
+                            assert_eq!(new_raw, ref_raw, "raw buffer must be cleared alike");
+                        }
+                        assert_eq!(
+                            ordered(&new_stack[0].1),
+                            ordered(&ref_stack[0].1),
+                            "start={start:?} runs=({first:?},{after_first}) then ({second:?},{after_second})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flush_text_buffer_empty_stack_clears_raw() {
+        let mut stack: Vec<(String, Map<String, Value>)> = Vec::new();
+        let mut raw = "text".to_string();
+        flush_text_buffer(&mut raw, &mut stack, false);
+        assert!(raw.is_empty());
+        assert!(stack.is_empty());
     }
 }
