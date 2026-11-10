@@ -609,23 +609,25 @@ impl ReassembleXmlFileHandler {
         for parsed in parse_shards_in_order(xml_files, keep_tree).await? {
             // parse_to_xml_object always yields a JSON object on success; treat any other
             // shape (including parse failure) as a skip without branching explicitly.
-            let Some(parsed) = parsed else {
+            let Some(Value::Object(mut obj)) = parsed else {
                 continue;
             };
-            let obj_owned = parsed.as_object().cloned().unwrap_or_default();
-            let obj = &obj_owned;
             let Some(root_key) = obj.keys().find(|k| *k != "?xml").cloned() else {
                 continue;
             };
+            // Each file's content is moved out of its parsed tree: this used to clone
+            // the whole document, then its root, then (with extract_inner) the inner
+            // segment -- up to three copies of every segment file.
             let root_val = obj
-                .get(&root_key)
-                .cloned()
-                .unwrap_or(Value::Object(serde_json::Map::new()));
+                .get_mut(&root_key)
+                .map(std::mem::take)
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
             let mut content = if extract_inner {
-                root_val
-                    .get(segment_name)
-                    .cloned()
-                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+                match root_val {
+                    Value::Object(mut root) => root.get_mut(segment_name).map(std::mem::take),
+                    _ => None,
+                }
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
             } else {
                 root_val
             };
@@ -635,7 +637,7 @@ impl ReassembleXmlFileHandler {
             }
             root_contents.push(content);
             if first_xml.is_none() {
-                first_xml = Some((root_key, obj.get("?xml").cloned()));
+                first_xml = Some((root_key, obj.get_mut("?xml").map(std::mem::take)));
             }
         }
         if root_contents.is_empty() {
@@ -1042,6 +1044,35 @@ mod tests {
             decl.get("@encoding").and_then(|v| v.as_str()),
             Some("UTF-8")
         );
+    }
+
+    #[tokio::test]
+    async fn collect_segment_as_array_extract_inner_moves_segment_content() {
+        // Two files: one with the segment (its xmlns stripped), one whose root is
+        // plain text (no segment to extract -> an empty object).
+        let h = ReassembleXmlFileHandler::new();
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            tmp.path().join("a.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Root><seg xmlns="ns"><x>1</x></seg><other>2</other></Root>"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(tmp.path().join("b.xml"), r#"<Root>text</Root>"#)
+            .await
+            .unwrap();
+        let out = h
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .await
+            .unwrap()
+            .unwrap();
+        let items = out["Root"]["seg"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["x"]["#text"], "1");
+        assert!(items[0].get("@xmlns").is_none(), "xmlns must be stripped");
+        assert!(items[0].get("other").is_none(), "only the segment is taken");
+        assert_eq!(items[1], json!({}));
+        assert_eq!(out["?xml"]["@version"], "1.0");
     }
 
     #[tokio::test]
