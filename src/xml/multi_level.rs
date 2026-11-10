@@ -141,7 +141,7 @@ pub async fn ensure_segment_files_structure(
         entries.push(entry);
     }
     // Sort for deterministic cross-platform ordering
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_cached_key(|e| e.file_name());
 
     for entry in entries {
         let path = entry.path();
