@@ -648,4 +648,24 @@ mod tests {
         assert_eq!(entry.to_value(), json!(["a", 1]));
         assert_eq!(Entry::One(Item::Val(json!("x"))).to_value(), json!("x"));
     }
+
+    #[test]
+    fn list_value_items_are_written_like_tree_array_items() {
+        // The merge only puts primitives in a list as values today, but a value
+        // item must be written exactly as the tree path writes an array item: at
+        // the child's own indent level.
+        let entry = Entry::Many(vec![
+            Item::Val(json!({ "p": { "q": "1" } })),
+            Item::Val(json!("x")),
+        ]);
+        let merged = MergedDocument {
+            declaration: Value::Null,
+            root_key: "Root".to_string(),
+            content: IndexMap::from([("item".to_string(), entry.clone())]),
+        };
+        let written = String::from_utf8(merged.write(&[], Vec::new()).unwrap()).unwrap();
+        let tree = build_xml_string(&json!({ "Root": { "item": entry.to_value() } }));
+        assert_eq!(written, tree);
+        assert!(written.contains("\n        <p>"), "{written}");
+    }
 }

@@ -224,8 +224,9 @@ pub(super) fn write_object<'a, W: std::io::Write>(
                     | Field::Entry(Entry::One(Item::Val(v @ Value::Object(_))), _) => {
                         write_element(writer, child_name, v, indent_level + 1)?;
                     }
-                    Field::Entry(Entry::One(item @ Item::Frag(_)), fragments) => {
-                        write_item(writer, child_name, item, fragments, indent_level + 1)?;
+                    Field::Entry(Entry::One(Item::Frag(frag)), fragments) => {
+                        // Already serialized, at this child's level.
+                        writer.get_mut().write_all(fragments.bytes(frag))?;
                     }
                     Field::Value(v) | Field::Entry(Entry::One(Item::Val(v)), _) => {
                         writer.write_event(Event::Start(BytesStart::new(*child_name)))?;
