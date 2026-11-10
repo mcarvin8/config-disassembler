@@ -7,9 +7,10 @@ use serde_json::{Map, Value};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+use super::fragments::{Entry, Fragments, Item};
 use crate::xml::types::XmlElement;
 
-fn value_to_string(v: &Value) -> String {
+pub(super) fn value_to_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
@@ -19,205 +20,67 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-fn write_element<W: std::io::Write>(
+/// Keys of an element's map that are not child elements: its own text, CDATA,
+/// comment and formatting markers. (Keys starting with `@` are attributes.)
+pub(super) const CONTENT_KEYS: [&str; 6] = [
+    "#text",
+    "#raw-text",
+    "#comment",
+    "#text-tail",
+    "#cdata",
+    "#compact",
+];
+
+/// Whether `key` names a child element rather than an attribute or content key.
+pub(super) fn is_child_key(key: &str) -> bool {
+    !key.starts_with('@') && !CONTENT_KEYS.contains(&key)
+}
+
+/// One field of an element being written: a plain value, or a merged entry from
+/// fragment reassembly (see `fragments.rs`), whose items may be pre-serialized.
+#[derive(Clone, Copy)]
+pub(super) enum Field<'a> {
+    Value(&'a Value),
+    Entry(&'a Entry, &'a Fragments<'a>),
+}
+
+impl<'a> Field<'a> {
+    /// The plain value this field holds, when it holds exactly one.
+    fn as_value(self) -> Option<&'a Value> {
+        match self {
+            Field::Value(v) => Some(v),
+            Field::Entry(Entry::One(Item::Val(v)), _) => Some(v),
+            Field::Entry(..) => None,
+        }
+    }
+
+    /// Text of an attribute or content field. Those keys are never fragmented, so
+    /// an entry's items are all plain values; a multi-item entry is written as the
+    /// array value the tree merge would have built.
+    fn to_text(self) -> String {
+        match self {
+            Field::Value(v) => value_to_string(v),
+            Field::Entry(entry, _) => match self.as_value() {
+                Some(v) => value_to_string(v),
+                None => value_to_string(&entry.to_value()),
+            },
+        }
+    }
+}
+
+pub(super) fn write_element<W: std::io::Write>(
     writer: &mut Writer<W>,
     name: &str,
     content: &Value,
     indent_level: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let indent = "    ".repeat(indent_level);
-    let child_indent = "    ".repeat(indent_level + 1);
-
     match content {
-        Value::Object(obj) => {
-            let (attrs, children): (Vec<_>, Vec<_>) =
-                obj.iter().partition(|(k, _)| k.starts_with('@'));
-
-            let attr_name = |k: &str| k.trim_start_matches('@').to_string();
-
-            let mut text_content = String::new();
-            let mut raw_text_content = String::new();
-            let mut comment_content = String::new();
-            let mut text_tail_content = String::new();
-            let mut cdata_content = String::new();
-            let mut is_compact = false;
-            let child_elements: Vec<(&String, &Value)> = children
-                .iter()
-                .filter_map(|(k, v)| {
-                    if *k == "#text" {
-                        text_content = value_to_string(v);
-                        None
-                    } else if *k == "#raw-text" {
-                        raw_text_content = value_to_string(v);
-                        None
-                    } else if *k == "#comment" {
-                        comment_content = value_to_string(v);
-                        None
-                    } else if *k == "#text-tail" {
-                        text_tail_content = value_to_string(v);
-                        None
-                    } else if *k == "#cdata" {
-                        cdata_content = value_to_string(v);
-                        None
-                    } else if *k == "#compact" {
-                        is_compact = v.as_bool().unwrap_or(false);
-                        None
-                    } else {
-                        Some((*k, *v))
-                    }
-                })
-                .collect();
-
-            let attrs: Vec<(String, String)> = attrs
-                .iter()
-                .map(|(k, v)| (attr_name(k), value_to_string(v)))
-                .collect();
-
-            let mut start = BytesStart::new(name);
-            for (k, v) in &attrs {
-                start.push_attribute((k.as_str(), v.as_str()));
-            }
-            writer.write_event(Event::Start(start))?;
-
-            let has_mixed_content = !cdata_content.is_empty()
-                || !text_content.is_empty()
-                || !raw_text_content.is_empty()
-                || !comment_content.is_empty()
-                || !text_tail_content.is_empty();
-
-            if is_compact
-                && child_elements.len() == 1
-                && matches!(child_elements[0].1, Value::Object(_))
-            {
-                // Single-element wrapper with zero surrounding whitespace in the source
-                // (e.g. `<connector><targetReference>X</targetReference></connector>`) --
-                // render the wrapper and its one child on the same line, with no
-                // indent/newline in between, matching the original formatting.
-                let (child_name, child_value) = child_elements[0];
-                write_element(writer, child_name, child_value, indent_level)?;
-            } else {
-                if !child_elements.is_empty() {
-                    writer.write_event(Event::Text(BytesText::new(
-                        format!("\n{}", child_indent).as_str(),
-                    )))?;
-
-                    let child_count = child_elements.len();
-                    for (idx, (child_name, child_value)) in child_elements.iter().enumerate() {
-                        let is_last = idx == child_count - 1;
-                        match child_value {
-                            Value::Array(arr) => {
-                                let arr_len = arr.len();
-                                for (i, item) in arr.iter().enumerate() {
-                                    let arr_last = i == arr_len - 1;
-                                    write_element(writer, child_name, item, indent_level + 1)?;
-                                    if !arr_last {
-                                        writer.write_event(Event::Text(BytesText::new(
-                                            format!("\n{}", child_indent).as_str(),
-                                        )))?;
-                                    }
-                                }
-                                if !is_last {
-                                    writer.write_event(Event::Text(BytesText::new(
-                                        format!("\n{}", child_indent).as_str(),
-                                    )))?;
-                                }
-                            }
-                            Value::Object(_) => {
-                                write_element(writer, child_name, child_value, indent_level + 1)?;
-                                if !is_last {
-                                    writer.write_event(Event::Text(BytesText::new(
-                                        format!("\n{}", child_indent).as_str(),
-                                    )))?;
-                                }
-                            }
-                            _ => {
-                                writer.write_event(Event::Start(BytesStart::new(
-                                    child_name.as_str(),
-                                )))?;
-                                writer.write_event(Event::Text(BytesText::new(
-                                    value_to_string(child_value).as_str(),
-                                )))?;
-                                writer
-                                    .write_event(Event::End(BytesEnd::new(child_name.as_str())))?;
-                                if !is_last {
-                                    writer.write_event(Event::Text(BytesText::new(
-                                        format!("\n{}", child_indent).as_str(),
-                                    )))?;
-                                }
-                            }
-                        }
-                    }
-
-                    writer.write_event(Event::Text(BytesText::new(
-                        format!("\n{}", indent).as_str(),
-                    )))?;
-                }
-
-                // A single element can carry both real child elements *and* its own
-                // direct mixed content (e.g. `<item><fullName>X</fullName><![CDATA[..]]></item>`).
-                // child_elements and the various *_content locals are mutually
-                // populated from disjoint keys (see the filter_map above), so this
-                // must run independently of the child_elements branch rather than as
-                // an `else if` - otherwise a real child element sibling silently
-                // discards any #text/#cdata/#comment/#text-tail on the same element.
-                if has_mixed_content {
-                    // Add newline+indent before content when no leading text and no
-                    // child elements already provided one (keeps CDATA/comment on
-                    // their own line without doubling up on the child_elements
-                    // branch's own trailing newline+indent above).
-                    if child_elements.is_empty()
-                        && text_content.is_empty()
-                        && raw_text_content.is_empty()
-                        && comment_content.is_empty()
-                    {
-                        writer.write_event(Event::Text(BytesText::new(
-                            format!("\n{}", child_indent).as_str(),
-                        )))?;
-                    }
-                    // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
-                    if !text_content.is_empty() {
-                        writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
-                    }
-                    // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
-                    // literal " in YAML is not converted to &quot; but < > & are still safe.
-                    if !raw_text_content.is_empty() {
-                        writer.write_event(Event::Text(BytesText::from_escaped(
-                            partial_escape(raw_text_content.as_str()),
-                        )))?;
-                    }
-                    if !comment_content.is_empty() {
-                        // XML comment content is never subject to entity resolution on
-                        // read (the reader stores it raw - see parse_xml_cdata.rs's
-                        // Event::Comment handling), so it must never be escaped on
-                        // write either. `BytesText::new` escapes (quick-xml treats it
-                        // like text content); `from_escaped` writes the bytes verbatim.
-                        // Using `new` here made every `&` in a comment gain one more
-                        // `&amp;` layer on each successive disassemble/reassemble cycle.
-                        writer.write_event(Event::Comment(BytesText::from_escaped(
-                            comment_content.as_str(),
-                        )))?;
-                    }
-                    if !text_tail_content.is_empty() {
-                        writer
-                            .write_event(Event::Text(BytesText::new(text_tail_content.as_str())))?;
-                    }
-                    if !cdata_content.is_empty() {
-                        writer
-                            .write_event(Event::CData(BytesCData::new(cdata_content.as_str())))?;
-                    }
-                    // Add newline+indent before closing tag only for CDATA (keeps compact
-                    // for text-only), and only when child_elements didn't already add its
-                    // own trailing newline+indent above.
-                    if !cdata_content.is_empty() && child_elements.is_empty() {
-                        writer.write_event(Event::Text(BytesText::new(
-                            format!("\n{}", indent).as_str(),
-                        )))?;
-                    }
-                }
-            }
-
-            writer.write_event(Event::End(BytesEnd::new(name)))?;
-        }
+        Value::Object(obj) => write_object(
+            writer,
+            name,
+            obj.iter().map(|(k, v)| (k.as_str(), Field::Value(v))),
+            indent_level,
+        )?,
         Value::Array(arr) => {
             for item in arr {
                 write_element(writer, name, item, indent_level)?;
@@ -232,6 +95,220 @@ fn write_element<W: std::io::Write>(
         }
     }
 
+    Ok(())
+}
+
+/// Write one item of a merged child entry at `indent_level` (the child's level).
+fn write_item<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    name: &str,
+    item: &Item,
+    fragments: &Fragments<'_>,
+    indent_level: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match item {
+        // Already serialized, by `write_element(name, item, indent_level)`.
+        Item::Frag(frag) => writer.get_mut().write_all(fragments.bytes(frag))?,
+        Item::Val(v) => write_element(writer, name, v, indent_level)?,
+    }
+    Ok(())
+}
+
+/// Write an element whose content is the map `fields` (attributes, content keys
+/// and child elements, in order).
+pub(super) fn write_object<'a, W: std::io::Write>(
+    writer: &mut Writer<W>,
+    name: &str,
+    fields: impl Iterator<Item = (&'a str, Field<'a>)>,
+    indent_level: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let indent = "    ".repeat(indent_level);
+    let child_indent = "    ".repeat(indent_level + 1);
+
+    let mut attrs: Vec<(&str, String)> = Vec::new();
+    let mut text_content = String::new();
+    let mut raw_text_content = String::new();
+    let mut comment_content = String::new();
+    let mut text_tail_content = String::new();
+    let mut cdata_content = String::new();
+    let mut is_compact = false;
+    let mut child_elements: Vec<(&str, Field<'a>)> = Vec::new();
+    for (k, field) in fields {
+        if k.starts_with('@') {
+            attrs.push((k.trim_start_matches('@'), field.to_text()));
+        } else if k == "#text" {
+            text_content = field.to_text();
+        } else if k == "#raw-text" {
+            raw_text_content = field.to_text();
+        } else if k == "#comment" {
+            comment_content = field.to_text();
+        } else if k == "#text-tail" {
+            text_tail_content = field.to_text();
+        } else if k == "#cdata" {
+            cdata_content = field.to_text();
+        } else if k == "#compact" {
+            is_compact = field.as_value().and_then(Value::as_bool).unwrap_or(false);
+        } else {
+            child_elements.push((k, field));
+        }
+    }
+
+    let mut start = BytesStart::new(name);
+    for (k, v) in &attrs {
+        start.push_attribute((*k, v.as_str()));
+    }
+    writer.write_event(Event::Start(start))?;
+
+    let has_mixed_content = !cdata_content.is_empty()
+        || !text_content.is_empty()
+        || !raw_text_content.is_empty()
+        || !comment_content.is_empty()
+        || !text_tail_content.is_empty();
+
+    let compact_child = match child_elements.as_slice() {
+        [(child_name, field)] if is_compact => match field.as_value() {
+            Some(v @ Value::Object(_)) => Some((*child_name, v)),
+            // A pre-serialized child was written for the indented layout, so it
+            // can't be placed inline; fragment reassembly takes the tree path for
+            // such a root instead (see `fragments::needs_tree_path`).
+            None if matches!(field, Field::Entry(Entry::One(Item::Frag(_)), _)) => {
+                return Err("compact element with a pre-serialized child".into());
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+
+    if let Some((child_name, child_value)) = compact_child {
+        // Single-element wrapper with zero surrounding whitespace in the source
+        // (e.g. `<connector><targetReference>X</targetReference></connector>`) --
+        // render the wrapper and its one child on the same line, with no
+        // indent/newline in between, matching the original formatting.
+        write_element(writer, child_name, child_value, indent_level)?;
+    } else {
+        if !child_elements.is_empty() {
+            writer.write_event(Event::Text(BytesText::new(
+                format!("\n{}", child_indent).as_str(),
+            )))?;
+
+            let child_count = child_elements.len();
+            for (idx, (child_name, field)) in child_elements.iter().enumerate() {
+                let is_last = idx == child_count - 1;
+                match *field {
+                    Field::Value(Value::Array(arr))
+                    | Field::Entry(Entry::One(Item::Val(Value::Array(arr))), _) => {
+                        let arr_len = arr.len();
+                        for (i, item) in arr.iter().enumerate() {
+                            let arr_last = i == arr_len - 1;
+                            write_element(writer, child_name, item, indent_level + 1)?;
+                            if !arr_last {
+                                writer.write_event(Event::Text(BytesText::new(
+                                    format!("\n{}", child_indent).as_str(),
+                                )))?;
+                            }
+                        }
+                    }
+                    Field::Entry(Entry::Many(items), fragments) => {
+                        let arr_len = items.len();
+                        for (i, item) in items.iter().enumerate() {
+                            let arr_last = i == arr_len - 1;
+                            write_item(writer, child_name, item, fragments, indent_level + 1)?;
+                            if !arr_last {
+                                writer.write_event(Event::Text(BytesText::new(
+                                    format!("\n{}", child_indent).as_str(),
+                                )))?;
+                            }
+                        }
+                    }
+                    Field::Value(v @ Value::Object(_))
+                    | Field::Entry(Entry::One(Item::Val(v @ Value::Object(_))), _) => {
+                        write_element(writer, child_name, v, indent_level + 1)?;
+                    }
+                    Field::Entry(Entry::One(item @ Item::Frag(_)), fragments) => {
+                        write_item(writer, child_name, item, fragments, indent_level + 1)?;
+                    }
+                    Field::Value(v) | Field::Entry(Entry::One(Item::Val(v)), _) => {
+                        writer.write_event(Event::Start(BytesStart::new(*child_name)))?;
+                        writer.write_event(Event::Text(BytesText::new(
+                            value_to_string(v).as_str(),
+                        )))?;
+                        writer.write_event(Event::End(BytesEnd::new(*child_name)))?;
+                    }
+                }
+                if !is_last {
+                    writer.write_event(Event::Text(BytesText::new(
+                        format!("\n{}", child_indent).as_str(),
+                    )))?;
+                }
+            }
+
+            writer.write_event(Event::Text(BytesText::new(
+                format!("\n{}", indent).as_str(),
+            )))?;
+        }
+
+        // A single element can carry both real child elements *and* its own
+        // direct mixed content (e.g. `<item><fullName>X</fullName><![CDATA[..]]></item>`).
+        // child_elements and the various *_content locals are mutually
+        // populated from disjoint keys (see the filter_map above), so this
+        // must run independently of the child_elements branch rather than as
+        // an `else if` - otherwise a real child element sibling silently
+        // discards any #text/#cdata/#comment/#text-tail on the same element.
+        if has_mixed_content {
+            // Add newline+indent before content when no leading text and no
+            // child elements already provided one (keeps CDATA/comment on
+            // their own line without doubling up on the child_elements
+            // branch's own trailing newline+indent above).
+            if child_elements.is_empty()
+                && text_content.is_empty()
+                && raw_text_content.is_empty()
+                && comment_content.is_empty()
+            {
+                writer.write_event(Event::Text(BytesText::new(
+                    format!("\n{}", child_indent).as_str(),
+                )))?;
+            }
+            // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
+            if !text_content.is_empty() {
+                writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
+            }
+            // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
+            // literal " in YAML is not converted to &quot; but < > & are still safe.
+            if !raw_text_content.is_empty() {
+                writer.write_event(Event::Text(BytesText::from_escaped(partial_escape(
+                    raw_text_content.as_str(),
+                ))))?;
+            }
+            if !comment_content.is_empty() {
+                // XML comment content is never subject to entity resolution on
+                // read (the reader stores it raw - see parse_xml_cdata.rs's
+                // Event::Comment handling), so it must never be escaped on
+                // write either. `BytesText::new` escapes (quick-xml treats it
+                // like text content); `from_escaped` writes the bytes verbatim.
+                // Using `new` here made every `&` in a comment gain one more
+                // `&amp;` layer on each successive disassemble/reassemble cycle.
+                writer.write_event(Event::Comment(BytesText::from_escaped(
+                    comment_content.as_str(),
+                )))?;
+            }
+            if !text_tail_content.is_empty() {
+                writer.write_event(Event::Text(BytesText::new(text_tail_content.as_str())))?;
+            }
+            if !cdata_content.is_empty() {
+                writer.write_event(Event::CData(BytesCData::new(cdata_content.as_str())))?;
+            }
+            // Add newline+indent before closing tag only for CDATA (keeps compact
+            // for text-only), and only when child_elements didn't already add its
+            // own trailing newline+indent above.
+            if !cdata_content.is_empty() && child_elements.is_empty() {
+                writer.write_event(Event::Text(BytesText::new(
+                    format!("\n{}", indent).as_str(),
+                )))?;
+            }
+        }
+    }
+
+    writer.write_event(Event::End(BytesEnd::new(name)))?;
     Ok(())
 }
 

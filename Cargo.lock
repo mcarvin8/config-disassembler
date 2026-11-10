@@ -351,6 +351,7 @@ dependencies = [
  "dhat",
  "env_logger",
  "ignore",
+ "indexmap",
  "json5",
  "jsonc-parser",
  "log",

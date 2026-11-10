@@ -1,6 +1,9 @@
 //! Reassemble XML from disassembled directory.
 
-use crate::xml::builders::{merge_xml_elements_owned, reorder_root_keys_owned, write_xml_file};
+use crate::xml::builders::{
+    merge_fragments, merge_xml_elements_owned, reorder_root_keys_owned, write_xml_file,
+    ShardFragments,
+};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
@@ -42,19 +45,24 @@ async fn is_regular_file(entry: &fs::DirEntry, path: &Path) -> bool {
 /// [`SHARD_PARSE_PERMITS`]) and return the results **in input order**, so the
 /// merged output is byte-identical to parsing them one by one. `None` marks a
 /// shard that failed to read or parse, exactly as the sequential path skipped it.
-async fn parse_shards_in_order(
+///
+/// Each parsed shard is passed through `convert` inside its parse task, so
+/// per-shard work (fragment reassembly serializes the shard and drops its tree)
+/// runs concurrently too.
+async fn parse_shards_in_order<T: Send + 'static>(
     files: Vec<String>,
-) -> Result<Vec<Option<XmlElement>>, Box<dyn std::error::Error + Send + Sync>> {
+    convert: fn(XmlElement) -> T,
+) -> Result<Vec<Option<T>>, Box<dyn std::error::Error + Send + Sync>> {
     // 0 or 1 shards: nothing to overlap, skip the JoinSet setup cost.
     if files.len() <= 1 {
         let mut out = Vec::with_capacity(files.len());
         for file in files {
-            out.push(parse_to_xml_object(&file).await);
+            out.push(parse_to_xml_object(&file).await.map(convert));
         }
         return Ok(out);
     }
 
-    let mut results: Vec<Option<XmlElement>> = vec![None; files.len()];
+    let mut results: Vec<Option<T>> = (0..files.len()).map(|_| None).collect();
     let mut join_set = JoinSet::new();
     for (index, file) in files.into_iter().enumerate() {
         join_set.spawn(async move {
@@ -62,7 +70,7 @@ async fn parse_shards_in_order(
                 .acquire()
                 .await
                 .expect("static semaphore is never closed");
-            (index, parse_to_xml_object(&file).await)
+            (index, parse_to_xml_object(&file).await.map(convert))
         });
     }
     while let Some(joined) = join_set.join_next().await {
@@ -71,6 +79,11 @@ async fn parse_shards_in_order(
         results[index] = parsed;
     }
     Ok(results)
+}
+
+/// The identity conversion for [`parse_shards_in_order`]: keep the parsed tree.
+fn keep_tree(element: XmlElement) -> XmlElement {
+    element
 }
 
 /// Read a `.key_order.json` file (if present) and parse it as a list of root key names.
@@ -125,12 +138,8 @@ fn is_at_base_path(dir_path: &str, base_segments: &[(String, String, bool)]) -> 
     base_segments.iter().any(|(base, _, _)| dir_path == base)
 }
 
-type ProcessDirFuture<'a> = Pin<
-    Box<
-        dyn Future<Output = Result<Vec<XmlElement>, Box<dyn std::error::Error + Send + Sync>>>
-            + Send
-            + 'a,
-    >,
+type ProcessDirFuture<'a, T> = Pin<
+    Box<dyn Future<Output = Result<Vec<T>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>,
 >;
 
 type SegmentFuture<'a> =
@@ -337,62 +346,57 @@ impl ReassembleXmlFileHandler {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let file_path = normalize_path_unix(file_path);
         log::debug!("Parsing directory to reassemble: {}", file_path);
-        let parsed_objects = self
-            .process_files_in_directory(file_path.to_string(), base_segments.to_vec())
+        // Each shard is serialized in its parse task and its parsed tree dropped
+        // (see builders/fragments.rs), so the merged document is never held in
+        // memory: only every shard's serialized bytes plus a small skeleton.
+        let mut shards = self
+            .process_files_in_directory(
+                file_path.to_string(),
+                base_segments.to_vec(),
+                ShardFragments::from_element,
+            )
             .await?;
 
-        if parsed_objects.is_empty() {
-            log::error!(
-                "No files under {} were parsed successfully. A reassembled XML file was not created.",
-                file_path
-            );
+        if shards.is_empty() {
+            log_nothing_parsed(&file_path);
             return Ok(());
         }
 
-        // merge_xml_elements only returns None when every parsed element is empty or
-        // declaration-only (no usable root). Treat that the same as "nothing parsed"
-        // rather than emitting an `<root></root>` stub.
-        // Moves the parsed shards into the merged tree (no second copy of the document).
-        let Some(mut merged) = merge_xml_elements_owned(parsed_objects) else {
-            log::error!(
-                "No usable root element found while merging files under {}. A reassembled XML file was not created.",
-                file_path
-            );
+        let Some(mut merged) = merge_fragments(&mut shards) else {
+            log_no_root(&file_path);
             return Ok(());
         };
 
-        // Resolve sidecar specs: use the caller-supplied slice when non-empty,
-        // otherwise auto-detect from .sidecars.json written by disassembly.
-        let auto_specs: Vec<crate::xml::types::SidecarSpec>;
-        let effective_specs: Option<&[crate::xml::types::SidecarSpec]> =
-            if sidecar_specs.is_some_and(|s| !s.is_empty()) {
-                sidecar_specs
-            } else {
-                let meta_path = Path::new(&file_path).join(".sidecars.json");
-                if let Ok(content) = fs::read_to_string(&meta_path).await {
-                    if let Ok(parsed) =
-                        serde_json::from_str::<Vec<crate::xml::types::SidecarSpec>>(&content)
-                    {
-                        auto_specs = parsed;
-                        Some(auto_specs.as_slice())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
+        // A compact root can't be written from serialized children; rebuild it
+        // from the parsed tree instead (rare: shards written by disassembly are
+        // indented, so their roots are never compact).
+        if merged.needs_tree_path() {
+            drop(merged);
+            drop(shards);
+            return self
+                .reassemble_plain_tree(
+                    &file_path,
+                    file_extension,
+                    post_purge,
+                    base_segments,
+                    sidecar_specs,
+                )
+                .await;
+        }
 
+        let effective_specs = resolve_sidecar_specs(&file_path, sidecar_specs).await;
         // Inject sidecar element content before key reordering so the element
         // lands at its original position rather than being appended at the end.
-        if let Some(specs) = effective_specs {
-            inject_sidecar_elements(&file_path, &mut merged, specs).await?;
+        if let Some(specs) = effective_specs.as_deref() {
+            for (element, value) in load_sidecar_elements(&file_path, specs).await {
+                merged.insert(element, value);
+            }
         }
 
         // Apply stored key order so reassembled XML matches original document order.
         let key_order_path = Path::new(&file_path).join(".key_order.json");
         if let Some(order) = read_key_order(&key_order_path).await {
-            merged = reorder_root_keys_owned(merged, &order);
+            merged.reorder(&order);
         }
 
         // Reproduce the original file's trailing newline (or lack of one) instead of
@@ -403,6 +407,63 @@ impl ReassembleXmlFileHandler {
             .unwrap_or(false);
 
         let output_path = self.get_output_path(&file_path, file_extension);
+        // Inline rather than on `spawn_blocking`; see the tree path below.
+        merged.write_file(&shards, Path::new(&output_path), trailing_newline)?;
+        drop(merged);
+        drop(shards);
+
+        if post_purge {
+            purge_disassembled(&file_path, effective_specs.as_deref()).await;
+        }
+
+        Ok(())
+    }
+
+    /// Reassemble from the parsed shards' merged tree: the path before fragment
+    /// reassembly, kept for documents [`reassemble_plain`] can't write from
+    /// fragments (a compact root).
+    async fn reassemble_plain_tree(
+        &self,
+        file_path: &str,
+        file_extension: Option<&str>,
+        post_purge: bool,
+        base_segments: &[(String, String, bool)],
+        sidecar_specs: Option<&[SidecarSpec]>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let parsed_objects = self
+            .process_files_in_directory(file_path.to_string(), base_segments.to_vec(), keep_tree)
+            .await?;
+
+        if parsed_objects.is_empty() {
+            log_nothing_parsed(file_path);
+            return Ok(());
+        }
+
+        // merge_xml_elements only returns None when every parsed element is empty or
+        // declaration-only (no usable root). Treat that the same as "nothing parsed"
+        // rather than emitting an `<root></root>` stub.
+        // Moves the parsed shards into the merged tree (no second copy of the document).
+        let Some(mut merged) = merge_xml_elements_owned(parsed_objects) else {
+            log_no_root(file_path);
+            return Ok(());
+        };
+
+        let effective_specs = resolve_sidecar_specs(file_path, sidecar_specs).await;
+        if let Some(specs) = effective_specs.as_deref() {
+            inject_sidecar_elements(file_path, &mut merged, specs).await?;
+        }
+
+        let key_order_path = Path::new(file_path).join(".key_order.json");
+        if let Some(order) = read_key_order(&key_order_path).await {
+            merged = reorder_root_keys_owned(merged, &order);
+        }
+
+        let trailing_newline_path = Path::new(file_path).join(".trailing_newline.json");
+        let trailing_newline = read_trailing_newline(&trailing_newline_path)
+            .await
+            .unwrap_or(false);
+
+        let output_path = self.get_output_path(file_path, file_extension);
 
         // Serialize straight into the output file rather than building the whole
         // document as a String first. This runs inline, on the current worker, like
@@ -414,32 +475,21 @@ impl ReassembleXmlFileHandler {
         write_xml_file(&merged, Path::new(&output_path), trailing_newline)?;
         drop(merged);
 
-        // Remove sidecar files and metadata after successful injection. They are
-        // decomposition artifacts: the content is now inside the reassembled XML.
-        // Only done when post_purge is requested.
         if post_purge {
-            if let Some(specs) = effective_specs {
-                let path = Path::new(&file_path);
-                let base = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("output");
-                for spec in specs {
-                    let sidecar = path.join(format!("{}.{}", base, spec.extension));
-                    fs::remove_file(&sidecar).await.ok();
-                }
-            }
-            fs::remove_dir_all(file_path).await.ok();
+            purge_disassembled(file_path, effective_specs.as_deref()).await;
         }
 
         Ok(())
     }
 
-    fn process_files_in_directory<'a>(
+    /// Parse every shard under `dir_path` (recursively, collecting multi-level
+    /// segments) and pass each through `convert`, in merge order.
+    fn process_files_in_directory<'a, T: Send + 'static>(
         &'a self,
         dir_path: String,
         base_segments: Vec<(String, String, bool)>,
-    ) -> ProcessDirFuture<'a> {
+        convert: fn(XmlElement) -> T,
+    ) -> ProcessDirFuture<'a, T> {
         Box::pin(async move {
             let mut parsed = Vec::new();
             let mut entries = Vec::new();
@@ -487,7 +537,7 @@ impl ReassembleXmlFileHandler {
             // sequential `.await` per file, which left one large component (e.g. a
             // permission set with thousands of shards) on a single core for its whole
             // reassemble.
-            let mut shard_results = parse_shards_in_order(shard_files).await?;
+            let mut shard_results = parse_shards_in_order(shard_files, convert).await?;
 
             // Pass 3: assemble in the original order; subdirectories recurse as before.
             for slot in slots {
@@ -516,11 +566,11 @@ impl ReassembleXmlFileHandler {
                         .collect_segment_as_array(&file_path, &segment_name, extract_inner)
                         .await?;
                     if let Some(el) = segment_element {
-                        parsed.push(el);
+                        parsed.push(convert(el));
                     }
                 } else {
                     let sub_parsed = self
-                        .process_files_in_directory(file_path, base_segments.clone())
+                        .process_files_in_directory(file_path, base_segments.clone(), convert)
                         .await?;
                     parsed.extend(sub_parsed);
                 }
@@ -556,7 +606,7 @@ impl ReassembleXmlFileHandler {
         let mut root_contents = Vec::new();
         let mut first_xml: Option<(String, Option<Value>)> = None;
         // Parsed concurrently, consumed in sorted order (see parse_shards_in_order).
-        for parsed in parse_shards_in_order(xml_files).await? {
+        for parsed in parse_shards_in_order(xml_files, keep_tree).await? {
             // parse_to_xml_object always yields a JSON object on success; treat any other
             // shape (including parse failure) as a skip without branching explicitly.
             let Some(parsed) = parsed else {
@@ -695,27 +745,96 @@ fn convert_to_format(content: &str, target_format: &str) -> String {
     }
 }
 
-/// Read sidecar files and inject their content back into the merged XML value
-/// before serialisation.
+fn log_nothing_parsed(file_path: &str) {
+    log::error!(
+        "No files under {} were parsed successfully. A reassembled XML file was not created.",
+        file_path
+    );
+}
+
+fn log_no_root(file_path: &str) {
+    log::error!(
+        "No usable root element found while merging files under {}. A reassembled XML file was not created.",
+        file_path
+    );
+}
+
+/// Resolve sidecar specs: the caller-supplied slice when non-empty, otherwise
+/// auto-detected from `.sidecars.json` written by disassembly.
+async fn resolve_sidecar_specs(
+    dir_path: &str,
+    sidecar_specs: Option<&[SidecarSpec]>,
+) -> Option<Vec<SidecarSpec>> {
+    if let Some(specs) = sidecar_specs.filter(|s| !s.is_empty()) {
+        return Some(specs.to_vec());
+    }
+    let meta_path = Path::new(dir_path).join(".sidecars.json");
+    let content = fs::read_to_string(&meta_path).await.ok()?;
+    serde_json::from_str::<Vec<SidecarSpec>>(&content).ok()
+}
+
+/// Remove the disassembled directory (and, first, its sidecar files) after a
+/// successful reassemble. They are decomposition artifacts: the content is now
+/// inside the reassembled XML.
+async fn purge_disassembled(dir_path: &str, specs: Option<&[SidecarSpec]>) {
+    if let Some(specs) = specs {
+        let path = Path::new(dir_path);
+        let base = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("output");
+        for spec in specs {
+            let sidecar = path.join(format!("{}.{}", base, spec.extension));
+            fs::remove_file(&sidecar).await.ok();
+        }
+    }
+    fs::remove_dir_all(dir_path).await.ok();
+}
+
+/// Read each spec's sidecar file and return the root elements to set, in spec
+/// order: `(element name, {"#raw-text": content})`.
 ///
 /// Each sidecar is located inside the decomposed directory itself
 /// (e.g. `MySvc/MySvc.yaml`). If a sidecar is absent (element was not in
 /// the original XML, or was never extracted), the spec is silently skipped.
 ///
-/// The injected value uses the `{"#raw-text": content}` shape that `build_xml_string`
+/// The value uses the `{"#raw-text": content}` shape that `build_xml_string`
 /// writes with `partial_escape`: mandatory XML chars (`<`, `>`, `&`) are escaped
 /// but `"` is left as-is so YAML content round-trips without `&quot;` inflation.
-async fn inject_sidecar_elements(
-    dir_path: &str,
-    merged: &mut XmlElement,
-    specs: &[SidecarSpec],
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn load_sidecar_elements(dir_path: &str, specs: &[SidecarSpec]) -> Vec<(String, Value)> {
     let path = Path::new(dir_path);
     let base = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("output");
+    let mut elements = Vec::new();
+    for spec in specs {
+        let sidecar_path = path.join(format!("{}.{}", base, spec.extension));
+        let Ok(content) = fs::read_to_string(&sidecar_path).await else {
+            continue;
+        };
+        // When the original XML embedded a different format than the sidecar
+        // extension (e.g. JSON schema extracted to a .yaml sidecar), convert
+        // the sidecar content back to the original format before injecting.
+        let final_content = match &spec.original_format {
+            Some(fmt) => convert_to_format(&content, fmt),
+            None => content,
+        };
+        elements.push((
+            spec.element.clone(),
+            serde_json::json!({ "#raw-text": final_content }),
+        ));
+    }
+    elements
+}
 
+/// Read sidecar files and inject their content back into the merged XML value
+/// before serialisation (tree path; see [`load_sidecar_elements`]).
+async fn inject_sidecar_elements(
+    dir_path: &str,
+    merged: &mut XmlElement,
+    specs: &[SidecarSpec],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root_key = merged
         .as_object()
         .and_then(|o| o.keys().find(|k| *k != "?xml").cloned());
@@ -723,25 +842,13 @@ async fn inject_sidecar_elements(
         return Ok(());
     };
 
-    if let Some(root_val) = merged.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
-        if let Some(root_obj) = root_val.as_object_mut() {
-            for spec in specs {
-                let sidecar_path = path.join(format!("{}.{}", base, spec.extension));
-                let Ok(content) = fs::read_to_string(&sidecar_path).await else {
-                    continue;
-                };
-                // When the original XML embedded a different format than the sidecar
-                // extension (e.g. JSON schema extracted to a .yaml sidecar), convert
-                // the sidecar content back to the original format before injecting.
-                let final_content = match &spec.original_format {
-                    Some(fmt) => convert_to_format(&content, fmt),
-                    None => content,
-                };
-                root_obj.insert(
-                    spec.element.clone(),
-                    serde_json::json!({ "#raw-text": final_content }),
-                );
-            }
+    if let Some(root_obj) = merged
+        .as_object_mut()
+        .and_then(|o| o.get_mut(&root_key))
+        .and_then(Value::as_object_mut)
+    {
+        for (element, value) in load_sidecar_elements(dir_path, specs).await {
+            root_obj.insert(element, value);
         }
     }
 
@@ -1014,6 +1121,80 @@ mod tests {
         assert!(!is_at_base_path("/anywhere", &segs));
     }
 
+    /// Reassemble `files` (name, content) in a fresh `Doc/` directory with both the
+    /// fragment path (`reassemble`) and the tree path, and return both outputs.
+    async fn reassemble_both_ways(files: &[(&str, &str)]) -> (String, String) {
+        let mut outputs = Vec::new();
+        for tree in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let doc = dir.path().join("Doc");
+            std::fs::create_dir(&doc).unwrap();
+            for (name, content) in files {
+                std::fs::write(doc.join(name), content).unwrap();
+            }
+            let doc = normalize_path_unix(&doc.to_string_lossy());
+            let handler = ReassembleXmlFileHandler::new();
+            if tree {
+                handler
+                    .reassemble_plain_tree(&doc, Some("xml"), false, &[], None)
+                    .await
+                    .unwrap();
+            } else {
+                handler
+                    .reassemble(&doc, Some("xml"), false, None)
+                    .await
+                    .unwrap();
+            }
+            outputs.push(std::fs::read_to_string(dir.path().join("Doc.xml")).unwrap());
+        }
+        let tree = outputs.pop().unwrap();
+        (outputs.pop().unwrap(), tree)
+    }
+
+    #[tokio::test]
+    async fn compact_root_falls_back_to_tree_path() {
+        // No whitespace anywhere: the parser marks <Root> compact (one object child),
+        // which only the tree path can write inline.
+        let shard = r#"<?xml version="1.0" encoding="UTF-8"?><Root><only><p>1</p></only></Root>"#;
+        let (fragments, tree) = reassemble_both_ways(&[("a.xml", shard)]).await;
+        assert_eq!(fragments, tree);
+        assert!(fragments.contains("<Root><only>"), "{fragments}");
+    }
+
+    #[tokio::test]
+    async fn fragment_path_matches_tree_path_with_sidecar_key_order_and_newline() {
+        let files = [
+            (
+                "a.xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Root xmlns=\"ns\">\n    <label>A</label>\n    <item>\n        <name>x</name>\n    </item>\n</Root>",
+            ),
+            (
+                "b.xml",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Root xmlns=\"ns\">\n    <item>\n        <name>y &amp; z</name>\n    </item>\n    <flag>true</flag>\n</Root>",
+            ),
+            (
+                ".key_order.json",
+                r#"["flag", "notes", "item", "label"]"#,
+            ),
+            (".trailing_newline.json", "true"),
+            (
+                ".sidecars.json",
+                r#"[{"element": "notes", "extension": "yaml"}]"#,
+            ),
+            ("Doc.yaml", "key: \"value\" & more\n"),
+        ];
+        let (fragments, tree) = reassemble_both_ways(&files).await;
+        assert_eq!(fragments, tree);
+        assert!(fragments.ends_with("</Root>\n"), "{fragments}");
+        let (flag, notes, item, label) = (
+            fragments.find("<flag>"),
+            fragments.find("<notes>"),
+            fragments.find("<item>"),
+            fragments.find("<label>"),
+        );
+        assert!(flag < notes && notes < item && item < label, "{fragments}");
+    }
+
     #[tokio::test]
     async fn parse_shards_in_order_keeps_input_order_and_marks_failures() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1029,7 +1210,7 @@ mod tests {
             files.push(path.to_string_lossy().to_string());
         }
 
-        let results = parse_shards_in_order(files).await.unwrap();
+        let results = parse_shards_in_order(files, keep_tree).await.unwrap();
 
         assert_eq!(results.len(), 100);
         for (i, result) in results.iter().enumerate() {
