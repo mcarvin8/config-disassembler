@@ -1,6 +1,6 @@
 //! Reassemble XML from disassembled directory.
 
-use crate::xml::builders::{build_xml_string, merge_xml_elements_owned, reorder_root_keys_owned};
+use crate::xml::builders::{merge_xml_elements_owned, reorder_root_keys_owned, write_xml_file};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
@@ -395,21 +395,24 @@ impl ReassembleXmlFileHandler {
             merged = reorder_root_keys_owned(merged, &order);
         }
 
-        let mut final_xml = build_xml_string(&merged);
-
         // Reproduce the original file's trailing newline (or lack of one) instead of
         // always trimming it away -- see `.trailing_newline.json` in build_disassembled_files.rs.
         let trailing_newline_path = Path::new(&file_path).join(".trailing_newline.json");
-        if read_trailing_newline(&trailing_newline_path)
+        let trailing_newline = read_trailing_newline(&trailing_newline_path)
             .await
-            .unwrap_or(false)
-        {
-            final_xml.push('\n');
-        }
+            .unwrap_or(false);
 
         let output_path = self.get_output_path(&file_path, file_extension);
 
-        fs::write(&output_path, &final_xml).await?;
+        // Serialize straight into the output file rather than building the whole
+        // document as a String first. This runs inline, on the current worker, like
+        // the String-building serializer it replaces. It deliberately does not use
+        // `spawn_blocking`: with many small documents reassembled concurrently, the
+        // extra blocking-pool threads (each with its own allocator arena) cost more
+        // memory than the output buffer saves -- measured as a consistent ~10% max-RSS
+        // regression on sf-decomposer's `manyfiles` workload.
+        write_xml_file(&merged, Path::new(&output_path), trailing_newline)?;
+        drop(merged);
 
         // Remove sidecar files and metadata after successful injection. They are
         // decomposition artifacts: the content is now inside the reassembled XML.

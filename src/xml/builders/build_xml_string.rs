@@ -4,6 +4,8 @@ use quick_xml::escape::partial_escape;
 use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 use serde_json::{Map, Value};
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 use crate::xml::types::XmlElement;
 
@@ -233,11 +235,32 @@ fn write_element<W: std::io::Write>(
     Ok(())
 }
 
-fn build_xml_from_object(
-    element: &Map<String, Value>,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+/// Whether `write_element` writes anything for `value`. Only an array whose items
+/// are all (recursively) empty arrays writes nothing; every other value writes at
+/// least its own tags.
+fn writes_output(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(writes_output),
+        _ => true,
+    }
+}
+
+/// Serialize `element` into `out` and return `out`. A non-object `element`
+/// writes nothing.
+///
+/// The output never ends with whitespace, so it needs no trimming: it ends with
+/// the `>` of the root's last tag, or -- when the root writes nothing -- with the
+/// declaration, whose `\n` separator is then left out. (It used to be written and
+/// trimmed off the finished `String`, which needs the whole output in memory.)
+fn write_xml<W: Write>(
+    element: &XmlElement,
+    out: W,
+) -> Result<W, Box<dyn std::error::Error + Send + Sync>> {
     // Use Writer::new (no indent) so leaf elements stay compact and match fixture format
-    let mut writer = Writer::new(Vec::new());
+    let mut writer = Writer::new(out);
+    let Value::Object(element) = element else {
+        return Ok(writer.into_inner());
+    };
 
     // The root is BORROWED for serialization. It used to be `.cloned()` out of
     // `element` first -- a deep copy of the whole document, live alongside the
@@ -262,6 +285,7 @@ fn build_xml_from_object(
         (None, root_key, root_value)
     };
 
+    let root_writes_output = writes_output(root_value);
     if let Some(obj) = declaration.and_then(|d| d.as_object()) {
         let version = obj
             .get("@version")
@@ -270,25 +294,51 @@ fn build_xml_from_object(
         let encoding = obj.get("@encoding").and_then(|v| v.as_str());
         let standalone = obj.get("@standalone").and_then(|v| v.as_str());
         writer.write_event(Event::Decl(BytesDecl::new(version, encoding, standalone)))?;
-        writer.write_event(Event::Text(BytesText::new("\n")))?;
+        if root_writes_output {
+            writer.write_event(Event::Text(BytesText::new("\n")))?;
+        }
     }
 
-    write_element(&mut writer, &root_key, root_value, 0)?;
+    if root_writes_output {
+        write_element(&mut writer, &root_key, root_value, 0)?;
+    }
+    Ok(writer.into_inner())
+}
 
-    // Trim trailing whitespace in place rather than copying the whole output
-    // into a new String (`trim_end().to_string()`).
-    let mut result = String::from_utf8(writer.into_inner())?;
-    let trimmed_len = result.trim_end().len();
-    result.truncate(trimmed_len);
-    Ok(result)
+/// Serialize `element` straight to a file at `path` (created or truncated),
+/// followed by a `\n` when `trailing_newline` is set.
+///
+/// Produces the same bytes as writing `build_xml_string(element)` (plus the
+/// newline), but never holds the serialized document in memory: reassemble used
+/// to keep the whole output twice over (the writer's buffer and the `String`)
+/// alongside the merged tree at its heap peak.
+pub(crate) fn write_xml_file(
+    element: &XmlElement,
+    path: &Path,
+    trailing_newline: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::create(path)?;
+    let mut out = write_xml(element, BufWriter::new(file))?;
+    if trailing_newline {
+        out.write_all(b"\n")?;
+    }
+    // BufWriter's drop flushes but swallows the error; flush explicitly to surface it.
+    out.flush()?;
+    Ok(())
 }
 
 /// Build XML string from XmlElement.
 pub fn build_xml_string(element: &XmlElement) -> String {
-    match element {
-        Value::Object(obj) => build_xml_from_object(obj).unwrap_or_default(),
-        _ => String::new(),
-    }
+    let out = write_xml(element, Vec::new())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    debug_assert_eq!(
+        out.trim_end().len(),
+        out.len(),
+        "serialized XML must not end with whitespace"
+    );
+    out
 }
 
 #[cfg(test)]
@@ -571,5 +621,113 @@ mod tests {
         let out = build_xml_string(&el);
         assert!(out.contains("child"));
         assert!(out.contains("v"));
+    }
+
+    // ---- write_xml_file -------------------------------------------------------
+
+    fn sample_doc() -> XmlElement {
+        json!({
+            "?xml": { "@version": "1.0", "@encoding": "UTF-8" },
+            "Profile": {
+                "@xmlns": "http://soap.sforce.com/2006/04/metadata",
+                "custom": "false",
+                "fieldPermissions": [
+                    { "editable": "true", "field": "Account.Name" },
+                    { "editable": "false", "field": "Account.Phone" }
+                ],
+                "description": { "#cdata": "a < b" }
+            }
+        })
+    }
+
+    #[test]
+    fn write_xml_file_matches_build_xml_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = sample_doc();
+        for trailing_newline in [false, true] {
+            let path = dir.path().join(format!("out-{trailing_newline}.xml"));
+            write_xml_file(&doc, &path, trailing_newline).unwrap();
+            let mut expected = build_xml_string(&doc);
+            if trailing_newline {
+                expected.push('\n');
+            }
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn write_xml_file_truncates_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.xml");
+        std::fs::write(&path, "x".repeat(100_000)).unwrap();
+        let doc = json!({ "root": { "a": "1" } });
+        write_xml_file(&doc, &path, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            build_xml_string(&doc)
+        );
+    }
+
+    #[test]
+    fn write_xml_file_non_object_writes_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.xml");
+        write_xml_file(&json!("scalar"), &path, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn write_xml_file_errors_when_directory_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("out.xml");
+        assert!(write_xml_file(&sample_doc(), &path, false).is_err());
+    }
+
+    #[test]
+    fn build_xml_string_trims_newline_after_declaration_only_document() {
+        // An empty-array root writes nothing after the declaration's trailing "\n";
+        // that "\n" is the one case where trimming actually removes bytes.
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [] });
+        let out = build_xml_string(&doc);
+        assert_eq!(out, r#"<?xml version="1.0"?>"#);
+    }
+
+    #[test]
+    fn writes_output_only_false_for_arrays_of_empty_arrays() {
+        assert!(!writes_output(&json!([])));
+        assert!(!writes_output(&json!([[], [[]]])));
+        assert!(writes_output(&json!([[], ["x"]])));
+        assert!(writes_output(&json!([{}])));
+        assert!(writes_output(&json!({})));
+        assert!(writes_output(&json!("")));
+        assert!(writes_output(&json!(null)));
+    }
+
+    #[test]
+    fn declaration_newline_kept_when_root_writes_output() {
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [[], { "a": "1" }] });
+        assert_eq!(
+            build_xml_string(&doc),
+            "<?xml version=\"1.0\"?>\n<root>\n    <a>1</a>\n</root>"
+        );
+    }
+
+    #[test]
+    fn nested_empty_array_root_writes_declaration_only() {
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [[], [[]]] });
+        assert_eq!(build_xml_string(&doc), r#"<?xml version="1.0"?>"#);
+        assert_eq!(build_xml_string(&json!({ "root": [] })), "");
+    }
+
+    #[test]
+    fn write_xml_file_matches_build_xml_string_for_empty_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.xml");
+        let doc = json!({ "?xml": { "@version": "1.0" }, "root": [] });
+        write_xml_file(&doc, &path, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{}\n", build_xml_string(&doc))
+        );
     }
 }
