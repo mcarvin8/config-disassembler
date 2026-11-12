@@ -3,6 +3,7 @@
 pub mod builders;
 pub mod cli;
 pub mod constants;
+pub(crate) mod element_order;
 pub mod handlers;
 pub mod multi_level;
 pub mod parsers;

@@ -4,6 +4,7 @@ use crate::xml::builders::{
     merge_fragments, merge_xml_elements_owned, reorder_root_keys_owned, write_xml_file,
     ShardFragments,
 };
+use crate::xml::element_order::{entry_sort_key, ElementOrder};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
@@ -14,6 +15,7 @@ use std::ffi::OsString;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -349,11 +351,15 @@ impl ReassembleXmlFileHandler {
         // Each shard is serialized in its parse task and its parsed tree dropped
         // (see builders/fragments.rs), so the merged document is never held in
         // memory: only every shard's serialized bytes plus a small skeleton.
+        // Restore the recorded order of repeated siblings (see element_order.rs);
+        // absent for directories written before it existed, which keep filename order.
+        let element_order = ElementOrder::load(&file_path).await.map(Arc::new);
         let mut shards = self
             .process_files_in_directory(
                 file_path.to_string(),
                 base_segments.to_vec(),
                 ShardFragments::from_element,
+                element_order,
             )
             .await?;
 
@@ -430,8 +436,14 @@ impl ReassembleXmlFileHandler {
         base_segments: &[(String, String, bool)],
         sidecar_specs: Option<&[SidecarSpec]>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let element_order = ElementOrder::load(file_path).await.map(Arc::new);
         let parsed_objects = self
-            .process_files_in_directory(file_path.to_string(), base_segments.to_vec(), keep_tree)
+            .process_files_in_directory(
+                file_path.to_string(),
+                base_segments.to_vec(),
+                keep_tree,
+                element_order,
+            )
             .await?;
 
         if parsed_objects.is_empty() {
@@ -489,6 +501,7 @@ impl ReassembleXmlFileHandler {
         dir_path: String,
         base_segments: Vec<(String, String, bool)>,
         convert: fn(XmlElement) -> T,
+        element_order: Option<Arc<ElementOrder>>,
     ) -> ProcessDirFuture<'a, T> {
         Box::pin(async move {
             let mut parsed = Vec::new();
@@ -502,7 +515,15 @@ impl ReassembleXmlFileHandler {
             // allocations per comparison (`file_name()` allocates, then the lossy
             // copy), which heap-profiling showed as ~27% of all of reassemble's
             // allocations on a directory of ~136k shards.
-            entries.sort_by_cached_key(|e| e.file_name().to_string_lossy().into_owned());
+            // Recorded siblings first in their original order, then the rest by filename
+            // (see element_order.rs). Without an order file this is plain filename order.
+            entries.sort_by_cached_key(|e| {
+                entry_sort_key(
+                    element_order.as_deref(),
+                    &dir_path,
+                    e.file_name().to_string_lossy().into_owned(),
+                )
+            });
 
             // We are at the disassembly root for a given rule when our dir_path matches
             // the base_path stored on that rule. Each rule shares the same base_path in
@@ -563,14 +584,24 @@ impl ReassembleXmlFileHandler {
                 };
                 if let Some((_, segment_name, extract_inner)) = matched_segment {
                     let segment_element = self
-                        .collect_segment_as_array(&file_path, &segment_name, extract_inner)
+                        .collect_segment_as_array(
+                            &file_path,
+                            &segment_name,
+                            extract_inner,
+                            element_order.as_deref(),
+                        )
                         .await?;
                     if let Some(el) = segment_element {
                         parsed.push(convert(el));
                     }
                 } else {
                     let sub_parsed = self
-                        .process_files_in_directory(file_path, base_segments.clone(), convert)
+                        .process_files_in_directory(
+                            file_path,
+                            base_segments.clone(),
+                            convert,
+                            element_order.clone(),
+                        )
                         .await?;
                     parsed.extend(sub_parsed);
                 }
@@ -588,6 +619,7 @@ impl ReassembleXmlFileHandler {
         segment_dir: &str,
         segment_name: &str,
         extract_inner: bool,
+        element_order: Option<&ElementOrder>,
     ) -> Result<Option<XmlElement>, Box<dyn std::error::Error + Send + Sync>> {
         let mut xml_files = Vec::new();
         let mut read_dir = fs::read_dir(segment_dir).await?;
@@ -601,7 +633,13 @@ impl ReassembleXmlFileHandler {
                 xml_files.push(normalize_path_unix(&path.to_string_lossy()).to_string());
             }
         }
-        xml_files.sort();
+        // Items in their recorded order when known (multi-level items are reassembled
+        // under a new file name, which element_order::item_key still matches).
+        let segment_dir_norm = normalize_path_unix(segment_dir);
+        xml_files.sort_by_cached_key(|f| {
+            let name = f.rsplit('/').next().unwrap_or(f).to_string();
+            entry_sort_key(element_order, &segment_dir_norm, name)
+        });
 
         let mut root_contents = Vec::new();
         let mut first_xml: Option<(String, Option<Value>)> = None;
@@ -958,7 +996,7 @@ mod tests {
         let h = ReassembleXmlFileHandler::new();
         let tmp = tempfile::tempdir().unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true, None)
             .await
             .unwrap();
         assert!(out.is_none());
@@ -981,7 +1019,7 @@ mod tests {
             .await
             .unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", false)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", false, None)
             .await
             .unwrap();
         assert!(out.is_none());
@@ -1001,7 +1039,7 @@ mod tests {
         .await
         .unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1030,7 +1068,7 @@ mod tests {
         .await
         .unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1062,7 +1100,7 @@ mod tests {
             .await
             .unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1083,7 +1121,7 @@ mod tests {
             .await
             .unwrap();
         let out = h
-            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", false)
+            .collect_segment_as_array(tmp.path().to_str().unwrap(), "seg", false, None)
             .await
             .unwrap()
             .unwrap();
