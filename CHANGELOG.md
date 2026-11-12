@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.11](https://github.com/mcarvin8/config-disassembler/compare/v0.11.10...v0.11.11) - 2026-11-12
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Preserve the original order of repeated sibling elements ([#177](https://github.com/mcarvin8/config-disassembler/pull/177)) - ([e46ebdd](https://github.com/mcarvin8/config-disassembler/commit/e46ebddd3c21a30230e8d4a9085b35882516f100))
+
+
 ## [0.11.10](https://github.com/mcarvin8/config-disassembler/compare/v0.11.9...v0.11.10) - 2026-11-10
 
 ### ⚡ Performance
