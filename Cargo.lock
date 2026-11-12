@@ -344,7 +344,6 @@ dependencies = [
 name = "config-disassembler"
 version = "0.11.11"
 dependencies = [
- "anyhow",
  "cargo-husky",
  "codspeed-criterion-compat",
  "configparser",

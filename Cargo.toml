@@ -28,7 +28,6 @@ sha2 = "0.11"
 quick-xml = { version = "0.42", features = ["serialize"] }
 ignore = "0.4"
 log = "0.4"
-anyhow = "1"
 regex = "1"
 toon-format = { version = "0.7.0", default-features = false }
 jsonc-parser = { version = "0.34.0", features = ["serde", "cst"] }
