@@ -3,6 +3,7 @@
 use crate::xml::builders::{
     build_disassembled_file, extract_root_attributes, render_disassembled_file, write_shards,
 };
+use crate::xml::element_order::ElementOrderRecorder;
 use crate::xml::parsers::{
     extract_xml_declaration_from_raw, parse_element_collect, parse_unique_id_element,
     short_hash_for_element,
@@ -153,6 +154,7 @@ async fn disassemble_element_keys(
     unique_id_elements: Option<&str>,
     strategy: &str,
     format: &str,
+    element_order: &mut ElementOrderRecorder,
 ) -> (Map<String, Value>, XmlElementArrayMap, usize, bool) {
     let mut leaf_content = Map::new();
     let mut nested_groups = XmlElementArrayMap::new();
@@ -232,6 +234,11 @@ async fn disassemble_element_keys(
             leaf_count = result.leaf_count;
             has_nested_elements = result.has_nested_elements;
             shards.extend(shard);
+        }
+        // Shards are built in source order; record it before writing so reassembly can
+        // restore it instead of falling back to filename order (see element_order.rs).
+        for shard in &shards {
+            element_order.record(key, disassembled_path, &shard.path);
         }
         // Best-effort, like the one-shard-at-a-time writes this replaces.
         let _ = write_shards(shards).await;
@@ -314,6 +321,7 @@ async fn write_nested_groups(
     nested_groups: &XmlElementArrayMap,
     strategy: &str,
     options: &WriteNestedOptions<'_>,
+    element_order: &mut ElementOrderRecorder,
 ) {
     if strategy != "grouped-by-tag" {
         return;
@@ -360,6 +368,9 @@ async fn write_nested_groups(
                         })
                         .await,
                     );
+                }
+                for shard in &shards {
+                    element_order.record(tag, options.disassembled_path, &shard.path);
                 }
                 let _ = write_shards(shards).await;
             } else if r.mode == "group" {
@@ -480,6 +491,7 @@ pub async fn build_disassembled_files_unified(
         .map(|o| o.keys().filter(|k| !k.starts_with('@')).cloned().collect())
         .unwrap_or_default();
 
+    let mut element_order = ElementOrderRecorder::default();
     let (leaf_content, nested_groups, leaf_count, has_nested_elements) = disassemble_element_keys(
         root_element,
         &key_order,
@@ -490,6 +502,7 @@ pub async fn build_disassembled_files_unified(
         unique_id_elements,
         strategy,
         format,
+        &mut element_order,
     )
     .await;
 
@@ -509,7 +522,8 @@ pub async fn build_disassembled_files_unified(
         format,
         decompose_rules,
     };
-    write_nested_groups(&nested_groups, strategy, &write_opts).await;
+    write_nested_groups(&nested_groups, strategy, &write_opts, &mut element_order).await;
+    element_order.write(disassembled_path).await;
 
     // Persist root key order so reassembly can match original document order.
     // serde_json::to_string never fails for Vec<String>; writes are best-effort.
@@ -582,6 +596,7 @@ mod tests {
             None,
             "unique-id",
             "xml",
+            &mut ElementOrderRecorder::default(),
         )
         .await;
 
@@ -604,6 +619,7 @@ mod tests {
             None,
             "unique-id",
             "xml",
+            &mut ElementOrderRecorder::default(),
         )
         .await;
 
@@ -943,7 +959,13 @@ mod tests {
             format: "xml",
             decompose_rules: Some(&decompose_rules),
         };
-        write_nested_groups(&nested_groups, "grouped-by-tag", &opts).await;
+        write_nested_groups(
+            &nested_groups,
+            "grouped-by-tag",
+            &opts,
+            &mut ElementOrderRecorder::default(),
+        )
+        .await;
         // fallback writes one file named "{tag}.{format}"
         assert!(
             dir.path().join("myTag.xml").exists(),
@@ -969,7 +991,13 @@ mod tests {
             format: "xml",
             decompose_rules: None, // no rules at all
         };
-        write_nested_groups(&nested_groups, "grouped-by-tag", &opts).await;
+        write_nested_groups(
+            &nested_groups,
+            "grouped-by-tag",
+            &opts,
+            &mut ElementOrderRecorder::default(),
+        )
+        .await;
         assert!(
             dir.path().join("unknownTag.xml").exists(),
             "fallback file must be written"

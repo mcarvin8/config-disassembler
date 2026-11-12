@@ -109,6 +109,23 @@ View__Account__Large__Admin.profileActionOverrides-meta.xml
 
 Useful when no single field uniquely identifies sibling elements.
 
+#### Sibling order
+
+Filenames are chosen for stability, not order: unique-id names sort alphabetically and hash names sort arbitrarily. So that reassembly restores the original document order of repeated siblings, disassembly also writes `.element_order.json`, listing each tag's shard files in source order:
+
+```json
+{
+  "decisions": [
+    "decisions/ValidateUser.flow-meta.xml",
+    "decisions/CheckAccount.flow-meta.xml"
+  ]
+}
+```
+
+This matters wherever sibling order carries meaning (picklist values, page-layout sections, approval steps). It is also written for grouped-by-tag `split` rules, and per level for multi-level disassembly.
+
+On reassembly, listed shards come first in their recorded order. Files the list doesn't mention (for example a fragment added by hand) follow in filename order, and listed files that no longer exist are skipped. A directory without `.element_order.json`, such as one written by an earlier version, reassembles in filename order as before. Edit or delete the file to change the order deliberately.
+
 ---
 
 ### grouped-by-tag
@@ -346,6 +363,7 @@ BankService/
 ├── BankService.yaml       ← extracted <schema> content
 ├── .sidecars.json         ← auto-detect metadata for reassembly
 ├── .key_order.json
+├── .element_order.json    ← original order of repeated siblings
 └── (disassembled shards)
 ```
 
