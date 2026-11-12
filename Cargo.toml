@@ -28,7 +28,6 @@ sha2 = "0.11"
 quick-xml = { version = "0.42", features = ["serialize"] }
 ignore = "0.4"
 log = "0.4"
-env_logger = "0.11"
 anyhow = "1"
 regex = "1"
 toon-format = { version = "0.7.0", default-features = false }
@@ -44,6 +43,8 @@ serde-saphyr = "2"
 dhat-heap = []
 
 [dev-dependencies]
+# Test-only logging (tests call env_logger::try_init); the library and CLI use the `log` facade.
+env_logger = "0.11"
 walkdir = "2"
 # Heap profiler for the replay example's `dhat-heap` feature (see [features]).
 dhat = "0.3"
