@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.12](https://github.com/mcarvin8/config-disassembler/compare/v0.11.11...v0.11.12) - 2026-11-13
+
+### ⚙️ Miscellaneous Tasks
+
+
+- Bump rustix to resolve RUSTSEC-2026-0486 ([#180](https://github.com/mcarvin8/config-disassembler/pull/180)) - ([c56a276](https://github.com/mcarvin8/config-disassembler/commit/c56a276839ca2976e41652a89487972289b64565))
+
+
 ## [0.11.11](https://github.com/mcarvin8/config-disassembler/compare/v0.11.10...v0.11.11) - 2026-11-12
 
 ### 🐛 Bug Fixes
