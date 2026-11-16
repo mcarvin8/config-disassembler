@@ -313,15 +313,7 @@ impl MergedDocument {
         // The root is an object, so it always writes output and the declaration's
         // separator is always kept (see `build_xml_string::write_xml`).
         if let Some(obj) = self.declaration.as_object() {
-            let version = obj
-                .get("@version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("1.0");
-            let encoding = obj.get("@encoding").and_then(|v| v.as_str());
-            let standalone = obj.get("@standalone").and_then(|v| v.as_str());
-            writer.write_event(Event::Decl(quick_xml::events::BytesDecl::new(
-                version, encoding, standalone,
-            )))?;
+            super::build_xml_string::write_declaration(&mut writer, obj)?;
             writer.write_event(Event::Text(BytesText::new("\n")))?;
         }
         write_object(

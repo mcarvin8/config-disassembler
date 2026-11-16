@@ -8,6 +8,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use super::fragments::{Entry, Fragments, Item};
+use crate::xml::parsers::XML_DECLARATION_RAW_KEY;
 use crate::xml::types::XmlElement;
 
 pub(super) fn value_to_string(v: &Value) -> String {
@@ -323,6 +324,30 @@ fn writes_output(value: &Value) -> bool {
     }
 }
 
+/// Write the `?xml` declaration object. A non-canonical original declaration (see
+/// `XML_DECLARATION_RAW_KEY`) is written back verbatim; the guard keeps a hand-edited shard
+/// from injecting anything but a declaration. Shared by the tree path (`write_xml`) and the
+/// fragment path (`fragments::MergedFragments::write`) so both emit identical bytes.
+pub(super) fn write_declaration<W: Write>(
+    writer: &mut Writer<W>,
+    obj: &Map<String, Value>,
+) -> std::io::Result<()> {
+    if let Some(raw) = obj
+        .get(XML_DECLARATION_RAW_KEY)
+        .and_then(|v| v.as_str())
+        .filter(|raw| raw.starts_with("<?xml") && raw.ends_with("?>"))
+    {
+        return writer.get_mut().write_all(raw.as_bytes());
+    }
+    let version = obj
+        .get("@version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1.0");
+    let encoding = obj.get("@encoding").and_then(|v| v.as_str());
+    let standalone = obj.get("@standalone").and_then(|v| v.as_str());
+    writer.write_event(Event::Decl(BytesDecl::new(version, encoding, standalone)))
+}
+
 /// Serialize `element` into `out` and return `out`. A non-object `element`
 /// writes nothing.
 ///
@@ -365,13 +390,7 @@ fn write_xml<W: Write>(
 
     let root_writes_output = writes_output(root_value);
     if let Some(obj) = declaration.and_then(|d| d.as_object()) {
-        let version = obj
-            .get("@version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("1.0");
-        let encoding = obj.get("@encoding").and_then(|v| v.as_str());
-        let standalone = obj.get("@standalone").and_then(|v| v.as_str());
-        writer.write_event(Event::Decl(BytesDecl::new(version, encoding, standalone)))?;
+        write_declaration(&mut writer, obj)?;
         if root_writes_output {
             writer.write_event(Event::Text(BytesText::new("\n")))?;
         }
@@ -428,6 +447,40 @@ mod tests {
     fn build_xml_string_non_object_returns_empty() {
         assert!(build_xml_string(&Value::Array(vec![])).is_empty());
         assert!(build_xml_string(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn build_xml_string_writes_raw_declaration_verbatim() {
+        let el = json!({
+            "?xml": {
+                "#raw": r#"<?xml version="1.0" encoding="UTF-8" ?>"#,
+                "@version": "1.0",
+                "@encoding": "UTF-8"
+            },
+            "root": { "child": "value" }
+        });
+        let out = build_xml_string(&el);
+        assert!(
+            out.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<root>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn build_xml_string_ignores_raw_declaration_that_is_not_a_declaration() {
+        // Neither prefix nor suffix, prefix only, suffix only: each must fall back to the
+        // canonical declaration (both checks are required, not either).
+        for raw in ["<evil/>", "<?xml version=\"1.0\"", "<evil?>"] {
+            let el = json!({
+                "?xml": { "#raw": raw, "@version": "1.0" },
+                "root": { "child": "value" }
+            });
+            let out = build_xml_string(&el);
+            assert!(
+                out.starts_with("<?xml version=\"1.0\"?>\n<root>"),
+                "raw {raw:?}: {out}"
+            );
+        }
     }
 
     #[test]
