@@ -70,12 +70,45 @@ static XMLNS_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"xmlns="([^"]*)""#).expect("valid regex"));
 static DECLARATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"<\?xml\s+([^?]+)\?>"#).expect("valid regex"));
+// Pseudo-attribute values may use either quote style (XML 1.0 §2.8).
 static VERSION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"version="([^"]*)""#).expect("valid regex"));
+    LazyLock::new(|| Regex::new(r#"version\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex"));
 static ENCODING_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"encoding="([^"]*)""#).expect("valid regex"));
-static STANDALONE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"standalone="([^"]*)""#).expect("valid regex"));
+    LazyLock::new(|| Regex::new(r#"encoding\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex"));
+static STANDALONE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"standalone\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex")
+});
+
+/// Key under the `?xml` object holding the declaration's original text, set only when that
+/// text differs from what `BytesDecl::new` would write (e.g. Prettier's `"UTF-8" ?>` or
+/// single quotes). `build_xml_string` writes it back verbatim so the round trip is
+/// byte-identical; declarations already in canonical form don't carry it, so shard output
+/// for them is unchanged.
+pub const XML_DECLARATION_RAW_KEY: &str = "#raw";
+
+fn pseudo_attr(re: &Regex, decl_content: &str) -> Option<String> {
+    let cap = re.captures(decl_content)?;
+    cap.get(1)
+        .or_else(|| cap.get(2))
+        .map(|m| m.as_str().to_string())
+}
+
+/// The declaration exactly as `quick_xml`'s `BytesDecl::new` serializes it.
+fn canonical_declaration(
+    version: &str,
+    encoding: Option<&str>,
+    standalone: Option<&str>,
+) -> String {
+    let mut out = format!(r#"<?xml version="{version}""#);
+    if let Some(e) = encoding {
+        out.push_str(&format!(r#" encoding="{e}""#));
+    }
+    if let Some(s) = standalone {
+        out.push_str(&format!(r#" standalone="{s}""#));
+    }
+    out.push_str("?>");
+    out
+}
 
 /// Extract xmlns attribute from raw XML (quickxml_to_serde drops it).
 /// Returns Some(value) if found, None otherwise.
@@ -87,17 +120,26 @@ pub fn extract_xmlns_from_raw(xml_content: &str) -> Option<String> {
 /// Returns a Value object like {"@version": "1.0", "@encoding": "UTF-8", "@standalone": "yes"}
 /// for use in build_xml_string. None if no declaration found.
 pub fn extract_xml_declaration_from_raw(xml_content: &str) -> Option<XmlElement> {
-    let decl_content = DECLARATION_RE.captures(xml_content)?.get(1)?.as_str();
+    let caps = DECLARATION_RE.captures(xml_content)?;
+    let raw = caps.get(0)?.as_str();
+    let decl_content = caps.get(1)?.as_str();
+    let version = pseudo_attr(&VERSION_RE, decl_content)?;
+    let encoding = pseudo_attr(&ENCODING_RE, decl_content);
+    let standalone = pseudo_attr(&STANDALONE_RE, decl_content);
+
     let mut decl = serde_json::Map::new();
-    {
-        let cap = VERSION_RE.captures(decl_content)?;
-        decl.insert("@version".to_string(), Value::String(cap[1].to_string()));
+    if raw != canonical_declaration(&version, encoding.as_deref(), standalone.as_deref()) {
+        decl.insert(
+            XML_DECLARATION_RAW_KEY.to_string(),
+            Value::String(raw.to_string()),
+        );
     }
-    if let Some(cap) = ENCODING_RE.captures(decl_content) {
-        decl.insert("@encoding".to_string(), Value::String(cap[1].to_string()));
+    decl.insert("@version".to_string(), Value::String(version));
+    if let Some(e) = encoding {
+        decl.insert("@encoding".to_string(), Value::String(e));
     }
-    if let Some(cap) = STANDALONE_RE.captures(decl_content) {
-        decl.insert("@standalone".to_string(), Value::String(cap[1].to_string()));
+    if let Some(s) = standalone {
+        decl.insert("@standalone".to_string(), Value::String(s));
     }
     Some(Value::Object(decl))
 }
@@ -166,6 +208,58 @@ mod tests {
             obj.get("@standalone").is_none(),
             "standalone must be absent when not in source"
         );
+    }
+
+    #[test]
+    fn extract_xml_declaration_from_raw_omits_raw_for_canonical_form() {
+        for xml in [
+            r#"<?xml version="1.0"?><root/>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><root/>"#,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><root/>"#,
+        ] {
+            let decl = extract_xml_declaration_from_raw(xml).unwrap();
+            assert!(
+                decl.get(XML_DECLARATION_RAW_KEY).is_none(),
+                "canonical declaration must not carry raw text: {xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_xml_declaration_from_raw_keeps_raw_for_non_canonical_form() {
+        for (xml, raw) in [
+            (
+                r#"<?xml version="1.0" encoding="UTF-8" ?><root/>"#,
+                r#"<?xml version="1.0" encoding="UTF-8" ?>"#,
+            ),
+            (
+                r#"<?xml version='1.0' encoding='UTF-8'?><root/>"#,
+                r#"<?xml version='1.0' encoding='UTF-8'?>"#,
+            ),
+            (
+                r#"<?xml  version = "1.0"  encoding="UTF-8"?><root/>"#,
+                r#"<?xml  version = "1.0"  encoding="UTF-8"?>"#,
+            ),
+        ] {
+            let decl = extract_xml_declaration_from_raw(xml).unwrap();
+            assert_eq!(
+                decl.get(XML_DECLARATION_RAW_KEY).and_then(|v| v.as_str()),
+                Some(raw)
+            );
+            assert_eq!(decl.get("@version").and_then(|v| v.as_str()), Some("1.0"));
+            assert_eq!(
+                decl.get("@encoding").and_then(|v| v.as_str()),
+                Some("UTF-8")
+            );
+        }
+    }
+
+    #[test]
+    fn extract_xml_declaration_from_raw_parses_single_quoted_values() {
+        let xml = r#"<?xml version='1.0' standalone='no'?><root/>"#;
+        let decl = extract_xml_declaration_from_raw(xml).unwrap();
+        assert_eq!(decl.get("@version").and_then(|v| v.as_str()), Some("1.0"));
+        assert_eq!(decl.get("@standalone").and_then(|v| v.as_str()), Some("no"));
     }
 
     #[test]
