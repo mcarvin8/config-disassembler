@@ -468,12 +468,19 @@ mod tests {
 
     #[test]
     fn build_xml_string_ignores_raw_declaration_that_is_not_a_declaration() {
-        let el = json!({
-            "?xml": { "#raw": "<evil/>", "@version": "1.0" },
-            "root": { "child": "value" }
-        });
-        let out = build_xml_string(&el);
-        assert!(out.starts_with("<?xml version=\"1.0\"?>\n<root>"), "{out}");
+        // Neither prefix nor suffix, prefix only, suffix only: each must fall back to the
+        // canonical declaration (both checks are required, not either).
+        for raw in ["<evil/>", "<?xml version=\"1.0\"", "<evil?>"] {
+            let el = json!({
+                "?xml": { "#raw": raw, "@version": "1.0" },
+                "root": { "child": "value" }
+            });
+            let out = build_xml_string(&el);
+            assert!(
+                out.starts_with("<?xml version=\"1.0\"?>\n<root>"),
+                "raw {raw:?}: {out}"
+            );
+        }
     }
 
     #[test]
