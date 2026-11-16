@@ -263,6 +263,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_xml_from_str_keeps_empty_repeated_siblings() {
+        // Empty elements among repeated siblings are elements, not whitespace: a mixed
+        // array, an all-empty array, and whitespace-only bodies must all keep every entry.
+        let xml = r#"<r>
+    <s><c><i>x</i></c><c/></s>
+    <s><c/><c/><c/></s>
+    <s><c>   </c><c>y</c></s>
+</r>"#;
+        let parsed = parse_xml_from_str(xml, "t.xml").unwrap();
+        let sections = parsed["r"]["s"].as_array().unwrap();
+        let lens: Vec<usize> = sections
+            .iter()
+            .map(|s| s["c"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(lens, vec![2, 3, 2]);
+        assert_eq!(sections[0]["c"][1], serde_json::json!({}));
+        assert_eq!(sections[2]["c"][0], serde_json::json!({}));
+    }
+
+    #[test]
     fn parse_xml_from_str_invalid_xml_returns_none() {
         let result = parse_xml_from_str("<<", "test.xml");
         assert!(result.is_none());
