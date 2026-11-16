@@ -61,11 +61,15 @@ fn is_empty_text_node(key: &str, value: &Value) -> bool {
         && value.as_str().map(|s| s.trim().is_empty()).unwrap_or(false)
 }
 
-fn clean_array_in_place(arr: &mut Vec<Value>) {
-    arr.retain_mut(|entry| {
+/// Arrays only ever hold the values of repeated sibling elements, so every entry is an
+/// element and must survive: an empty one (`<a/>`, or `<a>   </a>` once its whitespace text
+/// is stripped) is still an element. Dropping it used to lose data -- e.g. the empty
+/// `<layoutColumns/>` entries that set a Salesforce page-layout section's column count --
+/// while a lone empty element (an object, not an array) was already kept.
+fn clean_array_in_place(arr: &mut [Value]) {
+    for entry in arr.iter_mut() {
         strip_whitespace_text_nodes_in_place(entry);
-        !matches!(entry, Value::Object(m) if m.is_empty())
-    });
+    }
 }
 
 fn clean_object_in_place(obj: &mut Map<String, Value>) {
@@ -122,15 +126,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn strips_empty_text_nodes_from_array() {
+    fn strips_empty_text_nodes_but_keeps_array_entries() {
         let input = json!([{ "#text": "   " }, { "#text": "keep me" }]);
         let result = strip_whitespace_text_nodes(&input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(
-            arr[0].get("#text").and_then(|v| v.as_str()),
-            Some("keep me")
-        );
+        // The whitespace-only node is stripped, but its element stays in the array.
+        assert_eq!(result, json!([{}, { "#text": "keep me" }]));
     }
 
     #[test]
@@ -168,16 +168,12 @@ mod tests {
 
     #[test]
     fn strips_whitespace_only_cdata_node() {
-        // Whitespace-only #cdata (without a sibling preservation trigger) should be dropped,
+        // Whitespace-only #cdata (without a sibling preservation trigger) should be stripped,
         // mirroring the existing #text behavior. Guards is_empty_text_node's #cdata branch.
         let input = json!([{ "#cdata": "   " }, { "#text": "keep me" }]);
         let result = strip_whitespace_text_nodes(&input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(
-            arr[0].get("#text").and_then(|v| v.as_str()),
-            Some("keep me")
-        );
+        // The whitespace-only node is stripped, but its element stays in the array.
+        assert_eq!(result, json!([{}, { "#text": "keep me" }]));
     }
 
     #[test]
@@ -186,12 +182,8 @@ mod tests {
         // Guards both is_empty_text_node's #text-tail branch and the line-32 guard in clean_object.
         let input = json!([{ "#text-tail": "   " }, { "#text": "keep me" }]);
         let result = strip_whitespace_text_nodes(&input);
-        let arr = result.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(
-            arr[0].get("#text").and_then(|v| v.as_str()),
-            Some("keep me")
-        );
+        // The whitespace-only node is stripped, but its element stays in the array.
+        assert_eq!(result, json!([{}, { "#text": "keep me" }]));
     }
 
     #[test]
