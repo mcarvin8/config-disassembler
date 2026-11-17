@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.17](https://github.com/mcarvin8/config-disassembler/compare/v0.11.16...v0.11.17) - 2026-11-17
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Keep a trailing comment in mixed content stable ([#194](https://github.com/mcarvin8/config-disassembler/pull/194)) - ([063f862](https://github.com/mcarvin8/config-disassembler/commit/063f862eb3c2768ab9413f0eeb3a7d278fa1df3c))
+
+
 ## [0.11.16](https://github.com/mcarvin8/config-disassembler/compare/v0.11.15...v0.11.16) - 2026-11-17
 
 ### ⛰️ Features
