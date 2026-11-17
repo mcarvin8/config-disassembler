@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.15](https://github.com/mcarvin8/config-disassembler/compare/v0.11.14...v0.11.15) - 2026-11-17
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Leave files with unplaceable comments undisassembled ([#191](https://github.com/mcarvin8/config-disassembler/pull/191)) - ([2d30f7f](https://github.com/mcarvin8/config-disassembler/commit/2d30f7fc74b6c925d64a6fe6aeb9e360b4aab935))
+- *(xml)* Keep identical repeated siblings under unique-id ([#189](https://github.com/mcarvin8/config-disassembler/pull/189)) - ([1ac0261](https://github.com/mcarvin8/config-disassembler/commit/1ac0261b719d80fd8c7cc1009f693b0f92941a44))
+
+
 ## [0.11.14](https://github.com/mcarvin8/config-disassembler/compare/v0.11.13...v0.11.14) - 2026-11-17
 
 ### 🐛 Bug Fixes
