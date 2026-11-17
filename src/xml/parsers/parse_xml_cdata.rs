@@ -40,12 +40,16 @@ fn append_cdata_to_current(stack: &mut [(String, Map<String, Value>)], content: 
 /// comment outside an element before reaching this point.
 fn append_comment_to_current(stack: &mut [(String, Map<String, Value>)], content: &str) {
     if let Some((_, elem)) = stack.last_mut() {
-        let merged = match elem.get("#comment").and_then(|v| v.as_str()) {
-            Some(prev) => format!("{}{}", prev, content),
-            None => content.to_string(),
-        };
-        elem.insert("#comment".to_string(), Value::String(merged));
+        append_comment(elem, content);
     }
+}
+
+fn append_comment(elem: &mut Map<String, Value>, content: &str) {
+    let merged = match elem.get("#comment").and_then(|v| v.as_str()) {
+        Some(prev) => format!("{}{}", prev, content),
+        None => content.to_string(),
+    };
+    elem.insert("#comment".to_string(), Value::String(merged));
 }
 
 /// Marker key recording how an element with no content was written, when that differs
@@ -67,6 +71,53 @@ fn is_contentless(elem: &Map<String, Value>) -> bool {
     elem.iter().all(|(k, v)| {
         k.starts_with('@') || (k == "#text" && v.as_str().is_some_and(|s| s.trim().is_empty()))
     })
+}
+
+/// Comments written before an element, between it and the previous sibling (or its parent's
+/// start tag): `<!-- note -->\n<value>...` -> `"#comments-before": [" note "]` on that element.
+/// Each comment travels with its element -- into its shard, through reordering -- and is written
+/// back on its own line just above it.
+pub const COMMENTS_BEFORE_KEY: &str = "#comments-before";
+/// Comments after an element's last child element, written back just before its closing tag.
+pub const COMMENTS_END_KEY: &str = "#comments-end";
+
+fn has_child_elements(elem: &Map<String, Value>) -> bool {
+    elem.keys()
+        .any(|k| !k.starts_with('#') && !k.starts_with('@'))
+}
+
+/// Comments in an element that turned out to hold text or CDATA rather than child elements keep the
+/// mixed-content form: merged into `#comment`, written after its text.
+fn commit_pending_comments(pending: &mut Vec<String>, stack: &mut [(String, Map<String, Value>)]) {
+    for comment in pending.drain(..) {
+        append_comment_to_current(stack, &comment);
+    }
+}
+
+/// Flush the text run, first committing the open element's pending comments to `#comment` when the
+/// run is real text: a comment followed by text is mixed content, not a note on a later element.
+fn flush_text_after_comments(
+    raw: &mut String,
+    stack: &mut [(String, Map<String, Value>)],
+    pending: &mut [Vec<String>],
+    is_after_comment: bool,
+) {
+    if !raw.trim().is_empty() {
+        if let Some(open) = pending.last_mut() {
+            commit_pending_comments(open, stack);
+        }
+    }
+    flush_text_buffer(raw, stack, is_after_comment);
+}
+
+/// Hand the open element's pending comments to a child element that is starting.
+fn take_comments_before(pending: &mut [Vec<String>], attrs: &mut Map<String, Value>) {
+    if let Some(open) = pending.last_mut() {
+        if !open.is_empty() {
+            let comments = open.drain(..).map(Value::String).collect();
+            attrs.insert(COMMENTS_BEFORE_KEY.to_string(), Value::Array(comments));
+        }
+    }
 }
 
 /// Attach a finished child element (from Event::End or Event::Empty) to its parent -
@@ -229,6 +280,8 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
     reader.config_mut().trim_text(false);
 
     let mut stack: Vec<(String, Map<String, Value>)> = Vec::new();
+    // Comments seen in each open element since its last child element, parallel to `stack`.
+    let mut pending: Vec<Vec<String>> = Vec::new();
     let mut root_name: Option<String> = None;
     let mut root_value: Option<Value> = None;
     let mut text_buffer = String::new();
@@ -238,7 +291,12 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
+                flush_text_after_comments(
+                    &mut text_buffer,
+                    &mut stack,
+                    &mut pending,
+                    text_buffer_after_comment,
+                );
                 text_buffer_after_comment = false;
                 let name = e.name().as_ref().to_string();
                 let mut attrs = Map::new();
@@ -249,14 +307,35 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
                 }
+                take_comments_before(&mut pending, &mut attrs);
                 stack.push((name, attrs));
+                pending.push(Vec::new());
             }
             Ok(Event::End(_e)) => {
-                flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
+                flush_text_after_comments(
+                    &mut text_buffer,
+                    &mut stack,
+                    &mut pending,
+                    text_buffer_after_comment,
+                );
                 text_buffer_after_comment = false;
+                let closing_comments = pending.pop().unwrap_or_default();
                 // `stack.pop()` only returns None on malformed XML, which quick-xml rejects
                 // before reaching here; silently skip when it does.
                 if let Some((popped_name, mut elem)) = stack.pop() {
+                    if !closing_comments.is_empty() {
+                        if has_child_elements(&elem) {
+                            // After the last child element: written back before the closing tag.
+                            let comments =
+                                closing_comments.into_iter().map(Value::String).collect();
+                            elem.insert(COMMENTS_END_KEY.to_string(), Value::Array(comments));
+                        } else {
+                            // No child elements: the comment is the element's own (mixed) content.
+                            for comment in closing_comments {
+                                append_comment(&mut elem, &comment);
+                            }
+                        }
+                    }
                     if is_contentless(&elem) {
                         elem.insert(
                             EMPTY_FORM_KEY.to_string(),
@@ -273,7 +352,12 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
+                flush_text_after_comments(
+                    &mut text_buffer,
+                    &mut stack,
+                    &mut pending,
+                    text_buffer_after_comment,
+                );
                 text_buffer_after_comment = false;
                 let name = e.name().as_ref().to_string();
                 let mut attrs = Map::new();
@@ -293,6 +377,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                         Value::String(EMPTY_FORM_SPACE.to_string()),
                     );
                 }
+                take_comments_before(&mut pending, &mut attrs);
                 attach_child_to_parent(
                     &mut stack,
                     name,
@@ -316,9 +401,17 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 text_buffer.push_str(e.as_ref());
             }
             Ok(Event::Comment(e)) => {
-                flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
-                let content = e.as_ref().to_string();
-                append_comment_to_current(&mut stack, &content);
+                flush_text_after_comments(
+                    &mut text_buffer,
+                    &mut stack,
+                    &mut pending,
+                    text_buffer_after_comment,
+                );
+                // Held until it is known what follows: a child element (it goes with that
+                // element), text or CDATA (mixed content: `#comment`), or the closing tag.
+                if let Some(open) = pending.last_mut() {
+                    open.push(e.as_ref().to_string());
+                }
                 text_buffer_after_comment = true;
             }
             Ok(Event::GeneralRef(ref_)) => {
@@ -326,6 +419,10 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
             }
             Ok(Event::CData(e)) => {
                 flush_text_buffer(&mut text_buffer, &mut stack, text_buffer_after_comment);
+                // CDATA after a comment is mixed content too.
+                if let Some(open) = pending.last_mut() {
+                    commit_pending_comments(open, &mut stack);
+                }
                 text_buffer_after_comment = false;
                 append_cdata_to_current(&mut stack, e.as_ref());
             }
@@ -458,6 +555,47 @@ mod tests {
         // `<root></root>` has no content; only its open/close form is recorded.
         let v = parse_xml_with_cdata(r#"<root></root>"#).unwrap();
         assert_eq!(v, serde_json::json!({ "root": { "#empty": "pair" } }));
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_attaches_comments_to_the_element_that_follows() {
+        let v = parse_xml_with_cdata(
+            "<r>\n  <!-- one -->\n  <!-- two -->\n  <a>1</a>\n  <!-- empty -->\n  <b/>\n  <a>2</a>\n</r>",
+        )
+        .unwrap();
+        let r = &v["r"];
+        assert_eq!(
+            r["a"][0]["#comments-before"],
+            serde_json::json!([" one ", " two "])
+        );
+        assert!(r["a"][1].get("#comments-before").is_none());
+        assert_eq!(r["b"]["#comments-before"], serde_json::json!([" empty "]));
+        assert!(r.get("#comment").is_none());
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_keeps_comments_after_the_last_child_at_the_end() {
+        let v = parse_xml_with_cdata("<r><a><b>1</b><!-- end --></a></r>").unwrap();
+        assert_eq!(v["r"]["a"]["#comments-end"], serde_json::json!([" end "]));
+        assert!(v["r"]["a"].get("#comment").is_none());
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_keeps_comments_in_text_as_mixed_content() {
+        // Sole content (Salesforce's untranslated placeholder), followed by text, followed by CDATA.
+        let v = parse_xml_with_cdata(
+            "<r><a><!-- Planned --></a><b>t<!-- c -->u</b><c><!-- c --><![CDATA[x]]></c></r>",
+        )
+        .unwrap();
+        let r = &v["r"];
+        assert_eq!(r["a"]["#comment"], " Planned ");
+        assert_eq!(r["b"]["#comment"], " c ");
+        assert_eq!(r["b"]["#text-tail"], "u");
+        assert_eq!(r["c"]["#comment"], " c ");
+        for key in ["a", "b", "c"] {
+            assert!(r[key].get("#comments-before").is_none(), "{key}");
+            assert!(r[key].get("#comments-end").is_none(), "{key}");
+        }
     }
 
     #[test]
