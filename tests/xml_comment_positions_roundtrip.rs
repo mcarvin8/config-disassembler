@@ -164,3 +164,36 @@ async fn comment_outside_the_root_leaves_the_file_in_place() {
     assert_eq!(std::fs::read_to_string(&source).unwrap(), content);
     assert!(!tmp.path().join("Generated").exists());
 }
+
+#[tokio::test]
+async fn mixed_content_with_a_comment_is_stable_across_round_trips() {
+    // Found by config-disassembler-node's round-trip fuzz test: a comment followed by CDATA and
+    // text after a child element. Each round trip must give the same bytes as the one before.
+    let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+<FuzzRoot xmlns="http://soap.sforce.com/2006/04/metadata"><item><fullName>Item0</fullName><!-- --><![CDATA[]]>(</item><item><fullName>Item1</fullName></item></FuzzRoot>"#;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut previous: Option<String> = None;
+    for pass in 1..=3 {
+        let rebuilt = roundtrip(
+            tmp.path(),
+            "Fuzz",
+            "fuzz-meta.xml",
+            content_or(&previous, content),
+            "xml",
+            false,
+        )
+        .await;
+        assert!(
+            rebuilt.contains("<!-- -->") && rebuilt.contains('('),
+            "pass {pass}: {rebuilt}"
+        );
+        if let Some(prev) = &previous {
+            assert_eq!(&rebuilt, prev, "pass {pass} changed the output");
+        }
+        previous = Some(rebuilt);
+    }
+}
+
+fn content_or<'a>(previous: &'a Option<String>, original: &'a str) -> &'a str {
+    previous.as_deref().unwrap_or(original)
+}

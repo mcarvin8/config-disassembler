@@ -86,6 +86,20 @@ fn has_child_elements(elem: &Map<String, Value>) -> bool {
         .any(|k| !k.starts_with('#') && !k.starts_with('@'))
 }
 
+/// Whether the element has mixed content of its own: real text, CDATA or a comment already merged
+/// into `#comment`. Its comments belong to that content, which the writer puts after the children,
+/// so a trailing comment there must stay mixed content too -- read back as `#comments-end` it would
+/// change form on every round trip.
+fn has_mixed_content(elem: &Map<String, Value>) -> bool {
+    elem.contains_key("#comment")
+        || elem.contains_key("#cdata")
+        || ["#text", "#text-tail"].iter().any(|key| {
+            elem.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty())
+        })
+}
+
 /// Comments in an element that turned out to hold text or CDATA rather than child elements keep the
 /// mixed-content form: merged into `#comment`, written after its text.
 fn commit_pending_comments(pending: &mut Vec<String>, stack: &mut [(String, Map<String, Value>)]) {
@@ -324,13 +338,13 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 // before reaching here; silently skip when it does.
                 if let Some((popped_name, mut elem)) = stack.pop() {
                     if !closing_comments.is_empty() {
-                        if has_child_elements(&elem) {
+                        if has_child_elements(&elem) && !has_mixed_content(&elem) {
                             // After the last child element: written back before the closing tag.
                             let comments =
                                 closing_comments.into_iter().map(Value::String).collect();
                             elem.insert(COMMENTS_END_KEY.to_string(), Value::Array(comments));
                         } else {
-                            // No child elements: the comment is the element's own (mixed) content.
+                            // No child elements, or mixed content: the comment is part of the element's own content.
                             for comment in closing_comments {
                                 append_comment(&mut elem, &comment);
                             }
@@ -578,6 +592,20 @@ mod tests {
         let v = parse_xml_with_cdata("<r><a><b>1</b><!-- end --></a></r>").unwrap();
         assert_eq!(v["r"]["a"]["#comments-end"], serde_json::json!([" end "]));
         assert!(v["r"]["a"].get("#comment").is_none());
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_keeps_a_trailing_comment_after_text_as_mixed_content() {
+        // The writer emits an element's mixed content after its children (`...</b>t<!-- c --></a>`);
+        // reading that comment as `#comments-end` would change its form on every round trip.
+        for xml in [
+            "<r><a><b>1</b>t<!-- c --></a></r>",
+            "<r><a><b>1</b><![CDATA[x]]><!-- c --></a></r>",
+        ] {
+            let v = parse_xml_with_cdata(xml).unwrap();
+            assert_eq!(v["r"]["a"]["#comment"], " c ", "{xml}");
+            assert!(v["r"]["a"].get("#comments-end").is_none(), "{xml}");
+        }
     }
 
     #[test]
