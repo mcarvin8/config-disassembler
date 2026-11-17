@@ -116,12 +116,39 @@ fn resolve_collision_safe_ids(
     // per-element content hash. The hash is computed on the same outer
     // element used for the derivation so distinct content -> distinct hash
     // even when the derived id collided.
-    derived
+    let hashed = derived
         .into_iter()
         .zip(elements.iter())
         .map(|(maybe_id, element)| match maybe_id {
             Some(id) if collided.contains(&id) => Some(short_hash_for_element(element)),
             other => other,
+        })
+        .collect();
+    disambiguate_identical_ids(hashed)
+}
+
+/// Identical siblings (same content, so the same hash) still share one id after
+/// the hash fallback -- e.g. three identical `<caseValues>` in a Salesforce
+/// object translation -- and would overwrite each other's shard, leaving one.
+/// Keep the first occurrence's id and suffix each later repeat with `-2`, `-3`,
+/// ... in document order, skipping any candidate another sibling already uses.
+fn disambiguate_identical_ids(ids: Vec<Option<String>>) -> Vec<Option<String>> {
+    let mut taken: std::collections::HashSet<String> = ids.iter().flatten().cloned().collect();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    ids.into_iter()
+        .map(|maybe_id| {
+            let id = maybe_id?;
+            if seen.insert(id.clone()) {
+                return Some(id);
+            }
+            let mut n = 2;
+            let mut candidate = format!("{id}-{n}");
+            while taken.contains(&candidate) {
+                n += 1;
+                candidate = format!("{id}-{n}");
+            }
+            taken.insert(candidate.clone());
+            Some(candidate)
         })
         .collect()
 }
@@ -837,6 +864,48 @@ mod tests {
         assert_eq!(resolved[0], None);
         assert_eq!(resolved[1], None);
         assert_eq!(resolved[2], Some("Tab".to_string()));
+    }
+
+    #[test]
+    fn resolve_identical_siblings_get_distinct_ids_in_document_order() {
+        // Identical content -> identical hash; without a suffix all three would
+        // share one shard file and two would be lost.
+        let case_value = json!({ "plural": "false", "value": "Fields to Exclude" });
+        let elements = vec![case_value.clone(), case_value.clone(), case_value];
+        let resolved = resolve_collision_safe_ids(&elements, None, "caseValues", "unique-id");
+        let ids: Vec<String> = resolved.into_iter().map(Option::unwrap).collect();
+        let base = ids[0].clone();
+        assert_eq!(
+            ids,
+            vec![base.clone(), format!("{base}-2"), format!("{base}-3")]
+        );
+    }
+
+    #[test]
+    fn disambiguate_skips_suffixes_another_sibling_already_uses() {
+        let ids = vec![
+            Some("A".to_string()),
+            Some("A".to_string()),
+            Some("A-2".to_string()),
+            None,
+            Some("B".to_string()),
+        ];
+        assert_eq!(
+            disambiguate_identical_ids(ids),
+            vec![
+                Some("A".to_string()),
+                Some("A-3".to_string()),
+                Some("A-2".to_string()),
+                None,
+                Some("B".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn disambiguate_leaves_unique_ids_unchanged() {
+        let ids = vec![Some("A".to_string()), None, Some("B".to_string())];
+        assert_eq!(disambiguate_identical_ids(ids.clone()), ids);
     }
 
     #[test]
