@@ -1,0 +1,64 @@
+name: Lint # Code Quality Checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: rustfmt
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: clippy
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Clippy check
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items --all-features --workspace --examples
