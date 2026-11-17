@@ -8,7 +8,9 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use super::fragments::{Entry, Fragments, Item};
-use crate::xml::parsers::XML_DECLARATION_RAW_KEY;
+use crate::xml::parsers::{
+    EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE, XML_DECLARATION_RAW_KEY,
+};
 use crate::xml::types::XmlElement;
 
 pub(super) fn value_to_string(v: &Value) -> String {
@@ -23,13 +25,14 @@ pub(super) fn value_to_string(v: &Value) -> String {
 
 /// Keys of an element's map that are not child elements: its own text, CDATA,
 /// comment and formatting markers. (Keys starting with `@` are attributes.)
-pub(super) const CONTENT_KEYS: [&str; 6] = [
+pub(super) const CONTENT_KEYS: [&str; 7] = [
     "#text",
     "#raw-text",
     "#comment",
     "#text-tail",
     "#cdata",
     "#compact",
+    EMPTY_FORM_KEY,
 ];
 
 /// Whether `key` names a child element rather than an attribute or content key.
@@ -133,6 +136,7 @@ pub(super) fn write_object<'a, W: std::io::Write>(
     let mut text_tail_content = String::new();
     let mut cdata_content = String::new();
     let mut is_compact = false;
+    let mut empty_form = String::new();
     let mut child_elements: Vec<(&str, Field<'a>)> = Vec::new();
     for (k, field) in fields {
         if k.starts_with('@') {
@@ -149,6 +153,8 @@ pub(super) fn write_object<'a, W: std::io::Write>(
             cdata_content = field.to_text();
         } else if k == "#compact" {
             is_compact = field.as_value().and_then(Value::as_bool).unwrap_or(false);
+        } else if k == EMPTY_FORM_KEY {
+            empty_form = field.to_text();
         } else {
             child_elements.push((k, field));
         }
@@ -158,13 +164,30 @@ pub(super) fn write_object<'a, W: std::io::Write>(
     for (k, v) in &attrs {
         start.push_attribute((*k, v.as_str()));
     }
-    writer.write_event(Event::Start(start))?;
 
     let has_mixed_content = !cdata_content.is_empty()
         || !text_content.is_empty()
         || !raw_text_content.is_empty()
         || !comment_content.is_empty()
         || !text_tail_content.is_empty();
+
+    // An element with nothing inside is written the way the source wrote it (see
+    // EMPTY_FORM_KEY): self-closing `<a/>` by default, as Salesforce does.
+    if child_elements.is_empty() && !has_mixed_content && empty_form != EMPTY_FORM_PAIR {
+        if empty_form == EMPTY_FORM_SPACE {
+            // `start` derefs to the escaped name + attributes between `<` and `>`.
+            let out = writer.get_mut();
+            out.write_all(b"<")?;
+            let tag: &str = start.as_ref();
+            out.write_all(tag.as_bytes())?;
+            out.write_all(b" />")?;
+        } else {
+            writer.write_event(Event::Empty(start))?;
+        }
+        return Ok(());
+    }
+
+    writer.write_event(Event::Start(start))?;
 
     let compact_child = match child_elements.as_slice() {
         [(child_name, field)] if is_compact => match field.as_value() {
@@ -658,7 +681,31 @@ mod tests {
         let el = json!({ "?xml": { "@version": "1.0", "@encoding": "UTF-8" } });
         let out = build_xml_string(&el);
         assert!(out.contains("<?xml"));
-        assert!(out.contains("<root>"));
+        assert!(out.contains("<root/>"));
+    }
+
+    #[test]
+    fn build_xml_string_writes_empty_element_in_recorded_form() {
+        let el = json!({ "r": {
+            "a": {},
+            "b": { "#empty": "space" },
+            "c": { "#empty": "pair" },
+            "d": { "@x": "1", "#empty": "space" },
+            "e": { "@x": "1" },
+            "f": { "#empty": "pair", "#text": "t" }
+        }});
+        let out = build_xml_string(&el);
+        for expected in [
+            "<a/>",
+            "<b />",
+            "<c></c>",
+            r#"<d x="1" />"#,
+            r#"<e x="1"/>"#,
+            "<f>t</f>",
+        ] {
+            assert!(out.contains(expected), "missing {expected}: {out}");
+        }
+        assert!(!out.contains("#empty"), "{out}");
     }
 
     #[test]

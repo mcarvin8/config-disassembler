@@ -90,10 +90,19 @@ async fn empty_repeated_siblings_survive_roundtrip_in_every_format_and_strategy(
 }
 
 #[tokio::test]
-async fn self_closing_empty_siblings_keep_their_count() {
-    // `<a/>` comes back as `<a></a>` (same element), but none may be lost.
-    let self_closing = LAYOUT.replace("<layoutColumns></layoutColumns>", "<layoutColumns/>");
-    let tmp = tempfile::tempdir().unwrap();
-    let rebuilt = roundtrip(tmp.path(), &self_closing, "xml", false).await;
-    assert_eq!(rebuilt, LAYOUT);
+async fn every_empty_element_form_survives_roundtrip() {
+    // Salesforce's `<a/>`, Prettier's `<a />` and `<a></a>` each come back as written.
+    for form in ["<layoutColumns/>", "<layoutColumns />"] {
+        let original = LAYOUT.replace("<layoutColumns></layoutColumns>", form);
+        for format in ["xml", "json", "json5", "yaml"] {
+            for grouped in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let rebuilt = roundtrip(tmp.path(), &original, format, grouped).await;
+                assert_eq!(
+                    rebuilt, original,
+                    "form {form} / format {format} / grouped {grouped}"
+                );
+            }
+        }
+    }
 }
