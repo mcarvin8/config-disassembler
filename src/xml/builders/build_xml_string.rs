@@ -1,6 +1,6 @@
 //! Build XML string from XmlElement structure.
 
-use quick_xml::escape::partial_escape;
+use quick_xml::escape::{partial_escape, unescape};
 use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 use serde_json::{Map, Value};
@@ -9,7 +9,7 @@ use std::path::Path;
 
 use super::fragments::{Entry, Fragments, Item};
 use crate::xml::parsers::{
-    EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE, XML_DECLARATION_RAW_KEY,
+    EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE, TEXT_ESCAPED_KEY, XML_DECLARATION_RAW_KEY,
 };
 use crate::xml::types::XmlElement;
 
@@ -25,7 +25,7 @@ pub(super) fn value_to_string(v: &Value) -> String {
 
 /// Keys of an element's map that are not child elements: its own text, CDATA,
 /// comment and formatting markers. (Keys starting with `@` are attributes.)
-pub(super) const CONTENT_KEYS: [&str; 7] = [
+pub(super) const CONTENT_KEYS: [&str; 8] = [
     "#text",
     "#raw-text",
     "#comment",
@@ -33,6 +33,7 @@ pub(super) const CONTENT_KEYS: [&str; 7] = [
     "#cdata",
     "#compact",
     EMPTY_FORM_KEY,
+    TEXT_ESCAPED_KEY,
 ];
 
 /// Whether `key` names a child element rather than an attribute or content key.
@@ -137,6 +138,7 @@ pub(super) fn write_object<'a, W: std::io::Write>(
     let mut cdata_content = String::new();
     let mut is_compact = false;
     let mut empty_form = String::new();
+    let mut escaped_text = String::new();
     let mut child_elements: Vec<(&str, Field<'a>)> = Vec::new();
     for (k, field) in fields {
         if k.starts_with('@') {
@@ -155,6 +157,8 @@ pub(super) fn write_object<'a, W: std::io::Write>(
             is_compact = field.as_value().and_then(Value::as_bool).unwrap_or(false);
         } else if k == EMPTY_FORM_KEY {
             empty_form = field.to_text();
+        } else if k == TEXT_ESCAPED_KEY {
+            escaped_text = field.to_text();
         } else {
             child_elements.push((k, field));
         }
@@ -295,7 +299,16 @@ pub(super) fn write_object<'a, W: std::io::Write>(
             }
             // Output in order: #text, #raw-text, #comment, #text-tail, #cdata
             if !text_content.is_empty() {
-                writer.write_event(Event::Text(BytesText::new(text_content.as_str())))?;
+                // The source's own escaping (TEXT_ESCAPED_KEY), while it still matches the
+                // text; otherwise -- no marker, or #text edited since -- canonical escaping.
+                let source_form = !escaped_text.is_empty()
+                    && unescape(&escaped_text).is_ok_and(|u| u == text_content);
+                let text = if source_form {
+                    BytesText::from_escaped(escaped_text.as_str())
+                } else {
+                    BytesText::new(text_content.as_str())
+                };
+                writer.write_event(Event::Text(text))?;
             }
             // #raw-text: sidecar content injected pre-unescaped; use partial_escape so
             // literal " in YAML is not converted to &quot; but < > & are still safe.
@@ -682,6 +695,27 @@ mod tests {
         let out = build_xml_string(&el);
         assert!(out.contains("<?xml"));
         assert!(out.contains("<root/>"));
+    }
+
+    #[test]
+    fn build_xml_string_writes_text_in_its_source_escaping_unless_edited() {
+        let el = json!({ "r": {
+            "a": { "#text": "that's", "#escaped": "that's" },
+            "b": { "#text": "'x'", "#escaped": "&#39;x&#39;" },
+            // #text edited after parsing: the stale source form must not win.
+            "c": { "#text": "it's new", "#escaped": "it's old" },
+            "d": { "#text": "plain's" }
+        }});
+        let out = build_xml_string(&el);
+        for expected in [
+            "<a>that's</a>",
+            "<b>&#39;x&#39;</b>",
+            "<c>it&apos;s new</c>",
+            "<d>plain&apos;s</d>",
+        ] {
+            assert!(out.contains(expected), "missing {expected}: {out}");
+        }
+        assert!(!out.contains("#escaped"), "{out}");
     }
 
     #[test]
