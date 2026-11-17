@@ -55,6 +55,12 @@ pub const EMPTY_FORM_KEY: &str = "#empty";
 pub const EMPTY_FORM_PAIR: &str = "pair";
 pub const EMPTY_FORM_SPACE: &str = "space";
 
+/// Marker key holding an element's text exactly as escaped in the source, set only when that
+/// differs from the writer's canonical escaping (`quick_xml::escape::escape`): e.g. a raw `'`
+/// (written as `&apos;`) or `&#39;`. `build_xml_string::write_object` writes it back verbatim
+/// while it still unescapes to the element's `#text`, so an edited `#text` always wins.
+pub const TEXT_ESCAPED_KEY: &str = "#escaped";
+
 /// True when an element closed by `Event::End` had no content: only attributes and,
 /// at most, whitespace-only text (which `strip_whitespace` removes later).
 fn is_contentless(elem: &Map<String, Value>) -> bool {
@@ -133,11 +139,12 @@ fn flush_text_buffer(
     }
 
     let text = unescape(raw.as_str()).unwrap_or_default().into_owned();
-    raw.clear();
+    let raw_text = std::mem::take(raw);
     if text.is_empty() {
         return;
     }
     let is_whitespace_only_run = text.trim().is_empty();
+    let mut merged_text = false;
 
     match elem.get_mut(key) {
         Some(Value::String(prev)) => {
@@ -193,11 +200,25 @@ fn flush_text_buffer(
                 } else {
                     prev.push_str(&text);
                 }
+                merged_text = key == "#text";
             }
         }
         _ => {
+            // Keep the source form of the text when it isn't what the writer's escaping
+            // would produce (`'` left raw, `&#39;` for `&apos;`, ...), so it round-trips.
+            let record_source = key == "#text"
+                && !is_whitespace_only_run
+                && quick_xml::escape::escape(text.as_str()) != raw_text;
             elem.insert(key.to_string(), Value::String(text));
+            if record_source {
+                elem.insert(TEXT_ESCAPED_KEY.to_string(), Value::String(raw_text));
+            }
         }
+    }
+    // A merged #text no longer matches the first run's source text; fall back to
+    // canonical escaping rather than track every run.
+    if merged_text {
+        elem.shift_remove(TEXT_ESCAPED_KEY);
     }
 }
 
@@ -437,6 +458,37 @@ mod tests {
         // `<root></root>` has no content; only its open/close form is recorded.
         let v = parse_xml_with_cdata(r#"<root></root>"#).unwrap();
         assert_eq!(v, serde_json::json!({ "root": { "#empty": "pair" } }));
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_records_non_canonical_text_escaping() {
+        let v = parse_xml_with_cdata(
+            r#"<r><a>that's</a><b>&#39;x&#39;</b><c>that&apos;s</c><d>a &amp; b</d><e>"q" &gt; 1</e></r>"#,
+        )
+        .unwrap();
+        let r = &v["r"];
+        // Raw `'`, numeric refs and raw `"`/`>` differ from canonical escaping: recorded.
+        assert_eq!(
+            r["a"],
+            serde_json::json!({ "#text": "that's", "#escaped": "that's" })
+        );
+        assert_eq!(
+            r["b"],
+            serde_json::json!({ "#text": "'x'", "#escaped": "&#39;x&#39;" })
+        );
+        assert_eq!(r["e"]["#escaped"], r#""q" &gt; 1"#);
+        // Already canonical: no marker.
+        assert_eq!(r["c"], serde_json::json!({ "#text": "that's" }));
+        assert_eq!(r["d"], serde_json::json!({ "#text": "a & b" }));
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_drops_escaped_marker_when_text_runs_merge() {
+        // Text split by a comment-free CDATA section merges into one #text; the first run's
+        // source form no longer describes it, so no marker is kept.
+        let v = parse_xml_with_cdata("<r><a>it's<![CDATA[x]]>more's</a></r>").unwrap();
+        assert!(v["r"]["a"].get("#escaped").is_none(), "{v}");
+        assert_eq!(v["r"]["a"]["#text"], "it'smore's");
     }
 
     #[test]
