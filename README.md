@@ -7,18 +7,11 @@
 [![Mutation score](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/mcarvin8/aafbb17a2728e06732803dfc9a1d7978/raw/mutants-badge.json)](https://github.com/mcarvin8/config-disassembler/actions/workflows/mutation.yml)
 [![CodSpeed Badge](https://img.shields.io/endpoint?url=https://app.codspeed.io//badge.json)](https://app.codspeed.io//mcarvin8/config-disassembler?utm_source=badge)
 
-Split large configuration files into smaller, version-control–friendly pieces and reassemble them back into the original file.
+Split large XML files into smaller, version-control–friendly pieces and reassemble them back into the original file.
 
-Supported formats:
+Built for deeply nested XML such as Salesforce metadata (permission sets, profiles, flows, bots), where a single file can run to tens of thousands of lines and every change produces a noisy diff.
 
-- XML
-- JSON
-- JSON5
-- JSONC
-- YAML
-- TOON
-- TOML
-- INI
+> **Breaking change in 0.12.0:** support for JSON, JSON5, JSONC, YAML, TOON, TOML, and INI *input* files was removed. Those formats are far simpler to split and merge than XML, and the project now focuses on XML. The `json`, `json5`, `jsonc`, `yaml`, `toon`, `toml`, and `ini` subcommands and the `disassemble`, `reassemble`, `format`, and `meta` library modules no longer exist. If you need them, pin `config-disassembler = "0.11"`. XML can still be split into JSON, JSON5, or YAML files with `--format`.
 
 ## Installation
 
@@ -28,47 +21,10 @@ cargo install config-disassembler
 
 ## Quick start
 
-### JSON
-
-Create `config.json`:
-
-```json
-{
-  "database": { "host": "localhost", "port": 5432 },
-  "features": { "beta": true },
-  "version": 1
-}
-```
-
-Split it:
+Split an XML file:
 
 ```bash
-config-disassembler json disassemble config.json
-```
-
-Result:
-
-```text
-config/
-├── .config-disassembler.json
-├── _main.json          ← scalars (version)
-├── database.json       ← nested object
-└── features.json       ← nested object
-```
-
-Rebuild:
-
-```bash
-config-disassembler json reassemble config
-```
-
-Output matches the original `config.json`.
-
-### XML
-
-```bash
-config-disassembler xml disassemble flow.xml \
-  --unique-id-elements name,id
+config-disassembler xml disassemble flow.xml   --unique-id-elements name,id
 ```
 
 Result:
@@ -81,95 +37,46 @@ flow/
 └── flow-meta.xml
 ```
 
-## Format support
-
-### Cross-format conversions
-
-These formats can be converted freely between each other:
-
-- JSON
-- JSON5
-- JSONC
-- YAML
-- TOON
-
-Example:
+Rebuild it:
 
 ```bash
-# Split JSON into YAML files
-config-disassembler json disassemble config.json --output-format yaml
-
-# Rebuild as JSON
-config-disassembler json reassemble config --output-format json
+config-disassembler xml reassemble flow
 ```
 
-### XML
-
-XML can be split into:
-
-- XML
-- JSON
-- JSON5
-- YAML
-
-…and reassembled back into XML.
-
-Advanced XML features are documented separately:
-
-- unique-id strategy
-- grouped-by-tag strategy
-- split tags
-- multi-level disassembly
-
-See [docs/xml.md](docs/xml.md).
-
-### TOML and INI
-
-TOML and INI are intentionally isolated:
-
-- TOML ↔ TOML only
-- INI ↔ INI only
-
-This avoids lossy or invalid conversions.
-
-See [docs/formats.md](docs/formats.md) for details.
+The output matches the original `flow.xml`.
 
 ## CLI overview
 
 ```text
-config-disassembler <format> <command>
-
-Formats:
-  xml
-  json
-  json5
-  jsonc
-  yaml
-  toon
-  toml
-  ini
+config-disassembler xml <command> [options]
 
 Commands:
-  disassemble
-  reassemble
+  disassemble <path>   Split an XML file, or every XML file under a directory
+  reassemble  <path>   Rebuild the original XML file from a disassembled directory
 ```
 
-Examples:
-
-```bash
-config-disassembler yaml disassemble envs/
-config-disassembler toml reassemble Cargo
-```
+Run `config-disassembler xml --help` for every option.
 
 ## Common options
 
 | Option | Description |
 |---|---|
-| `--output-format <fmt>` | Output format |
-| `--unique-id <field>` | Name array items using a field |
-| `--ignore-path <path>` | Ignore file path |
-| `--pre-purge` (`--prepurge` for XML) | Remove existing output before writing |
-| `--post-purge` (`--postpurge` for XML) | Remove input after success |
+| `--unique-id-elements <list>` | Fields used to name split files |
+| `--strategy <name>` | `unique-id` (default) or `grouped-by-tag` |
+| `--format <fmt>` | Split-file format: `xml` (default), `json`, `json5`, `yaml` |
+| `--ignore-path <path>` | Ignore file path (default `.cdignore`) |
+| `--prepurge` | Remove existing output before writing |
+| `--postpurge` | Remove input after success |
+
+XML can be split into XML, JSON, JSON5, or YAML files and is always reassembled back into XML.
+
+See [docs/xml.md](docs/xml.md) for every option, plus:
+
+- unique-id and grouped-by-tag strategies
+- split tags
+- multi-level disassembly
+- sidecar elements
+- round-trip verification
 
 ## Ignore files
 
@@ -178,30 +85,26 @@ Directory disassembly supports `.gitignore`-style filtering using `.cdignore`.
 Example:
 
 ```text
-**/secret.json
 **/generated/
+**/Legacy_*.permissionset-meta.xml
 ```
 
 Usage:
 
 ```bash
-config-disassembler yaml disassemble envs/
+config-disassembler xml disassemble force-app/main/default/permissionsets
 ```
-
-## XML strategies
-
-See [docs/xml.md](docs/xml.md) for splitting strategies, split tags, and multi-level disassembly.
 
 ## Library usage
 
 ```rust
-use config_disassembler::disassemble::{disassemble, DisassembleOptions};
-use config_disassembler::reassemble::{reassemble, ReassembleOptions};
-use config_disassembler::format::Format;
-
-// XML-only round-trip verification (see docs/xml.md)
-use config_disassembler::xml::{verify_roundtrip, RoundtripStatus, VerifyOptions};
+use config_disassembler::xml::{
+    DisassembleXmlFileHandler, ReassembleXmlFileHandler,
+    verify_roundtrip, RoundtripStatus, VerifyOptions,
+};
 ```
+
+See [docs/xml.md](docs/xml.md#round-trip-verification-library-api) for round-trip verification.
 
 ## Node.js bindings
 
@@ -211,7 +114,6 @@ Node.js support is available via napi-rs bindings: [config-disassembler-node](ht
 
 - [Examples](docs/examples.md)
 - [XML features](docs/xml.md)
-- [Format behavior](docs/formats.md)
 
 ## License
 
