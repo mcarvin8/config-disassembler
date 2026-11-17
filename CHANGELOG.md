@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/mcarvin8/config-disassembler/compare/v0.11.17...v0.12.0) - 2026-11-17
+
+### ⛰️ Features
+
+
+- [**breaking**] Drop non-XML formats and keep only the xml subcommand ([#197](https://github.com/mcarvin8/config-disassembler/pull/197)) - ([6885061](https://github.com/mcarvin8/config-disassembler/commit/6885061756f96b1102c43417aaae620e8ad6aa6e))
+
+### ⚙️ Miscellaneous Tasks
+
+
+- Create separate workflow for lint checks - ([6caca6c](https://github.com/mcarvin8/config-disassembler/commit/6caca6c21b1825a6f6ab31b5f8dfeb41f95c43b9))
+- Only run CI on PRs - ([b62eacd](https://github.com/mcarvin8/config-disassembler/commit/b62eacd8b584cadb274e32a69f065491b5dc5433))
+
+
 ## [0.11.17](https://github.com/mcarvin8/config-disassembler/compare/v0.11.16...v0.11.17) - 2026-11-17
 
 ### 🐛 Bug Fixes
