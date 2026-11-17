@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.14](https://github.com/mcarvin8/config-disassembler/compare/v0.11.13...v0.11.14) - 2026-11-17
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Keep text in its source escaping through round trip ([#188](https://github.com/mcarvin8/config-disassembler/pull/188)) - ([47b4ac8](https://github.com/mcarvin8/config-disassembler/commit/47b4ac8ee2336398e495e6713afa4c227d5e549b))
+- *(xml)* Keep files whose root has no child elements ([#186](https://github.com/mcarvin8/config-disassembler/pull/186)) - ([b9d46a1](https://github.com/mcarvin8/config-disassembler/commit/b9d46a14a4f5ccf2be4009ad124921de9ff68a92))
+
+
 ## [0.11.13](https://github.com/mcarvin8/config-disassembler/compare/v0.11.12...v0.11.13) - 2026-11-17
 
 ### 🐛 Bug Fixes
