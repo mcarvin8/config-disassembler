@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.13](https://github.com/mcarvin8/config-disassembler/compare/v0.11.12...v0.11.13) - 2026-11-17
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Write empty elements in their original form ([#185](https://github.com/mcarvin8/config-disassembler/pull/185)) - ([b13690b](https://github.com/mcarvin8/config-disassembler/commit/b13690bdcc1936882873e91a076f377f792b2bb8))
+- *(xml)* Keep empty elements among repeated siblings ([#184](https://github.com/mcarvin8/config-disassembler/pull/184)) - ([3adf3b9](https://github.com/mcarvin8/config-disassembler/commit/3adf3b9dc22c15321cbd3ea8b60a8e508aff3bd3))
+- *(xml)* Preserve the original XML declaration through round trip ([#182](https://github.com/mcarvin8/config-disassembler/pull/182)) - ([66e382f](https://github.com/mcarvin8/config-disassembler/commit/66e382febc21bf415161e96f9b357c0747c7e06c))
+
+
 ## [0.11.12](https://github.com/mcarvin8/config-disassembler/compare/v0.11.11...v0.11.12) - 2026-11-13
 
 ### ⚙️ Miscellaneous Tasks
