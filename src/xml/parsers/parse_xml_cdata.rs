@@ -48,6 +48,21 @@ fn append_comment_to_current(stack: &mut [(String, Map<String, Value>)], content
     }
 }
 
+/// Marker key recording how an element with no content was written, when that differs
+/// from the default self-closing `<a/>` (Salesforce's own form): `"pair"` for `<a></a>`
+/// and `"space"` for Prettier's `<a />`. `build_xml_string::write_object` consumes it.
+pub const EMPTY_FORM_KEY: &str = "#empty";
+pub const EMPTY_FORM_PAIR: &str = "pair";
+pub const EMPTY_FORM_SPACE: &str = "space";
+
+/// True when an element closed by `Event::End` had no content: only attributes and,
+/// at most, whitespace-only text (which `strip_whitespace` removes later).
+fn is_contentless(elem: &Map<String, Value>) -> bool {
+    elem.iter().all(|(k, v)| {
+        k.starts_with('@') || (k == "#text" && v.as_str().is_some_and(|s| s.trim().is_empty()))
+    })
+}
+
 /// Attach a finished child element (from Event::End or Event::Empty) to its parent -
 /// or record it as the root when the stack is empty.
 fn attach_child_to_parent(
@@ -220,7 +235,13 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 text_buffer_after_comment = false;
                 // `stack.pop()` only returns None on malformed XML, which quick-xml rejects
                 // before reaching here; silently skip when it does.
-                if let Some((popped_name, elem)) = stack.pop() {
+                if let Some((popped_name, mut elem)) = stack.pop() {
+                    if is_contentless(&elem) {
+                        elem.insert(
+                            EMPTY_FORM_KEY.to_string(),
+                            Value::String(EMPTY_FORM_PAIR.to_string()),
+                        );
+                    }
                     attach_child_to_parent(
                         &mut stack,
                         popped_name,
@@ -241,6 +262,15 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                         .normalized_value(XmlVersion::Implicit1_0)
                         .unwrap_or_default();
                     attrs.insert(key, Value::String(val.to_string()));
+                }
+                // `e` holds everything between `<` and `/>`, so trailing whitespace
+                // means the source wrote `<a />` (Prettier) rather than `<a/>`.
+                let raw: &str = e.as_ref();
+                if raw.ends_with(|c: char| c.is_ascii_whitespace()) {
+                    attrs.insert(
+                        EMPTY_FORM_KEY.to_string(),
+                        Value::String(EMPTY_FORM_SPACE.to_string()),
+                    );
                 }
                 attach_child_to_parent(
                     &mut stack,
@@ -403,11 +433,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_xml_with_cdata_empty_root_returns_empty_object() {
-        let xml = r#"<root></root>"#;
-        let v = parse_xml_with_cdata(xml).unwrap();
-        let root = v.get("root").and_then(|r| r.as_object()).unwrap();
-        assert!(root.is_empty());
+    fn parse_xml_with_cdata_empty_root_records_pair_form() {
+        // `<root></root>` has no content; only its open/close form is recorded.
+        let v = parse_xml_with_cdata(r#"<root></root>"#).unwrap();
+        assert_eq!(v, serde_json::json!({ "root": { "#empty": "pair" } }));
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_records_empty_element_form() {
+        // `<a/>` is the default (no marker); `<a />` and `<a></a>` are recorded. Attributes
+        // and whitespace-only bodies still count as empty; real content does not.
+        let v = parse_xml_with_cdata(
+            r#"<r><a/><b /><c></c><d x="1" /><e>  </e><f>t</f><g><h/></g><i x="1"></i></r>"#,
+        )
+        .unwrap();
+        let r = &v["r"];
+        assert_eq!(r["a"], serde_json::json!({}));
+        assert_eq!(r["b"], serde_json::json!({ "#empty": "space" }));
+        assert_eq!(r["c"], serde_json::json!({ "#empty": "pair" }));
+        assert_eq!(r["d"], serde_json::json!({ "@x": "1", "#empty": "space" }));
+        assert_eq!(r["e"]["#empty"], "pair");
+        assert!(r["f"].get("#empty").is_none());
+        assert!(r["g"].get("#empty").is_none());
+        assert_eq!(r["i"], serde_json::json!({ "@x": "1", "#empty": "pair" }));
     }
 
     #[test]

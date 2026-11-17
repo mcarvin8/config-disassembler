@@ -279,7 +279,8 @@ mod tests {
             .collect();
         assert_eq!(lens, vec![2, 3, 2]);
         assert_eq!(sections[0]["c"][1], serde_json::json!({}));
-        assert_eq!(sections[2]["c"][0], serde_json::json!({}));
+        // Whitespace is stripped; only the `<c></c>` form is recorded.
+        assert_eq!(sections[2]["c"][0], serde_json::json!({ "#empty": "pair" }));
     }
 
     #[test]

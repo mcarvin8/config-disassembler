@@ -13,6 +13,7 @@ pub use parse_xml::{
     extract_xml_declaration_from_raw, extract_xmlns_from_raw, parse_xml, parse_xml_from_str,
     XML_DECLARATION_RAW_KEY,
 };
+pub use parse_xml_cdata::{EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE};
 pub use strip_whitespace::{
     mark_compact_elements, strip_whitespace_text_nodes, strip_whitespace_text_nodes_in_place,
 };
