@@ -506,11 +506,22 @@ pub async fn build_disassembled_files_unified(
     )
     .await;
 
-    if is_leaves_only(has_nested_elements, leaf_count) {
-        log::error!(
-            "The XML file {} only has leaf elements. This file will not be disassembled.",
-            file_path
-        );
+    // Without nested elements there is nothing to disassemble, and nothing written here
+    // could rebuild the file: leave it in place (and unpurged). An empty root
+    // (`<CustomObjectTranslation xmlns="..."/>`) used to fall through, write no shards,
+    // and then be deleted by `post_purge` -- lost for good.
+    if !has_nested_elements {
+        if is_leaves_only(has_nested_elements, leaf_count) {
+            log::error!(
+                "The XML file {} only has leaf elements. This file will not be disassembled.",
+                file_path
+            );
+        } else {
+            log::error!(
+                "The XML file {} has no child elements. This file will not be disassembled.",
+                file_path
+            );
+        }
         return Ok(());
     }
 
@@ -904,10 +915,9 @@ mod tests {
     #[test]
     fn is_leaves_only_false_for_empty_root() {
         // `has_nested=false && leaf_count=0` is *empty root*, not
-        // *leaves-only*. The unified build must NOT short-circuit here;
-        // it should still write the key-order manifest and honour
-        // post_purge. A `>=` mutant on `leaf_count > 0` would flip this
-        // to true and silently drop those side effects.
+        // *leaves-only*: both are skipped (left in place, unpurged), but
+        // each logs its own reason. A `>=` mutant on `leaf_count > 0`
+        // would flip this to true and log the leaf-only reason instead.
         assert!(!is_leaves_only(false, 0));
     }
 
