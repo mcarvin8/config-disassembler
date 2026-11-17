@@ -76,11 +76,11 @@ Run all tests (install `cargo-nextest` first):
 cargo nextest run --all-features --workspace
 ```
 
-- **Unit tests** - In-module tests for format parsing, disassembly,
-  reassembly, XML builders, parsers, and transformers.
-- **Integration tests** - Tests under `tests/` cover CLI behavior, fixture
-  round trips, cross-format conversions, TOML restrictions, and XML
-  disassemble/reassemble workflows.
+- **Unit tests** - In-module tests for the XML builders, parsers,
+  transformers, handlers, and CLI.
+- **Integration tests** - Tests under `tests/` cover CLI dispatch and XML
+  disassemble/reassemble round trips (sibling order, comments, declarations,
+  empty elements, text escaping).
 
 ## Git hooks
 
@@ -143,9 +143,7 @@ match the CI formatting and lint expectations.
 
   - `impl Debug for ...`, `impl From<...> for Error`, and `fn source`: pure
     delegations / typically-equivalent mutants.
-  - `fn print_help`, `fn print_format_help`, `fn print_same_format_help`,
-    `fn print_cross_format_help`, `fn format_list`, `fn display_name`, and
-    `fn supported_format_list`: human-facing help / format-label strings
+  - `fn print_help` and `fn print_usage`: human-facing help text
     where the only way to "kill" a mutant is a snapshot test whose only job
     is to fail when the help text is intentionally edited.
 

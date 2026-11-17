@@ -1,3 +1,0 @@
-{
-  "description": "Top-level keys with non-ASCII characters and characters that must be sanitised in filenames (slashes, colons, spaces). Round-trip should preserve the original keys exactly."
-}

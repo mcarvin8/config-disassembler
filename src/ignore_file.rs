@@ -1,15 +1,15 @@
-//! Shared ignore-file conventions for every subcommand.
+//! Ignore-file conventions for the `xml` subcommand.
 //!
-//! Every disassemble action accepts an `--ignore-path` flag pointing at a
+//! `xml disassemble` accepts an `--ignore-path` flag pointing at a
 //! `.gitignore`-style file. When the flag is omitted we look for
 //! [`DEFAULT_IGNORE_FILENAME`] in the directory disassembly is run from,
-//! falling back to the legacy `.xmldisassemblerignore` filename for the
-//! `xml` subcommand only (with a deprecation warning) so existing setups
+//! falling back to the legacy `.xmldisassemblerignore` filename (with a
+//! deprecation warning) so existing setups
 //! keep working.
 
 use std::path::Path;
 
-/// Default ignore-file name used by every format. Can be overridden via
+/// Default ignore-file name. Can be overridden via
 /// the `--ignore-path` CLI flag.
 pub const DEFAULT_IGNORE_FILENAME: &str = ".cdignore";
 
