@@ -5,7 +5,9 @@ use serde_json::{Map, Value};
 /// Keys whose mere presence means an element had real text/comment/CDATA content
 /// between its tags -- disqualifying it from `mark_compact_elements`'s "wrapper with
 /// zero surrounding whitespace" check regardless of the key's value.
-const CONTENT_KEYS: [&str; 4] = ["#text", "#comment", "#text-tail", "#cdata"];
+/// (`#comments-end` counts too: a comment after the sole child keeps the wrapper in block form,
+/// where the writer puts that comment back before the closing tag.)
+const CONTENT_KEYS: [&str; 5] = ["#text", "#comment", "#text-tail", "#cdata", "#comments-end"];
 
 fn is_meta_key(key: &str) -> bool {
     key.starts_with('#') || key.starts_with('@') || key == "?xml"

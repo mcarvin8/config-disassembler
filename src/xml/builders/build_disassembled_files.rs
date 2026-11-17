@@ -495,12 +495,12 @@ pub async fn build_disassembled_files_unified(
         Err(_) => return Ok(()),
     };
 
-    // Comments between elements (or outside the root) can't be kept in place: they would be moved,
-    // dropped, or -- at the root -- written as JSON text that corrupts the file. Leave the file in
-    // place (and unpurged), like a leaf-only file.
+    // A comment outside the root element (before or after it) has no element to travel with, so it
+    // can't be kept: leave the file in place (and unpurged), like a leaf-only file. Comments inside
+    // the root are kept (`#comments-before` / `#comments-end` / `#comment`).
     if crate::xml::parsers::has_unplaceable_comments(&xml_content) {
         log::error!(
-            "The XML file {} has comments between elements, which can't be kept in place. This file will not be disassembled.",
+            "The XML file {} has comments outside its root element, which can't be kept in place. This file will not be disassembled.",
             file_path
         );
         return Ok(());

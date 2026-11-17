@@ -9,7 +9,8 @@ use std::path::Path;
 
 use super::fragments::{Entry, Fragments, Item};
 use crate::xml::parsers::{
-    EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE, TEXT_ESCAPED_KEY, XML_DECLARATION_RAW_KEY,
+    COMMENTS_BEFORE_KEY, COMMENTS_END_KEY, EMPTY_FORM_KEY, EMPTY_FORM_PAIR, EMPTY_FORM_SPACE,
+    TEXT_ESCAPED_KEY, XML_DECLARATION_RAW_KEY,
 };
 use crate::xml::types::XmlElement;
 
@@ -25,7 +26,7 @@ pub(super) fn value_to_string(v: &Value) -> String {
 
 /// Keys of an element's map that are not child elements: its own text, CDATA,
 /// comment and formatting markers. (Keys starting with `@` are attributes.)
-pub(super) const CONTENT_KEYS: [&str; 8] = [
+pub(super) const CONTENT_KEYS: [&str; 10] = [
     "#text",
     "#raw-text",
     "#comment",
@@ -34,6 +35,8 @@ pub(super) const CONTENT_KEYS: [&str; 8] = [
     "#compact",
     EMPTY_FORM_KEY,
     TEXT_ESCAPED_KEY,
+    COMMENTS_BEFORE_KEY,
+    COMMENTS_END_KEY,
 ];
 
 /// Whether `key` names a child element rather than an attribute or content key.
@@ -69,6 +72,22 @@ impl<'a> Field<'a> {
                 Some(v) => value_to_string(v),
                 None => value_to_string(&entry.to_value()),
             },
+        }
+    }
+
+    /// Items of a list-valued content field (a lone value reads as a one-item list).
+    fn to_strings(self) -> Vec<String> {
+        let owned;
+        let value = match self {
+            Field::Entry(entry, _) if self.as_value().is_none() => {
+                owned = entry.to_value();
+                &owned
+            }
+            _ => self.as_value().expect("plain value"),
+        };
+        match value {
+            Value::Array(items) => items.iter().map(value_to_string).collect(),
+            other => vec![value_to_string(other)],
         }
     }
 }
@@ -139,6 +158,8 @@ pub(super) fn write_object<'a, W: std::io::Write>(
     let mut is_compact = false;
     let mut empty_form = String::new();
     let mut escaped_text = String::new();
+    let mut comments_before: Vec<String> = Vec::new();
+    let mut comments_end: Vec<String> = Vec::new();
     let mut child_elements: Vec<(&str, Field<'a>)> = Vec::new();
     for (k, field) in fields {
         if k.starts_with('@') {
@@ -159,9 +180,23 @@ pub(super) fn write_object<'a, W: std::io::Write>(
             empty_form = field.to_text();
         } else if k == TEXT_ESCAPED_KEY {
             escaped_text = field.to_text();
+        } else if k == COMMENTS_BEFORE_KEY {
+            comments_before = field.to_strings();
+        } else if k == COMMENTS_END_KEY {
+            comments_end = field.to_strings();
         } else {
             child_elements.push((k, field));
         }
+    }
+
+    // Comments that sat above this element, each on its own line at the element's indent. The
+    // caller has already written the newline + indent this element starts on.
+    for comment in &comments_before {
+        // Comment text is stored raw (never unescaped on read), so it is never escaped here.
+        writer.write_event(Event::Comment(BytesText::from_escaped(comment.as_str())))?;
+        writer.write_event(Event::Text(BytesText::new(
+            format!("\n{}", indent).as_str(),
+        )))?;
     }
 
     let mut start = BytesStart::new(name);
@@ -194,7 +229,7 @@ pub(super) fn write_object<'a, W: std::io::Write>(
     writer.write_event(Event::Start(start))?;
 
     let compact_child = match child_elements.as_slice() {
-        [(child_name, field)] if is_compact => match field.as_value() {
+        [(child_name, field)] if is_compact && comments_end.is_empty() => match field.as_value() {
             Some(v @ Value::Object(_)) => Some((*child_name, v)),
             // A pre-serialized child was written for the indented layout, so it
             // can't be placed inline; fragment reassembly takes the tree path for
@@ -269,6 +304,14 @@ pub(super) fn write_object<'a, W: std::io::Write>(
                         format!("\n{}", child_indent).as_str(),
                     )))?;
                 }
+            }
+
+            // Comments after the last child, each on its own line at the children's indent.
+            for comment in &comments_end {
+                writer.write_event(Event::Text(BytesText::new(
+                    format!("\n{}", child_indent).as_str(),
+                )))?;
+                writer.write_event(Event::Comment(BytesText::from_escaped(comment.as_str())))?;
             }
 
             writer.write_event(Event::Text(BytesText::new(
@@ -695,6 +738,29 @@ mod tests {
         let out = build_xml_string(&el);
         assert!(out.contains("<?xml"));
         assert!(out.contains("<root/>"));
+    }
+
+    #[test]
+    fn build_xml_string_writes_comments_above_elements_and_before_closing_tags() {
+        let el = json!({ "r": {
+            "a": [
+                { "#comments-before": [" one ", " two "], "#text": "1" },
+                { "#text": "2" }
+            ],
+            "b": { "#comments-before": [" empty "] },
+            "c": { "d": { "#text": "x" }, "#comments-end": [" end "] }
+        }});
+        assert_eq!(
+            build_xml_string(&el),
+            "<r>\n    <!-- one -->\n    <!-- two -->\n    <a>1</a>\n    <a>2</a>\n    <!-- empty -->\n    <b/>\n    <c>\n        <d>x</d>\n        <!-- end -->\n    </c>\n</r>"
+        );
+    }
+
+    #[test]
+    fn build_xml_string_keeps_a_wrapper_with_an_end_comment_in_block_form() {
+        // `#compact` would put the wrapper and its sole child on one line, losing the comment.
+        let el = json!({ "r": { "a": { "#compact": true, "b": { "#text": "1" }, "#comments-end": [" end "] } } });
+        assert!(build_xml_string(&el).contains("<!-- end -->"));
     }
 
     #[test]
