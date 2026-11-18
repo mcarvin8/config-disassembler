@@ -124,6 +124,17 @@ fn flush_text_after_comments(
     flush_text_buffer(raw, stack, is_after_comment);
 }
 
+/// Drop the whitespace between pending comments and the child element starting after them: the
+/// comments travel with that element (`#comments-before`), so the run is only the indentation the
+/// writer puts back. Stored as the parent's `#text-tail`, it would absorb a later real text run's
+/// leading whitespace (see `flush_text_buffer`), changing that text on every round trip.
+fn drop_formatting_before_child(raw: &mut String, pending: &[Vec<String>], is_after_comment: bool) {
+    let comments_pending = pending.last().is_some_and(|open| !open.is_empty());
+    if is_after_comment && comments_pending && raw.trim().is_empty() {
+        raw.clear();
+    }
+}
+
 /// Hand the open element's pending comments to a child element that is starting.
 fn take_comments_before(pending: &mut [Vec<String>], attrs: &mut Map<String, Value>) {
     if let Some(open) = pending.last_mut() {
@@ -305,6 +316,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
+                drop_formatting_before_child(&mut text_buffer, &pending, text_buffer_after_comment);
                 flush_text_after_comments(
                     &mut text_buffer,
                     &mut stack,
@@ -366,6 +378,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 }
             }
             Ok(Event::Empty(e)) => {
+                drop_formatting_before_child(&mut text_buffer, &pending, text_buffer_after_comment);
                 flush_text_after_comments(
                     &mut text_buffer,
                     &mut stack,
@@ -585,6 +598,25 @@ mod tests {
         assert!(r["a"][1].get("#comments-before").is_none());
         assert_eq!(r["b"]["#comments-before"], serde_json::json!([" empty "]));
         assert!(r.get("#comment").is_none());
+    }
+
+    #[test]
+    fn parse_xml_with_cdata_drops_indentation_between_a_comment_and_its_element() {
+        // The indentation after `<!---->` goes with the comment to `<b>`; kept as the parent's
+        // `#text-tail`, it absorbed the later text's leading space (" (" read back as "(").
+        for xml in [
+            "<r><a>\n  <x>1</x>\n  <!---->\n  <b/>\n<!-- c --> (</a></r>",
+            "<r><a>\n  <x>1</x>\n  <!---->\n  <b>2</b>\n<!-- c --> (</a></r>",
+        ] {
+            let v = parse_xml_with_cdata(xml).unwrap();
+            let a = &v["r"]["a"];
+            assert_eq!(a["b"]["#comments-before"], serde_json::json!([""]), "{xml}");
+            assert_eq!(a["#comment"], " c ", "{xml}");
+            assert_eq!(a["#text-tail"], " (", "{xml}");
+        }
+        // Without a following element the whitespace is still the element's own content.
+        let v = parse_xml_with_cdata("<r><a><!-- c -->\n</a></r>").unwrap();
+        assert_eq!(v["r"]["a"]["#text-tail"], "\n");
     }
 
     #[test]
