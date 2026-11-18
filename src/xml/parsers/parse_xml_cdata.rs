@@ -128,9 +128,12 @@ fn flush_text_after_comments(
 /// comments travel with that element (`#comments-before`), so the run is only the indentation the
 /// writer puts back. Stored as the parent's `#text-tail`, it would absorb a later real text run's
 /// leading whitespace (see `flush_text_buffer`), changing that text on every round trip.
-fn drop_formatting_before_child(raw: &mut String, pending: &[Vec<String>], is_after_comment: bool) {
+///
+/// Pending comments imply the run is text after a comment: every event that drains them
+/// (Start/Empty/End/CDATA) also resets that flag, so it needs no separate check.
+fn drop_formatting_before_child(raw: &mut String, pending: &[Vec<String>]) {
     let comments_pending = pending.last().is_some_and(|open| !open.is_empty());
-    if is_after_comment && comments_pending && raw.trim().is_empty() {
+    if comments_pending && raw.trim().is_empty() {
         raw.clear();
     }
 }
@@ -316,7 +319,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                drop_formatting_before_child(&mut text_buffer, &pending, text_buffer_after_comment);
+                drop_formatting_before_child(&mut text_buffer, &pending);
                 flush_text_after_comments(
                     &mut text_buffer,
                     &mut stack,
@@ -378,7 +381,7 @@ pub fn parse_xml_with_cdata(xml: &str) -> Result<Value, quick_xml::Error> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                drop_formatting_before_child(&mut text_buffer, &pending, text_buffer_after_comment);
+                drop_formatting_before_child(&mut text_buffer, &pending);
                 flush_text_after_comments(
                     &mut text_buffer,
                     &mut stack,
@@ -617,6 +620,13 @@ mod tests {
         // Without a following element the whitespace is still the element's own content.
         let v = parse_xml_with_cdata("<r><a><!-- c -->\n</a></r>").unwrap();
         assert_eq!(v["r"]["a"]["#text-tail"], "\n");
+        // Without a comment, whitespace before a child is kept as before.
+        let v = parse_xml_with_cdata("<r><a>\n  <b/></a></r>").unwrap();
+        assert_eq!(v["r"]["a"]["#text"], "\n  ");
+        // Real text between a comment and a child is mixed content, not formatting.
+        let v = parse_xml_with_cdata("<r><a><!-- c --> t <b/></a></r>").unwrap();
+        assert_eq!(v["r"]["a"]["#comment"], " c ");
+        assert_eq!(v["r"]["a"]["#text-tail"], " t ");
     }
 
     #[test]
