@@ -482,7 +482,26 @@ impl DisassembleXmlFileHandler {
         })
         .await?;
 
-        drop(temp_file); // deletes the temp file
+        // With sidecars, the disassembler ran on the stripped temp copy, so `post_purge` purged
+        // that copy, not the original. The copy is only purged when it was actually disassembled
+        // (a skipped file -- leaf-only, empty root, comments outside the root -- is left in place),
+        // so purge the original exactly when its copy went.
+        if post_purge {
+            if let Some(tmp) = &temp_file {
+                if !tmp.path().exists() {
+                    let _ = fs::remove_file(file_path).await;
+                }
+            }
+        }
+
+        drop(temp_file); // deletes the temp file (if still there)
+
+        // A skipped file (leaf-only, empty root, comments outside the root) produced no output
+        // directory: it is left in place, with nothing to add sidecars or ordering files to.
+        // Writing the sidecars used to fail here with NotFound, aborting the run.
+        if extraction_result.is_some() && !output_path.exists() {
+            return Ok(());
+        }
 
         // Write sidecar files into the output directory, plus a .sidecars.json
         // metadata file so reassembly can auto-detect specs without CLI flags.
