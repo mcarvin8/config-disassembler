@@ -193,6 +193,19 @@ permissionset/
 
 Reassembly automatically merges split directories back into the original XML.
 
+`split` files keep their source order through `.element_order.json` (see [Sibling order](#sibling-order)). A `group` file keeps its own items in order, but group files are read back one after another, in filename order. When that would change the source order (siblings alternating between groups, such as `fieldPermissions` for `Log__c`, then `Entry__c`, then `Log__c` again), disassembly also writes `.group_order.json`, recording each group directory's sequence as runs of consecutive items from the same file:
+
+```json
+{
+  "fieldPermissions": {
+    "tag": "fieldPermissions",
+    "runs": [["Log__c", 1], ["Entry__c", 1], ["Log__c", 2]]
+  }
+}
+```
+
+Reassembly takes items from each group file in that sequence. Items or group files added after disassembly follow in filename order, and removed ones are skipped. Without `.group_order.json` (an earlier version, or groups already in filename order), group files are read one after another as before.
+
 ---
 
 ## Output formats

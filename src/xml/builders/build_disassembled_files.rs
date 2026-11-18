@@ -402,10 +402,15 @@ async fn write_nested_groups(
                 let _ = write_shards(shards).await;
             } else if r.mode == "group" {
                 let mut by_key: HashMap<String, Vec<Value>> = HashMap::new();
+                let mut source_keys = Vec::with_capacity(arr.len());
                 for item in arr {
                     let key = group_mode_key_stem(item, &r.field);
+                    source_keys.push(key.clone());
                     by_key.entry(key).or_default().push(item.clone());
                 }
+                // Group files are read back one after another; keep the source order when
+                // siblings alternated between groups (see `GROUP_ORDER_FILE`).
+                element_order.record_groups(path_segment, tag, &source_keys, options.format);
                 // Sort keys for deterministic cross-platform output order
                 let mut sorted_keys: Vec<_> = by_key.keys().cloned().collect();
                 sorted_keys.sort();
