@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.3](https://github.com/mcarvin8/config-disassembler/compare/v0.12.2...v0.12.3) - 2026-11-18
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Bring sidecar elements back as their original text ([#203](https://github.com/mcarvin8/config-disassembler/pull/203)) - ([48044ef](https://github.com/mcarvin8/config-disassembler/commit/48044efad135e0edfddd506178a4d827f347b5d8))
+
+
 ## [0.12.2](https://github.com/mcarvin8/config-disassembler/compare/v0.12.1...v0.12.2) - 2026-11-18
 
 ### 🐛 Bug Fixes
