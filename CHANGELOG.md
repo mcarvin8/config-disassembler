@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/mcarvin8/config-disassembler/compare/v0.12.1...v0.12.2) - 2026-11-18
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Keep leading whitespace of text after comments in mixed content ([#201](https://github.com/mcarvin8/config-disassembler/pull/201)) - ([a8b9d29](https://github.com/mcarvin8/config-disassembler/commit/a8b9d29fad2c5c8ee4f6d70aea236f90c8cc7eaa))
+
+
 ## [0.12.1](https://github.com/mcarvin8/config-disassembler/compare/v0.12.0...v0.12.1) - 2026-11-18
 
 ### 🐛 Bug Fixes
