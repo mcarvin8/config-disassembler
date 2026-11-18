@@ -402,7 +402,9 @@ This mirrors the Salesforce `decomposeExternalServiceRegistrationBeta` preset: J
 config-disassembler xml reassemble BankService
 ```
 
-Reassembly auto-detects sidecars from `.sidecars.json` written during disassembly — no flag required. The sidecar file content is injected back verbatim into the XML element.
+Reassembly auto-detects sidecars from `.sidecars.json` written during disassembly — no flag required. The sidecar content is converted back to the format it had inside the XML and injected into the element.
+
+So that it comes back as the exact text it was, disassembly also records the form that reproduces it: compact or pretty JSON (`json_layout`), and whether quotes are written as `&quot;` / `&apos;` (`escape`). Salesforce, for example, retrieves an External Service schema as compact JSON with `&quot;`. Disassembly checks the recorded form by converting the sidecar back. When no form reproduces the text exactly (a number like `1.50` comes back as `1.5`, or the element has attributes or comments), the element stays in the XML instead of going to a sidecar, with a warning. Sidecars written by earlier versions, without these fields, come back as pretty JSON with raw quotes, as before.
 
 ### Multiple sidecars
 
