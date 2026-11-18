@@ -4,13 +4,13 @@ use crate::xml::builders::{
     merge_fragments, merge_xml_elements_owned, reorder_root_keys_owned, write_xml_file,
     ShardFragments,
 };
-use crate::xml::element_order::{entry_sort_key, ElementOrder};
+use crate::xml::element_order::{entry_sort_key, interleave, item_key, ElementOrder, GroupRecord};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
 use crate::xml::utils::normalize_path_unix;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -81,6 +81,66 @@ async fn parse_shards_in_order<T: Send + 'static>(
         results[index] = parsed;
     }
     Ok(results)
+}
+
+/// Merge a `group` rule's directory (`entries`, sorted) into one element whose `tag` siblings
+/// follow `record`'s source order. `None` -- leaving the directory to the ordinary file-by-file
+/// merge -- when it holds anything but plain group files: subdirectories, files that fail to
+/// parse, or roots with content other than attributes and the grouped tag.
+async fn interleave_group_dir(
+    entries: &[fs::DirEntry],
+    record: &GroupRecord,
+) -> Result<Option<XmlElement>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if !is_regular_file(entry, &path).await {
+            return Ok(None);
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with('.') {
+            files.push((
+                item_key(name).to_string(),
+                normalize_path_unix(&path.to_string_lossy()).to_string(),
+            ));
+        }
+    }
+    let (keys, paths): (Vec<String>, Vec<String>) = files.into_iter().unzip();
+
+    let mut queues: BTreeMap<String, VecDeque<Value>> = BTreeMap::new();
+    let mut first: Option<(serde_json::Map<String, Value>, String, Value)> = None;
+    for (key, parsed) in keys
+        .into_iter()
+        .zip(parse_shards_in_order(paths, keep_tree).await?)
+    {
+        let Some(Value::Object(mut doc)) = parsed else {
+            return Ok(None);
+        };
+        let Some(root_key) = doc.keys().find(|k| *k != "?xml").cloned() else {
+            return Ok(None);
+        };
+        let Some(Value::Object(mut root)) = doc.remove(&root_key) else {
+            return Ok(None);
+        };
+        if root.keys().any(|k| !k.starts_with('@') && k != &record.tag) {
+            return Ok(None);
+        }
+        let items = match root.remove(&record.tag) {
+            Some(Value::Array(items)) => items,
+            Some(item) => vec![item],
+            None => Vec::new(),
+        };
+        queues.entry(key).or_default().extend(items);
+        if first.is_none() {
+            first = Some((doc, root_key, Value::Object(root)));
+        }
+    }
+    let Some((mut doc, root_key, Value::Object(mut root))) = first else {
+        return Ok(None);
+    };
+    root.insert(record.tag.clone(), Value::Array(interleave(record, queues)));
+    doc.insert(root_key, Value::Object(root));
+    Ok(Some(Value::Object(doc)))
 }
 
 /// The identity conversion for [`parse_shards_in_order`]: keep the parsed tree.
@@ -530,6 +590,17 @@ impl ReassembleXmlFileHandler {
             // the current implementation, but tracking them per-entry keeps the door open
             // for future per-rule base_paths without another signature change.
             let is_base = is_at_base_path(&dir_path, &base_segments);
+
+            // A `group` rule's directory whose siblings alternated between groups in the
+            // source: merge its files into one element in that recorded order.
+            if let Some(record) = element_order
+                .as_deref()
+                .and_then(|order| order.group_for(&dir_path))
+            {
+                if let Some(merged) = interleave_group_dir(&entries, record).await? {
+                    return Ok(vec![convert(merged)]);
+                }
+            }
 
             // Pass 1: classify entries in sorted order. Shard files are queued for the
             // concurrent parse below; each slot remembers its position so `parsed` ends
