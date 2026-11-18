@@ -5,7 +5,9 @@ use crate::xml::multi_level::{
     capture_xmlns_from_root, path_segment_from_file_pattern, save_multi_level_config,
     strip_root_and_build_xml,
 };
+use crate::xml::parsers::TEXT_ESCAPED_KEY;
 use crate::xml::parsers::{extract_xml_declaration_from_raw, parse_xml, parse_xml_from_str};
+use crate::xml::sidecar_form::{find_source_form, RecordedSidecar, SourceForm, SIDECARS_FILE};
 use crate::xml::types::{
     BuildDisassembledFilesOptions, DecomposeRule, MultiLevelRule, SidecarSpec,
 };
@@ -506,29 +508,29 @@ impl DisassembleXmlFileHandler {
         // Write sidecar files into the output directory, plus a .sidecars.json
         // metadata file so reassembly can auto-detect specs without CLI flags.
         if let Some((_, sidecars)) = &extraction_result {
-            for (_, extension, content, _) in sidecars {
-                let sidecar_path = output_path.join(format!("{}.{}", base_name, extension));
-                fs::write(&sidecar_path, content).await?;
+            for sidecar in sidecars {
+                let sidecar_path = output_path.join(format!("{}.{}", base_name, sidecar.extension));
+                fs::write(&sidecar_path, &sidecar.content).await?;
             }
             if let Some(specs) = sidecar_specs {
-                // Enrich each spec with the original_format detected at extraction time
-                // so reassembly can convert the sidecar content back to the correct format.
-                let enriched: Vec<SidecarSpec> = specs
+                // Enrich each spec with the original format and source form found at extraction
+                // time, so reassembly can turn the sidecar back into the element's exact text.
+                let enriched: Vec<RecordedSidecar> = specs
                     .iter()
                     .map(|spec| {
-                        let original_format = sidecars
-                            .iter()
-                            .find(|(el, _, _, _)| el == &spec.element)
-                            .and_then(|(_, _, _, fmt)| fmt.clone());
-                        SidecarSpec {
-                            element: spec.element.clone(),
-                            extension: spec.extension.clone(),
-                            original_format,
-                        }
+                        let extracted = sidecars.iter().find(|s| s.element == spec.element);
+                        RecordedSidecar::new(
+                            SidecarSpec {
+                                element: spec.element.clone(),
+                                extension: spec.extension.clone(),
+                                original_format: extracted.and_then(|s| s.original_format.clone()),
+                            },
+                            extracted.map(|s| s.form).unwrap_or_default(),
+                        )
                     })
                     .collect();
                 if let Ok(json) = serde_json::to_string(&enriched) {
-                    let _ = fs::write(output_path.join(".sidecars.json"), json).await;
+                    let _ = fs::write(output_path.join(SIDECARS_FILE), json).await;
                 }
             }
         }
@@ -696,8 +698,10 @@ impl Default for DisassembleXmlFileHandler {
 /// writing sidecar files; the original file on disk is never modified.
 ///
 /// Returns `None` when no matching element was found.
-/// Returns `Some((stripped_xml, sidecars))` where each sidecar entry is
-/// `(element, extension, content, original_format)`.
+/// Returns `Some((stripped_xml, sidecars))`.
+///
+/// An element is extracted only when reassembly can turn its sidecar back into its exact text
+/// (see `sidecar_form`); otherwise it stays in the XML, so it round-trips byte for byte there.
 ///
 /// Quick-xml's parser automatically unescapes entity references in text
 /// content, so the sidecar receives the raw, unescaped bytes of the embedded
@@ -705,10 +709,7 @@ impl Default for DisassembleXmlFileHandler {
 async fn extract_sidecar_elements(
     file_path: &str,
     specs: &[SidecarSpec],
-) -> Result<
-    Option<(String, Vec<(String, String, String, Option<String>)>)>,
-    Box<dyn std::error::Error + Send + Sync>,
-> {
+) -> Result<Option<(String, Vec<ExtractedSidecar>)>, Box<dyn std::error::Error + Send + Sync>> {
     let raw = fs::read_to_string(file_path).await?;
     let Some(mut parsed) = parse_xml_from_str(&raw, file_path) else {
         return Ok(None);
@@ -732,34 +733,39 @@ async fn extract_sidecar_elements(
         return Ok(None);
     };
 
-    // (element, extension, content, original_format)
-    let mut sidecars: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut sidecars: Vec<ExtractedSidecar> = Vec::new();
     if let Some(root_val) = parsed.as_object_mut().and_then(|o| o.get_mut(&root_key)) {
         if let Some(root_obj) = root_val.as_object_mut() {
             for spec in specs {
                 let Some(elem_val) = root_obj.remove(&spec.element) else {
                     continue;
                 };
-                // The XML parser always yields Value::Object for element values;
-                // non-Object shapes are unexpected — restore and skip to preserve data.
-                let text = match &elem_val {
-                    serde_json::Value::Object(obj) => obj
-                        .get("#text")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    _ => {
-                        root_obj.insert(spec.element.clone(), elem_val);
-                        continue;
-                    }
+                // Only an element holding plain text is extracted (the XML parser always yields
+                // an object): anything else -- attributes, comments, CDATA, `<a></a>` -- would
+                // not survive, so it stays in the XML.
+                let Some((text, source)) = element_text_and_source(&elem_val) else {
+                    root_obj.insert(spec.element.clone(), elem_val);
+                    continue;
                 };
                 let original_format = detect_content_format(&text);
-                sidecars.push((
-                    spec.element.clone(),
-                    spec.extension.clone(),
-                    convert_sidecar_content(&text, &spec.extension),
+                let content = convert_sidecar_content(&text, &spec.extension);
+                let Some(form) = find_source_form(&content, original_format.as_deref(), &source)
+                else {
+                    log::warn!(
+                        "{file_path}: <{}> would not come back from a .{} sidecar as the same text, so it stays in the XML.",
+                        spec.element,
+                        spec.extension
+                    );
+                    root_obj.insert(spec.element.clone(), elem_val);
+                    continue;
+                };
+                sidecars.push(ExtractedSidecar {
+                    element: spec.element.clone(),
+                    extension: spec.extension.clone(),
+                    content,
                     original_format,
-                ));
+                    form,
+                });
             }
         }
     }
@@ -767,8 +773,45 @@ async fn extract_sidecar_elements(
     if sidecars.is_empty() {
         Ok(None)
     } else {
-        Ok(Some((build_xml_string(&parsed), sidecars)))
+        // The stripped copy is what gets disassembled, so it must end like the original:
+        // disassembly records whether it ends with a newline (`.trailing_newline.json`).
+        let built = build_xml_string(&parsed);
+        let ending = if raw.ends_with('\n') { "\n" } else { "" };
+        Ok(Some((
+            format!("{}{ending}", built.trim_end_matches('\n')),
+            sidecars,
+        )))
     }
+}
+
+/// An element's content extracted to a sidecar file.
+#[derive(Debug)]
+struct ExtractedSidecar {
+    element: String,
+    extension: String,
+    /// The sidecar file's content.
+    content: String,
+    /// Format of the text inside the XML (`json` / `yaml`), if recognised.
+    original_format: Option<String>,
+    /// How reassembly writes it back as the element's source text.
+    form: SourceForm,
+}
+
+/// The text of a plain-text element value and its source form in the XML (the `#escaped`
+/// marker when the parser kept one, otherwise the canonical escaping it matched). `None` for
+/// anything but plain text.
+fn element_text_and_source(value: &serde_json::Value) -> Option<(String, String)> {
+    let obj = value.as_object()?;
+    if obj.keys().any(|k| k != "#text" && k != TEXT_ESCAPED_KEY) {
+        return None;
+    }
+    let text = obj.get("#text").and_then(|v| v.as_str()).unwrap_or("");
+    let source = obj
+        .get(TEXT_ESCAPED_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| quick_xml::escape::escape(text).into_owned());
+    Some((text.to_string(), source))
 }
 
 /// Detect whether `text` is JSON or YAML. Returns `Some("json")`, `Some("yaml")`,
@@ -1275,6 +1318,71 @@ mod tests {
             .expect("schema element should be extracted");
         assert!(!stripped.contains("<schema>"));
         assert_eq!(sidecars.len(), 1);
-        assert_eq!(sidecars[0].0, "schema");
+        assert_eq!(sidecars[0].element, "schema");
+        assert_eq!(sidecars[0].content, "openapi: 3.0.1");
+        assert_eq!(sidecars[0].original_format.as_deref(), Some("yaml"));
+    }
+
+    async fn extract(xml: &str, extension: &str) -> Option<(String, Vec<ExtractedSidecar>)> {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.xml");
+        tokio::fs::write(&path, xml).await.unwrap();
+        let specs = [SidecarSpec {
+            element: "schema".to_string(),
+            extension: extension.to_string(),
+            original_format: None,
+        }];
+        extract_sidecar_elements(path.to_str().unwrap(), &specs)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_records_the_source_form() {
+        let (_, sidecars) = extract(
+            r#"<Root><schema>{&quot;a&quot;:1}</schema><child>v</child></Root>"#,
+            "yaml",
+        )
+        .await
+        .expect("extracted");
+        assert_eq!(sidecars[0].content, "a: 1\n");
+        assert_eq!(
+            sidecars[0].form,
+            SourceForm {
+                json_layout: crate::xml::sidecar_form::JsonLayout::Compact,
+                escape: crate::xml::sidecar_form::TextEscape::Entities,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_sidecar_elements_keeps_an_element_that_would_not_come_back_the_same() {
+        // `1.50` would come back as `1.5`; the attribute and the comment wouldn't come back at all.
+        for xml in [
+            r#"<Root><schema>{"a":1.50}</schema><child>v</child></Root>"#,
+            r#"<Root><schema kind="x">a: 1</schema><child>v</child></Root>"#,
+            r#"<Root><schema>a: 1<!-- c --></schema><child>v</child></Root>"#,
+        ] {
+            assert!(extract(xml, "yaml").await.is_none(), "{xml}");
+        }
+    }
+
+    #[test]
+    fn element_text_and_source_uses_the_recorded_source_escaping() {
+        let value = serde_json::json!({ "#text": "a'b", "#escaped": "a&#39;b" });
+        assert_eq!(
+            element_text_and_source(&value),
+            Some(("a'b".to_string(), "a&#39;b".to_string()))
+        );
+        let value = serde_json::json!({ "#text": "a\"b" });
+        assert_eq!(
+            element_text_and_source(&value),
+            Some(("a\"b".to_string(), "a&quot;b".to_string()))
+        );
+        assert_eq!(
+            element_text_and_source(&serde_json::json!({})),
+            Some((String::new(), String::new()))
+        );
+        assert_eq!(element_text_and_source(&serde_json::json!("x")), None);
     }
 }

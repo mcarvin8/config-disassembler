@@ -7,6 +7,7 @@ use crate::xml::builders::{
 use crate::xml::element_order::{entry_sort_key, interleave, item_key, ElementOrder, GroupRecord};
 use crate::xml::multi_level::{ensure_segment_files_structure, load_multi_level_config};
 use crate::xml::parsers::parse_to_xml_object;
+use crate::xml::sidecar_form::{element_value, read_recorded_sidecars, restore_content};
 use crate::xml::types::{MultiLevelRule, SidecarSpec, XmlElement};
 use crate::xml::utils::normalize_path_unix;
 use serde_json::Value;
@@ -813,49 +814,6 @@ impl Default for ReassembleXmlFileHandler {
     }
 }
 
-/// Convert `content` (in whatever format the sidecar file uses) to `target_format`.
-///
-/// - `"json"` → parse as YAML (superset of JSON) then emit as pretty JSON
-/// - `"yaml"` / `"yml"` → only convert when content is strict JSON; YAML passes through
-/// - anything else → pass through unchanged
-///
-/// Falls back to raw content with a warning when conversion fails.
-fn convert_to_format(content: &str, target_format: &str) -> String {
-    match target_format.to_ascii_lowercase().as_str() {
-        "json" => {
-            match serde_saphyr::from_str::<serde_json::Value>(content) {
-                // Serializing a serde_json::Value cannot fail.
-                Ok(val) => {
-                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| content.to_string())
-                }
-                Err(e) => {
-                    log::warn!("sidecar reassemble: could not parse content for JSON conversion ({e}); using raw content");
-                    content.to_string()
-                }
-            }
-        }
-        "yaml" | "yml" => {
-            if serde_json::from_str::<serde_json::Value>(content).is_ok() {
-                match serde_json::from_str::<serde_json::Value>(content)
-                    .ok()
-                    .and_then(|v| serde_saphyr::to_string(&v).ok())
-                {
-                    Some(yaml) => yaml,
-                    None => {
-                        log::warn!(
-                            "sidecar reassemble: YAML serialization failed; using raw content"
-                        );
-                        content.to_string()
-                    }
-                }
-            } else {
-                content.to_string()
-            }
-        }
-        _ => content.to_string(),
-    }
-}
-
 fn log_nothing_parsed(file_path: &str) {
     log::error!(
         "No files under {} were parsed successfully. A reassembled XML file was not created.",
@@ -879,9 +837,8 @@ async fn resolve_sidecar_specs(
     if let Some(specs) = sidecar_specs.filter(|s| !s.is_empty()) {
         return Some(specs.to_vec());
     }
-    let meta_path = Path::new(dir_path).join(".sidecars.json");
-    let content = fs::read_to_string(&meta_path).await.ok()?;
-    serde_json::from_str::<Vec<SidecarSpec>>(&content).ok()
+    let recorded = read_recorded_sidecars(dir_path).await?;
+    Some(recorded.into_iter().map(|r| r.spec).collect())
 }
 
 /// Remove the disassembled directory (and, first, its sidecar files) after a
@@ -903,38 +860,36 @@ async fn purge_disassembled(dir_path: &str, specs: Option<&[SidecarSpec]>) {
 }
 
 /// Read each spec's sidecar file and return the root elements to set, in spec
-/// order: `(element name, {"#raw-text": content})`.
+/// order: `(element name, value)`.
 ///
 /// Each sidecar is located inside the decomposed directory itself
 /// (e.g. `MySvc/MySvc.yaml`). If a sidecar is absent (element was not in
 /// the original XML, or was never extracted), the spec is silently skipped.
 ///
-/// The value uses the `{"#raw-text": content}` shape that `build_xml_string`
-/// writes with `partial_escape`: mandatory XML chars (`<`, `>`, `&`) are escaped
-/// but `"` is left as-is so YAML content round-trips without `&quot;` inflation.
+/// The content is converted back to the format it had inside the XML (a JSON schema
+/// extracted to a `.yaml` sidecar comes back as JSON), in the layout and escaping
+/// `.sidecars.json` recorded for it (see `sidecar_form`). Without a recorded form:
+/// pretty JSON, with only `<`, `>` and `&` escaped.
 async fn load_sidecar_elements(dir_path: &str, specs: &[SidecarSpec]) -> Vec<(String, Value)> {
     let path = Path::new(dir_path);
     let base = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("output");
+    let recorded = read_recorded_sidecars(dir_path).await.unwrap_or_default();
     let mut elements = Vec::new();
     for spec in specs {
         let sidecar_path = path.join(format!("{}.{}", base, spec.extension));
         let Ok(content) = fs::read_to_string(&sidecar_path).await else {
             continue;
         };
-        // When the original XML embedded a different format than the sidecar
-        // extension (e.g. JSON schema extracted to a .yaml sidecar), convert
-        // the sidecar content back to the original format before injecting.
-        let final_content = match &spec.original_format {
-            Some(fmt) => convert_to_format(&content, fmt),
-            None => content,
-        };
-        elements.push((
-            spec.element.clone(),
-            serde_json::json!({ "#raw-text": final_content }),
-        ));
+        let form = recorded
+            .iter()
+            .find(|r| r.spec.element == spec.element)
+            .map(|r| r.form())
+            .unwrap_or_default();
+        let text = restore_content(&content, spec.original_format.as_deref(), form.json_layout);
+        elements.push((spec.element.clone(), element_value(text, form.escape)));
     }
     elements
 }
@@ -1493,6 +1448,15 @@ mod tests {
             output.contains("key: value"),
             "sidecar content missing — auto-detect did not run:\n{output}"
         );
+    }
+
+    /// The conversion before `sidecar_form` existed: the default (pretty) layout.
+    fn convert_to_format(content: &str, target_format: &str) -> String {
+        crate::xml::sidecar_form::restore_content(
+            content,
+            Some(target_format),
+            crate::xml::sidecar_form::JsonLayout::Pretty,
+        )
     }
 
     // Pins `delete match arm "json"` mutant: without the arm, YAML input to

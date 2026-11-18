@@ -147,8 +147,8 @@ pub struct MultiLevelConfig {
 /// blobs to their own typed files lets native tooling (formatters, linters,
 /// IDE plugins) operate on them directly, keeps large content changes out of
 /// the XML diff, and makes the surrounding XML easier to read and review. The
-/// roundtrip is lossless: reassembly reads the sidecar and injects the raw
-/// content back before writing the final XML.
+/// roundtrip is lossless: reassembly reads the sidecar and writes it back as the
+/// element's original text (an element it couldn't reproduce is never extracted).
 ///
 /// **Format:** `element_name:extension`, e.g. `"schema:yaml"`. Multiple specs
 /// are passed as a slice; use comma separation at the CLI/NAPI layer when
