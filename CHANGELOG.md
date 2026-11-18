@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/mcarvin8/config-disassembler/compare/v0.12.0...v0.12.1) - 2026-11-18
+
+### 🐛 Bug Fixes
+
+
+- *(xml)* Keep source order of siblings spread across group files ([#200](https://github.com/mcarvin8/config-disassembler/pull/200)) - ([0ac0b4a](https://github.com/mcarvin8/config-disassembler/commit/0ac0b4ad34fa17b8769ce8b1f5f813d6547faa78))
+- *(xml)* Honor post-purge for sidecar types and skip them cleanly ([#198](https://github.com/mcarvin8/config-disassembler/pull/198)) - ([e1f45fd](https://github.com/mcarvin8/config-disassembler/commit/e1f45fd90d0e178a2c79f39a8f3ccc952e26b6af))
+
+
 ## [0.12.0](https://github.com/mcarvin8/config-disassembler/compare/v0.11.17...v0.12.0) - 2026-11-17
 
 ### ⛰️ Features
